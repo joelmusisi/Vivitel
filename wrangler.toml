@@ -1,0 +1,11 @@
+name = "Vivi-telematic-api"
+main = "backend/src/worker.ts"
+compatibility_date = "2024-12-03"
+tsconfig = "backend/tsconfig.json"
+
+[vars]
+APP_NAME = "Vivi Telematic API"
+
+[[kv_namespaces]]
+binding = "ViviTEL"
+id = "293f3cc4118344a8aca43e160bfb2d85"

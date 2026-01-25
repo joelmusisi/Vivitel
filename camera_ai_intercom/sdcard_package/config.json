@@ -1,0 +1,17 @@
+{
+  "deviceId": "",
+  "serverUrl": "wss://your-vivitelematicx-endpoint",
+  "intercom": {
+    "sampleRate": 16000,
+    "channels": 1,
+    "frameMs": 20
+  },
+  "talkback": {
+    "sampleRate": 16000,
+    "channels": 1
+  },
+  "ai": {
+    "enabled": true,
+    "modelPath": "/sdcard/vivitel/models/talkback.tflite"
+  }
+}

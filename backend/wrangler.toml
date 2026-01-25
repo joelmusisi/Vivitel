@@ -1,0 +1,17 @@
+name = "Vivi-telematic-api"
+main = "src/worker.ts"
+compatibility_date = "2024-12-03"
+tsconfig = "tsconfig.json"
+routes = ["https://api.vivitelematics.ca/*"]
+
+[vars]
+APP_NAME = "Vivi Telematic API"
+
+[[kv_namespaces]]
+binding = "ViviTEL"
+id = "59c105de17714e69a5d64cbb06d953a6"
+
+[[d1_databases]]
+binding = "VIVI_D1"
+database_name = "vivi_telematic"
+database_id = "67899d57-c409-4df1-a4a3-ea68c70bb34c"

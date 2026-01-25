@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+  android:layout_width="match_parent"
+  android:layout_height="match_parent"
+  android:orientation="vertical"
+  android:padding="16dp">
+
+  <Button
+    android:id="@+id/btnStartIntercom"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:text="Start Intercom" />
+
+  <Button
+    android:id="@+id/btnStopIntercom"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:text="Stop Intercom" />
+
+  <Button
+    android:id="@+id/btnStartTalkback"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:text="Start Talkback" />
+
+  <Button
+    android:id="@+id/btnStopTalkback"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:text="Stop Talkback" />
+
+</LinearLayout>
