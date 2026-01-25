@@ -1,4 +1,4 @@
-name = "Vivi-telematic-api"
+name = "vivi-telematic-api"
 main = "src/worker.ts"
 compatibility_date = "2024-12-03"
 tsconfig = "tsconfig.json"
