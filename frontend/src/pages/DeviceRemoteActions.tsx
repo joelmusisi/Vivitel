@@ -577,7 +577,7 @@ import { useNavigate } from "react-router-dom";
               ))}
             </div>
             <div className="device-remote-footer">
-              <button type="button" className="video-back-btn" onClick={() => navigate("/monitor/videos/dashboard")}>
+              <button type="button" className="video-back-btn" onClick={() => navigate("/Track/videos/dashboard")}>
                 ← Back to Dashboard
               </button>
               <div className="device-remote-footer-actions">
@@ -1537,7 +1537,8 @@ import { useNavigate } from "react-router-dom";
 
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { saveToApi } from "../utils/api";
+import { getDeviceDetails, loadFromApi, saveToApi, sendDeviceCommand } from "../utils/api";
+import { showToast } from "../utils/toast";
 import "../index.css";
 
 type DeviceRow = {
@@ -1774,10 +1775,10 @@ const recordRows = [
 ];
 
 const subStreamRows = [
-  { channel: "1", enabled: true, resolution: "HD1", frameRate: "10", quality: "3", encode: "H264", audio: "No Audio" },
-  { channel: "2", enabled: true, resolution: "HD1", frameRate: "10", quality: "3", encode: "H264", audio: "No Audio" },
-  { channel: "3", enabled: true, resolution: "CIF", frameRate: "15", quality: "3", encode: "H265", audio: "No Audio" },
-  { channel: "4", enabled: true, resolution: "CIF", frameRate: "15", quality: "3", encode: "H265", audio: "No Audio" }
+  { channel: "1", enabled: true, resolution: "1080P", frameRate: "10", quality: "3", encode: "H264", audio: "No Audio" },
+  { channel: "2", enabled: true, resolution: "1080P", frameRate: "10", quality: "3", encode: "H264", audio: "No Audio" },
+  { channel: "3", enabled: true, resolution: "1080P", frameRate: "15", quality: "3", encode: "H265", audio: "No Audio" },
+  { channel: "4", enabled: true, resolution: "1080P", frameRate: "15", quality: "3", encode: "H265", audio: "No Audio" }
 ];
 
 const ipcRows = [
@@ -1852,7 +1853,7 @@ const mainStreamRows = [
     channel: "1",
     enabled: true,
     aiAlert: false,
-    resolution: "1920P",
+    resolution: "1080P",
     frameRate: "20",
     quality: "2",
     encode: "H264",
@@ -1882,7 +1883,7 @@ const mainStreamRows = [
     channel: "3",
     enabled: true,
     aiAlert: false,
-    resolution: "720P",
+    resolution: "1080P",
     frameRate: "15",
     quality: "3",
     encode: "H265",
@@ -1897,7 +1898,7 @@ const mainStreamRows = [
     channel: "4",
     enabled: true,
     aiAlert: false,
-    resolution: "800P",
+    resolution: "1080P",
     frameRate: "20",
     quality: "3",
     encode: "H265",
@@ -1951,6 +1952,33 @@ const generalServers = [
   }
 ];
 
+const POSITIONING_PROTOCOL_JTT808 = "JT/T808";
+const VIDEO_PROTOCOL_JTT1078 = "JT/T1078";
+
+type NormalizedProtocolPair = {
+  protocolType: string;
+  videoProtocol: string;
+};
+
+const normalizeProtocolPair = (protocolType: unknown, videoProtocol: unknown): NormalizedProtocolPair => {
+  const rawProtocolType = String(protocolType ?? "").trim();
+  const rawVideoProtocol = String(videoProtocol ?? "").trim();
+
+  // Backward compatibility: older drafts used "JT/T" as a single combined value.
+  if (rawProtocolType.toUpperCase() === "JT/T") {
+    return {
+      protocolType: POSITIONING_PROTOCOL_JTT808,
+      videoProtocol: rawVideoProtocol || VIDEO_PROTOCOL_JTT1078
+    };
+  }
+
+  return {
+    protocolType: rawProtocolType || "N9M",
+    videoProtocol:
+      rawVideoProtocol || (rawProtocolType === POSITIONING_PROTOCOL_JTT808 ? VIDEO_PROTOCOL_JTT1078 : "N9M")
+  };
+};
+
 export default function DeviceRemoteActions() {
   const navigate = useNavigate();
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
@@ -1969,10 +1997,11 @@ export default function DeviceRemoteActions() {
   const [activeTimeTab, setActiveTimeTab] = useState("General");
   const [activeAppTab, setActiveAppTab] = useState("Download");
   const [activeNetworkTab, setActiveNetworkTab] = useState("Ports");
-  type ServerTab = "Server1" | "Server2";
+  type ServerTab = "Server1";
   type ServerConfig = {
     on: boolean;
     protocolType: string;
+    videoProtocol: string;
     tlsEnable: boolean;
     enableNetwork: string;
     registerIp: string;
@@ -1984,13 +2013,14 @@ export default function DeviceRemoteActions() {
     mediaPort: string;
     mediaTls: string;
   };
-  const serverTabs: ServerTab[] = ["Server1", "Server2"];
+  const serverTabs: ServerTab[] = ["Server1"];
 
   const [activeServerTab, setActiveServerTab] = useState<ServerTab>("Server1");
   const [serverConfigs, setServerConfigs] = useState<Record<ServerTab, ServerConfig>>({
     Server1: {
       on: true,
       protocolType: "N9M",
+      videoProtocol: "N9M",
       tlsEnable: false,
       enableNetwork: "Module1",
       registerIp: "live2.ent.mixtel.com",
@@ -2001,21 +2031,24 @@ export default function DeviceRemoteActions() {
       mediaPortProtocol: "TCP",
       mediaPort: "5556",
       mediaTls: "6556"
-    },
-    Server2: {
-      on: false,
-      protocolType: "N9M",
-      tlsEnable: false,
-      enableNetwork: "Module1",
-      registerIp: "",
-      registerPortProtocol: "TCP",
-      registerPort: "",
-      registerTls: "",
-      mediaIp: "",
-      mediaPortProtocol: "TCP",
-      mediaPort: "",
-      mediaTls: ""
     }
+  });
+  const [communicationModuleSettings, setCommunicationModuleSettings] = useState({
+    lock: false,
+    serverType: "LTE-FDD",
+    networkType: "Mix",
+    apn: "internet",
+    userName: "guest",
+    password: "******",
+    number: "*99#",
+    certification: "CHAP",
+    carrier: "Auto",
+    protocolType: "IPV4",
+    activeMode: "Always",
+    number1: "",
+    number2: "",
+    number3: "",
+    mtu: "1500"
   });
   const [activeStartupTab, setActiveStartupTab] = useState("Power Box");
   const [activeRecordTab, setActiveRecordTab] = useState("General");
@@ -2129,7 +2162,11 @@ export default function DeviceRemoteActions() {
     : driverPictureFile?.name ?? "";
   const canUploadDriverPicture = Boolean(driverPictureFile && sanitizedDriverPictureName);
   const displayPlate = vehiclePlate || activeDevice?.plate || "AIP953MP";
+  const [isVisionActionBusy, setIsVisionActionBusy] = useState(false);
+  const [visionActionMessage, setVisionActionMessage] = useState("");
+  const [isHydratingRemoteAccess, setIsHydratingRemoteAccess] = useState(false);
   const remoteAccessStorageKey = `device-remote-actions:${activeDevice?.id ?? "unknown"}`;
+
   const buildRemoteAccessPayload = () => ({
     deviceId: activeDevice?.id ?? null,
     plate: vehiclePlate,
@@ -2138,6 +2175,7 @@ export default function DeviceRemoteActions() {
     linkageSelections,
     triggerConfigs,
     serverConfigs,
+    communicationModuleSettings,
     activeGeneralMenu,
     activeGeneralTab,
     activeBasicSub,
@@ -2163,21 +2201,223 @@ export default function DeviceRemoteActions() {
     playbackYear,
     selectedColumns: Array.from(selectedColumns)
   });
+
+  const applyRemoteAccessPayload = (payload: any) => {
+    if (!payload || typeof payload !== "object") return;
+
+    if (typeof payload.plate === "string") setVehiclePlate(payload.plate);
+    if (payload.sourceSelections && typeof payload.sourceSelections === "object") setSourceSelections(payload.sourceSelections as Record<string, string>);
+    if (payload.alarmTypeSelections && typeof payload.alarmTypeSelections === "object") setAlarmTypeSelections(payload.alarmTypeSelections as Record<string, string>);
+    if (payload.linkageSelections && typeof payload.linkageSelections === "object") setLinkageSelections(payload.linkageSelections as Record<string, number[]>);
+    if (payload.triggerConfigs && typeof payload.triggerConfigs === "object") {
+      setTriggerConfigs(payload.triggerConfigs as Record<string, { minSpeed: string; maxSpeed: string; delay: string }>);
+    }
+    if (payload.serverConfigs && typeof payload.serverConfigs === "object") {
+      const incoming = payload.serverConfigs as Partial<Record<"Server1" | "Server2", ServerConfig>>;
+      const server1 = incoming.Server1 ?? incoming.Server2;
+      if (server1) {
+        const normalized = normalizeProtocolPair(server1.protocolType, (server1 as any).videoProtocol);
+        setServerConfigs({
+          Server1: {
+            ...server1,
+            protocolType: normalized.protocolType,
+            videoProtocol: normalized.videoProtocol
+          }
+        });
+      }
+    }
+    if (payload.communicationModuleSettings && typeof payload.communicationModuleSettings === "object") {
+      setCommunicationModuleSettings((current) => ({
+        ...current,
+        ...(payload.communicationModuleSettings as typeof current)
+      }));
+    }
+
+    if (typeof payload.activeGeneralMenu === "string") setActiveGeneralMenu(payload.activeGeneralMenu);
+    if (typeof payload.activeGeneralTab === "string") setActiveGeneralTab(payload.activeGeneralTab);
+    if (typeof payload.activeBasicSub === "string") setActiveBasicSub(payload.activeBasicSub);
+    if (typeof payload.activeSurveillanceSub === "string") setActiveSurveillanceSub(payload.activeSurveillanceSub);
+    if (typeof payload.activeAlarmSub === "string") setActiveAlarmSub(payload.activeAlarmSub);
+    if (typeof payload.activeAiTab === "string") setActiveAiTab(payload.activeAiTab);
+    if (typeof payload.activeNetworkTab === "string") setActiveNetworkTab(payload.activeNetworkTab);
+    if (payload.activeServerTab === "Server1") {
+      setActiveServerTab(payload.activeServerTab);
+    }
+    if (typeof payload.activeTimeTab === "string") setActiveTimeTab(payload.activeTimeTab);
+    if (typeof payload.activeRecordTab === "string") setActiveRecordTab(payload.activeRecordTab);
+    if (typeof payload.activePreferencesMenu === "string") setActivePreferencesMenu(payload.activePreferencesMenu);
+    if (typeof payload.activePreferencesSub === "string") setActivePreferencesSub(payload.activePreferencesSub);
+    if (typeof payload.activePreferencesTab === "string") setActivePreferencesTab(payload.activePreferencesTab);
+    if (typeof payload.activeCameraType === "string") setActiveCameraType(payload.activeCameraType);
+    if (typeof payload.activeIpcRow === "string") setActiveIpcRow(payload.activeIpcRow);
+
+    if (typeof payload.isMirrorOn === "boolean") setIsMirrorOn(payload.isMirrorOn);
+    if (typeof payload.isFlipOn === "boolean") setIsFlipOn(payload.isFlipOn);
+
+    if (typeof payload.driverPictureName === "string") setDriverPictureName(payload.driverPictureName);
+    if (typeof payload.driverPicturePreview === "string") setDriverPicturePreview(payload.driverPicturePreview);
+    if (typeof payload.selectedPlaybackDay === "string") setSelectedPlaybackDay(payload.selectedPlaybackDay);
+    if (typeof payload.playbackMonthIndex === "number") setPlaybackMonthIndex(payload.playbackMonthIndex);
+    if (typeof payload.playbackYear === "number") setPlaybackYear(payload.playbackYear);
+
+    if (Array.isArray(payload.selectedColumns) && payload.selectedColumns.length) {
+      setSelectedColumns(new Set(payload.selectedColumns.map((key: unknown) => String(key))));
+    }
+  };
+
   const persistRemoteAccessDraft = async (payload: ReturnType<typeof buildRemoteAccessPayload>) => {
     if (typeof window !== "undefined") {
       window.localStorage.setItem(remoteAccessStorageKey, JSON.stringify(payload));
     }
     await saveToApi(remoteAccessStorageKey, payload);
   };
-  const handleRemoteAccessCancel = () => undefined;
-  const handleRemoteAccessSave = () => {
-    void persistRemoteAccessDraft(buildRemoteAccessPayload());
+
+  const runVisionAction = async (command: string, payload?: unknown) => {
+    const deviceId = String(activeDevice?.deviceId ?? "").trim();
+    if (!deviceId) {
+      showToast("No device ID selected for Vision action.", "error");
+      return false;
+    }
+
+    setIsVisionActionBusy(true);
+    const result = await sendDeviceCommand(deviceId, command, {
+      ...(payload && typeof payload === "object" ? (payload as Record<string, unknown>) : {}),
+      context: {
+        remoteTab: activeRemoteTab,
+        menu: activeGeneralMenu,
+        sub:
+          activeGeneralMenu === "Surveillance"
+            ? activeSurveillanceSub
+            : activeGeneralMenu === "Basic Setup"
+              ? activeBasicSub
+              : activeGeneralMenu === "Alarm"
+                ? activeAlarmSub
+                : activeRemoteTab
+      }
+    });
+    setIsVisionActionBusy(false);
+
+    if (!result.ok) {
+      const message = String(result.error ?? "Vision command failed.");
+      setVisionActionMessage(`Failed: ${message}`);
+      showToast(`Vision command failed: ${message}`, "error");
+      return false;
+    }
+
+    setVisionActionMessage(`Sent to Vision: ${command}`);
+    showToast(`Sent to Vision: ${command}`, "success");
+    return true;
   };
+
+  const loadRemoteAccessDraft = async () => {
+    let loaded: any = null;
+
+    if (typeof window !== "undefined") {
+      const local = window.localStorage.getItem(remoteAccessStorageKey);
+      if (local) {
+        try {
+          loaded = JSON.parse(local);
+        } catch {
+          loaded = null;
+        }
+      }
+    }
+
+    if (!loaded) {
+      loaded = await loadFromApi<any>(remoteAccessStorageKey);
+    }
+
+    if (loaded) applyRemoteAccessPayload(loaded);
+  };
+
+  const handleRemoteAccessCancel = () => {
+    void (async () => {
+      setIsHydratingRemoteAccess(true);
+      await loadRemoteAccessDraft();
+      setIsHydratingRemoteAccess(false);
+      setVisionActionMessage("Restored latest saved Vision draft.");
+    })();
+  };
+
+  const handleRemoteAccessSave = () => {
+    void (async () => {
+      const payload = buildRemoteAccessPayload();
+      await persistRemoteAccessDraft(payload);
+      await runVisionAction("vision.remoteAccess.apply", payload);
+    })();
+  };
+
+  const handleRestartDevice = (row: DeviceRow) => {
+    setSelectedIds([row.id]);
+    setShowRemoteAccess(false);
+    void runVisionAction("vision.device.restart", { plate: row.plate, rowId: row.id });
+  };
+
+  const openRemoteAccessForRow = (row: DeviceRow) => {
+    setSelectedIds([row.id]);
+    setShowRemoteAccess(true);
+  };
+
+  const handleRemoteActionButton = (event: React.MouseEvent<HTMLDivElement>) => {
+    const target = event.target as HTMLElement;
+    const button = target.closest("button");
+    if (!button) return;
+
+    const isActionButton =
+      button.classList.contains("remote-access-action") ||
+      button.classList.contains("remote-access-playback-action") ||
+      button.classList.contains("remote-access-preview-action") ||
+      button.classList.contains("remote-access-preview-close");
+    if (!isActionButton) return;
+
+    const label = String(button.textContent ?? "").trim();
+    const map: Record<string, string> = {
+      Setup: "vision.remoteAccess.setup",
+      Search: "vision.remoteAccess.search",
+      "Change Time": "vision.remoteAccess.changeTime",
+      Calibration: "vision.remoteAccess.calibration",
+      Fullscreen: "vision.remoteAccess.playback.fullscreen",
+      "⏮": "vision.remoteAccess.playback.previous",
+      "▶": "vision.remoteAccess.playback.play",
+      "⏸": "vision.remoteAccess.playback.pause",
+      "⏹": "vision.remoteAccess.playback.stop",
+      "⏭": "vision.remoteAccess.playback.next",
+      Live: "vision.remoteAccess.preview.live",
+      Stop: "vision.remoteAccess.preview.stop",
+      Snapshot: "vision.remoteAccess.preview.snapshot",
+      Record: "vision.remoteAccess.preview.record",
+      Audio: "vision.remoteAccess.preview.audio",
+      "×": "vision.remoteAccess.preview.close",
+      Add: "vision.remoteAccess.add",
+      Back: "vision.remoteAccess.back"
+    };
+    const command = map[label];
+    if (!command) return;
+
+    event.preventDefault();
+    void runVisionAction(command, { actionLabel: label });
+  };
+
   useEffect(() => {
     setVehiclePlate(activeDevice?.plate ?? "");
   }, [activeDevice?.plate]);
+
   useEffect(() => {
     if (!showRemoteAccess) return;
+    setIsHydratingRemoteAccess(true);
+
+    void (async () => {
+      await loadRemoteAccessDraft();
+      const details = await getDeviceDetails(String(activeDevice?.deviceId ?? ""));
+      if (details.ok) {
+        setVisionActionMessage("Vision device link is active.");
+      }
+      setIsHydratingRemoteAccess(false);
+    })();
+  }, [showRemoteAccess, activeDevice?.deviceId, remoteAccessStorageKey]);
+
+  useEffect(() => {
+    if (!showRemoteAccess || isHydratingRemoteAccess) return;
     const payload = buildRemoteAccessPayload();
     const timeout = window.setTimeout(() => {
       void persistRemoteAccessDraft(payload);
@@ -2185,6 +2425,7 @@ export default function DeviceRemoteActions() {
     return () => window.clearTimeout(timeout);
   }, [
     showRemoteAccess,
+    isHydratingRemoteAccess,
     activeDevice?.id,
     vehiclePlate,
     sourceSelections,
@@ -2217,6 +2458,7 @@ export default function DeviceRemoteActions() {
     playbackYear,
     selectedColumns
   ]);
+
   const setAlarmType = (rowName: string, option: string) => {
     setAlarmTypeSelections((current) => ({ ...current, [rowName]: option }));
   };
@@ -2293,7 +2535,7 @@ export default function DeviceRemoteActions() {
       <div className="device-remote-page">
         <div className="device-remote-card">
           <div className="device-remote-footer">
-            <button type="button" className="video-back-btn" onClick={() => navigate("/monitor/videos/dashboard")}>
+            <button type="button" className="video-back-btn" onClick={() => navigate("/Track/videos/dashboard")}>
               ← Back to Dashboard
             </button>
             <div className="device-remote-footer-actions">
@@ -2373,7 +2615,14 @@ export default function DeviceRemoteActions() {
                 {operationColumn && (
                   <div key={`${row.id}-${operationColumn.key}`} className="device-remote-cell device-remote-cell-op">
                     <div className="device-remote-row-actions">
-                      <button type="button" className="device-remote-row-btn" aria-label="Restart" title="Restart">
+                      <button
+                        type="button"
+                        className="device-remote-row-btn"
+                        aria-label="Restart"
+                        title="Restart"
+                        onClick={() => handleRestartDevice(row)}
+                        disabled={isVisionActionBusy}
+                      >
                         <span aria-hidden="true">⟳</span>
                         <span className="device-remote-row-label">Restart</span>
                       </button>
@@ -2382,7 +2631,7 @@ export default function DeviceRemoteActions() {
                         className="device-remote-row-btn"
                         aria-label="Remote Access"
                         title="Remote Access"
-                        onClick={() => setShowRemoteAccess(true)}
+                        onClick={() => openRemoteAccessForRow(row)}
                       >
                         <span aria-hidden="true">🔗</span>
                         <span className="device-remote-row-label">Remote Access</span>
@@ -2464,9 +2713,14 @@ export default function DeviceRemoteActions() {
 
       {showRemoteAccess && (
         <div className="device-remote-modal" role="dialog" aria-modal="true">
-          <div className="remote-access-card">
+          <div className="remote-access-card" onClick={handleRemoteActionButton}>
             <div className="remote-access-header">
-              <div className="remote-access-title">[ {displayPlate} ]</div>
+              <div>
+                <div className="remote-access-title">[ {displayPlate} ]</div>
+                <div className="remote-access-subtitle">
+                  {isVisionActionBusy ? "Sending command to Vision..." : visionActionMessage || "Vision remote access ready"}
+                </div>
+              </div>
               <button
                 type="button"
                 className="device-remote-modal-close"
@@ -2491,6 +2745,7 @@ export default function DeviceRemoteActions() {
                               setActiveRemoteTab(item.label);
                             }
                             setOpenSidebarItem((current) => (current === item.label ? null : item.label));
+                            void runVisionAction("vision.remoteAccess.category.select", { category: item.label });
                           }}
                         >
                           {item.label}
@@ -2526,6 +2781,10 @@ export default function DeviceRemoteActions() {
                                   } else if (item.label === "Others") {
                                     setActiveRemoteTab(sub);
                                   }
+                                  void runVisionAction("vision.remoteAccess.subCategory.select", {
+                                    category: item.label,
+                                    subCategory: sub
+                                  });
                                 }}
                               >
                                 {sub}
@@ -3200,15 +3459,43 @@ export default function DeviceRemoteActions() {
                           <div className="remote-access-network-form">
                             <label className="remote-access-network-row">
                               <span>Lock</span>
-                              <input type="checkbox" />
+                              <input
+                                type="checkbox"
+                                checked={communicationModuleSettings.lock}
+                                onChange={(event) =>
+                                  setCommunicationModuleSettings((current) => ({
+                                    ...current,
+                                    lock: event.target.checked
+                                  }))
+                                }
+                              />
                             </label>
                             <label className="remote-access-network-row">
                               <span>Server Type</span>
-                              <input type="text" defaultValue="LTE-FDD" className="remote-access-basic-input" />
+                              <input
+                                type="text"
+                                value={communicationModuleSettings.serverType}
+                                onChange={(event) =>
+                                  setCommunicationModuleSettings((current) => ({
+                                    ...current,
+                                    serverType: event.target.value
+                                  }))
+                                }
+                                className="remote-access-basic-input"
+                              />
                             </label>
                             <label className="remote-access-network-row">
                               <span>Network Type</span>
-                              <select className="remote-access-basic-input">
+                              <select
+                                className="remote-access-basic-input"
+                                value={communicationModuleSettings.networkType}
+                                onChange={(event) =>
+                                  setCommunicationModuleSettings((current) => ({
+                                    ...current,
+                                    networkType: event.target.value
+                                  }))
+                                }
+                              >
                                 <option>Mix</option>
                                 <option>LTE</option>
                                 <option>3G</option>
@@ -3217,64 +3504,180 @@ export default function DeviceRemoteActions() {
                             <div className="remote-access-network-section">Dialing Parameter</div>
                             <label className="remote-access-network-row">
                               <span>APN</span>
-                              <input type="text" defaultValue="internet" className="remote-access-basic-input" />
+                              <input
+                                type="text"
+                                value={communicationModuleSettings.apn}
+                                onChange={(event) =>
+                                  setCommunicationModuleSettings((current) => ({
+                                    ...current,
+                                    apn: event.target.value
+                                  }))
+                                }
+                                className="remote-access-basic-input"
+                              />
                             </label>
                             <label className="remote-access-network-row">
                               <span>User Name</span>
-                              <input type="text" defaultValue="guest" className="remote-access-basic-input" />
+                              <input
+                                type="text"
+                                value={communicationModuleSettings.userName}
+                                onChange={(event) =>
+                                  setCommunicationModuleSettings((current) => ({
+                                    ...current,
+                                    userName: event.target.value
+                                  }))
+                                }
+                                className="remote-access-basic-input"
+                              />
                             </label>
                             <label className="remote-access-network-row">
                               <span>Password</span>
-                              <input type="password" defaultValue="******" className="remote-access-basic-input" />
+                              <input
+                                type="password"
+                                value={communicationModuleSettings.password}
+                                onChange={(event) =>
+                                  setCommunicationModuleSettings((current) => ({
+                                    ...current,
+                                    password: event.target.value
+                                  }))
+                                }
+                                className="remote-access-basic-input"
+                              />
                             </label>
                             <label className="remote-access-network-row">
                               <span>Number</span>
-                              <input type="text" defaultValue="*99#" className="remote-access-basic-input" />
+                              <input
+                                type="text"
+                                value={communicationModuleSettings.number}
+                                onChange={(event) =>
+                                  setCommunicationModuleSettings((current) => ({
+                                    ...current,
+                                    number: event.target.value
+                                  }))
+                                }
+                                className="remote-access-basic-input"
+                              />
                             </label>
                             <label className="remote-access-network-row">
                               <span>Certification</span>
-                              <select className="remote-access-basic-input">
+                              <select
+                                className="remote-access-basic-input"
+                                value={communicationModuleSettings.certification}
+                                onChange={(event) =>
+                                  setCommunicationModuleSettings((current) => ({
+                                    ...current,
+                                    certification: event.target.value
+                                  }))
+                                }
+                              >
                                 <option>CHAP</option>
                                 <option>PAP</option>
                               </select>
                             </label>
                             <label className="remote-access-network-row">
                               <span>Carrier</span>
-                              <select className="remote-access-basic-input">
+                              <select
+                                className="remote-access-basic-input"
+                                value={communicationModuleSettings.carrier}
+                                onChange={(event) =>
+                                  setCommunicationModuleSettings((current) => ({
+                                    ...current,
+                                    carrier: event.target.value
+                                  }))
+                                }
+                              >
                                 <option>Auto</option>
                                 <option>Manual</option>
                               </select>
                             </label>
                             <label className="remote-access-network-row">
                               <span>Protocol Type</span>
-                              <select className="remote-access-basic-input">
+                              <select
+                                className="remote-access-basic-input"
+                                value={communicationModuleSettings.protocolType}
+                                onChange={(event) =>
+                                  setCommunicationModuleSettings((current) => ({
+                                    ...current,
+                                    protocolType: event.target.value
+                                  }))
+                                }
+                              >
                                 <option>IPV4</option>
                                 <option>IPV6</option>
                               </select>
                             </label>
                             <label className="remote-access-network-row">
                               <span>Active Mode</span>
-                              <select className="remote-access-basic-input">
+                              <select
+                                className="remote-access-basic-input"
+                                value={communicationModuleSettings.activeMode}
+                                onChange={(event) =>
+                                  setCommunicationModuleSettings((current) => ({
+                                    ...current,
+                                    activeMode: event.target.value
+                                  }))
+                                }
+                              >
                                 <option>Always</option>
                                 <option>On Demand</option>
                               </select>
                             </label>
                             <label className="remote-access-network-row">
                               <span>Number1</span>
-                              <input type="text" className="remote-access-basic-input" />
+                              <input
+                                type="text"
+                                value={communicationModuleSettings.number1}
+                                onChange={(event) =>
+                                  setCommunicationModuleSettings((current) => ({
+                                    ...current,
+                                    number1: event.target.value
+                                  }))
+                                }
+                                className="remote-access-basic-input"
+                              />
                             </label>
                             <label className="remote-access-network-row">
                               <span>Number2</span>
-                              <input type="text" className="remote-access-basic-input" />
+                              <input
+                                type="text"
+                                value={communicationModuleSettings.number2}
+                                onChange={(event) =>
+                                  setCommunicationModuleSettings((current) => ({
+                                    ...current,
+                                    number2: event.target.value
+                                  }))
+                                }
+                                className="remote-access-basic-input"
+                              />
                             </label>
                             <label className="remote-access-network-row">
                               <span>Number3</span>
-                              <input type="text" className="remote-access-basic-input" />
+                              <input
+                                type="text"
+                                value={communicationModuleSettings.number3}
+                                onChange={(event) =>
+                                  setCommunicationModuleSettings((current) => ({
+                                    ...current,
+                                    number3: event.target.value
+                                  }))
+                                }
+                                className="remote-access-basic-input"
+                              />
                             </label>
                             <label className="remote-access-network-row">
                               <span>MTU value of SIM card</span>
                               <div className="remote-access-network-inline">
-                                <input type="text" defaultValue="1500" className="remote-access-basic-input" />
+                                <input
+                                  type="text"
+                                  value={communicationModuleSettings.mtu}
+                                  onChange={(event) =>
+                                    setCommunicationModuleSettings((current) => ({
+                                      ...current,
+                                      mtu: event.target.value
+                                    }))
+                                  }
+                                  className="remote-access-basic-input"
+                                />
                                 <span className="remote-access-network-hint">(100~1500)</span>
                               </div>
                             </label>
@@ -3370,22 +3773,7 @@ export default function DeviceRemoteActions() {
                           </div>
                         ) : activeNetworkTab === "Server Setup" ? (
                           <div className="remote-access-network-form">
-                            <div className="remote-access-network-tabs">
-                              {serverTabs.map((tab) => (
-                                <button
-                                  key={tab}
-                                  type="button"
-                                  className={`remote-access-network-tab ${activeServerTab === tab ? "active" : ""}`}
-                                  onClick={() => setActiveServerTab(tab)}
-                                >
-                                  {tab}
-                                </button>
-                              ))}
-                              <div className="remote-access-network-inline">
-                                <button type="button" className="remote-access-network-icon">+</button>
-                                <button type="button" className="remote-access-network-icon">×</button>
-                              </div>
-                            </div>
+                            <div className="remote-access-network-section">Server1</div>
                             <label className="remote-access-network-row">
                               <span>ON</span>
                               <input
@@ -3403,22 +3791,48 @@ export default function DeviceRemoteActions() {
                               />
                             </label>
                             <label className="remote-access-network-row">
-                              <span>Protocol Type</span>
+                              <span>Positioning Protocol</span>
                               <select
                                 className="remote-access-basic-input"
                                 value={serverConfigs[activeServerTab].protocolType}
+                                onChange={(event) =>
+                                  setServerConfigs((current) => {
+                                    const normalized = normalizeProtocolPair(
+                                      event.target.value,
+                                      current[activeServerTab].videoProtocol
+                                    );
+                                    return {
+                                      ...current,
+                                      [activeServerTab]: {
+                                        ...current[activeServerTab],
+                                        protocolType: normalized.protocolType,
+                                        videoProtocol: normalized.videoProtocol
+                                      }
+                                    };
+                                  })
+                                }
+                              >
+                                <option>N9M</option>
+                                <option>{POSITIONING_PROTOCOL_JTT808}</option>
+                              </select>
+                            </label>
+                            <label className="remote-access-network-row">
+                              <span>Video Protocol</span>
+                              <select
+                                className="remote-access-basic-input"
+                                value={serverConfigs[activeServerTab].videoProtocol}
                                 onChange={(event) =>
                                   setServerConfigs((current) => ({
                                     ...current,
                                     [activeServerTab]: {
                                       ...current[activeServerTab],
-                                      protocolType: event.target.value
+                                      videoProtocol: event.target.value
                                     }
                                   }))
                                 }
                               >
                                 <option>N9M</option>
-                                <option>JT/T</option>
+                                <option>{VIDEO_PROTOCOL_JTT1078}</option>
                               </select>
                             </label>
                             <label className="remote-access-network-row">
@@ -3613,7 +4027,7 @@ export default function DeviceRemoteActions() {
                           </select>
                         </label>
                         <div className="remote-access-user-row">
-                          <span>User Management</span>
+                          <span>User Controlment</span>
                           <button type="button" className="remote-access-action">Add</button>
                         </div>
                         <div className="remote-access-user-table">
