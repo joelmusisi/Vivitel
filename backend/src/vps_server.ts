@@ -928,6 +928,11 @@ const liveNormalizeUrlCandidate = (value: unknown, index: number) => {
 };
 
 const liveReadChannelUrl = (row: Record<string, unknown>, index: number, key: string) => {
+  const label = liveChannelLabelByIndex(index);
+  const labelLower = label.toLowerCase();
+  const labelCompact = label.replace(/\s+/g, "");
+  const labelCompactLower = labelLower.replace(/\s+/g, "");
+
   const candidates = [
     row.streamUrl,
     row.liveStreamUrl,
@@ -945,6 +950,11 @@ const liveReadChannelUrl = (row: Record<string, unknown>, index: number, key: st
     row.streamUrlTemplate,
     row.channelUrlTemplate,
     row.liveUrlTemplate,
+    row[key],
+    row[label],
+    row[labelLower],
+    row[labelCompact],
+    row[labelCompactLower],
     row[`${key}StreamUrl`],
     row[`${key}Url`],
     row[`channel${index}StreamUrl`],
