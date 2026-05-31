@@ -254,6 +254,23 @@ export async function telemetryLookupByImeiDetailed(
   return { ok: result.ok, status: result.status, body: result.body, error: result.error };
 }
 
+export async function getTelemetryHistory(params: {
+  imei?: string;
+  assetId?: string;
+  from?: string;
+  to?: string;
+  limit?: number;
+}): Promise<{ ok: boolean; status?: number; body?: any; error?: string }> {
+  const query = new URLSearchParams();
+  if (params.imei) query.set("imei", params.imei);
+  if (params.assetId) query.set("assetId", params.assetId);
+  if (params.from) query.set("from", params.from);
+  if (params.to) query.set("to", params.to);
+  if (params.limit) query.set("limit", String(params.limit));
+  const result = await fetchDetailed<any>(`/telemetry/history?${query.toString()}`);
+  return { ok: result.ok, status: result.status, body: result.body, error: result.error };
+}
+
 export async function confirmTelemetryForImei(
   imei: string
 ): Promise<{ ok: boolean; received: boolean; lastAt?: string; status?: number; body?: any; error?: string }> {

@@ -3953,6 +3953,132 @@ h1 {
   padding: 0;
 }
 
+.fuel-popup-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.fuel-popup-actions strong {
+  color: #0f172a;
+}
+
+.fuel-popup-actions button {
+  border: none;
+  background: transparent;
+  color: #15803d;
+  font-size: 0.78rem;
+  font-weight: 800;
+  cursor: pointer;
+  padding: 0;
+  white-space: nowrap;
+}
+
+.fuel-popup-actions button:hover {
+  text-decoration: underline;
+}
+
+.fuel-tacho-card {
+  width: min(920px, calc(100vw - 40px));
+  max-height: calc(100vh - 70px);
+  background: #ffffff;
+  border-radius: 16px;
+  box-shadow: 0 24px 70px rgba(15, 23, 42, 0.25);
+  overflow: hidden;
+  border: 1px solid rgba(15, 23, 42, 0.1);
+}
+
+.fuel-tacho-card .locations-card-header small {
+  display: block;
+  margin-top: 2px;
+  color: #64748b;
+  font-weight: 600;
+}
+
+.fuel-tacho-body {
+  padding: 16px;
+  background: #f8fafc;
+}
+
+.fuel-tacho-summary {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 10px;
+  color: #334155;
+}
+
+.fuel-tacho-summary span {
+  font-weight: 800;
+}
+
+.fuel-tacho-summary strong {
+  color: #0f172a;
+  font-size: 1.2rem;
+}
+
+.fuel-tacho-summary small {
+  margin-left: auto;
+  color: #64748b;
+  font-weight: 700;
+}
+
+.fuel-tacho-empty,
+.fuel-tacho-note {
+  border-radius: 12px;
+  background: #ffffff;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  padding: 16px;
+  color: #475569;
+  font-weight: 700;
+}
+
+.fuel-tacho-note {
+  margin-top: 10px;
+  padding: 10px 12px;
+}
+
+.fuel-tacho-chart {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+
+.fuel-tacho-chart rect {
+  fill: #ffffff;
+  stroke: rgba(148, 163, 184, 0.35);
+}
+
+.fuel-tacho-chart line {
+  stroke: rgba(148, 163, 184, 0.35);
+  stroke-dasharray: 4 4;
+}
+
+.fuel-tacho-chart text {
+  fill: #475569;
+  font-size: 11px;
+  font-weight: 700;
+  text-anchor: middle;
+}
+
+.fuel-tacho-chart g text {
+  text-anchor: end;
+}
+
+.fuel-tacho-chart path {
+  fill: none;
+  stroke: #0ea5e9;
+  stroke-width: 3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.fuel-tacho-chart circle {
+  fill: #16a34a;
+  stroke: #ffffff;
+  stroke-width: 1.5;
+}
+
 
 .easytrack-search-bar {
   position: absolute;

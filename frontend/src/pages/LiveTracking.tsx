@@ -4,7 +4,7 @@ import MarkerClusterGroup from "react-leaflet-cluster";
 import L from "leaflet";
 import { useNavigate } from "react-router-dom";
 import StreetViewMini from "../components/StreetViewMini";
-import { getAssetsFromApi, saveToApi } from "../utils/api";
+import { getAssetsFromApi, getTelemetryHistory, saveToApi } from "../utils/api";
 import { computeAssetDotStatus } from "../utils/assetStatus";
 import "../index.css";
 
@@ -30,9 +30,26 @@ type AssetRow = {
   fuelReading: string;
   status: "online" | "warning" | "offline";
   movement?: "moving" | "stationary" | "unknown";
+  imei?: string;
+  fuelLitres?: number;
   lat?: number;
   lng?: number;
   telemetryAt?: string;
+  raw?: Record<string, unknown>;
+};
+
+type FuelPoint = {
+  at: string;
+  raw: number;
+  value: number;
+};
+
+type FuelGraphState = {
+  asset: AssetRow;
+  status: "loading" | "ready" | "error";
+  points: FuelPoint[];
+  rawCount: number;
+  error?: string;
 };
 
 type LocationRow = {
@@ -155,6 +172,204 @@ const parseTelemetryNumber = (value: unknown): number | null => {
   return Number.isFinite(num) ? num : null;
 };
 
+const normalizeFuelKey = (key: string) => key.toLowerCase().replace(/[^a-z0-9]+/g, "");
+
+const isFuelLevelKey = (key: string) => {
+  const normalized = normalizeFuelKey(key);
+  if (!normalized.includes("fuel")) return false;
+  if (/(percent|percentage|rate|consumption|used|economy|efficiency|trip|target)/.test(normalized)) return false;
+  return (
+    normalized === "fuel" ||
+    normalized.includes("fuellevel") ||
+    normalized.includes("fuellitre") ||
+    normalized.includes("fuelliter") ||
+    normalized.includes("fuelvolume") ||
+    normalized.includes("fuelreading") ||
+    normalized.includes("tankfuel") ||
+    normalized.includes("fmfuel")
+  );
+};
+
+const coerceFuelLitres = (value: unknown): number | null => {
+  const parsed = parseTelemetryNumber(value);
+  if (parsed === null) return null;
+  // Fuel tank readings should never be negative and anything above 5000L is almost certainly not a live tank value.
+  if (parsed < 0 || parsed > 5000) return null;
+  return parsed;
+};
+
+const findFuelLitres = (source: unknown, depth = 0): number | null => {
+  if (depth > 4) return null;
+  const direct = coerceFuelLitres(source);
+  if (direct !== null && depth > 0) return direct;
+  const record = asRecord(source);
+  if (!record) return null;
+
+  const directKeys = [
+    "fuelLitres",
+    "fuelLiters",
+    "fuelLevelLitres",
+    "fuelLevelLiters",
+    "fuelLevelL",
+    "fuelVolumeLitres",
+    "fuelVolume",
+    "fuelReading",
+    "fuelLevel",
+    "tankFuel",
+    "fuel"
+  ];
+  for (const key of directKeys) {
+    const value = coerceFuelLitres(record[key]);
+    if (value !== null) return value;
+  }
+
+  const nested = [record.telemetryLatest, record.io, asRecord(record.telemetryLatest)?.io, record.data, record.attributes];
+  for (const item of nested) {
+    const value = findFuelLitres(item, depth + 1);
+    if (value !== null) return value;
+  }
+
+  for (const [key, value] of Object.entries(record)) {
+    if (!isFuelLevelKey(key)) continue;
+    const fuel = coerceFuelLitres(value);
+    if (fuel !== null) return fuel;
+  }
+
+  return null;
+};
+
+const formatFuelLitres = (fuel: number | null | undefined) => {
+  if (typeof fuel !== "number" || !Number.isFinite(fuel)) return "None";
+  const digits = fuel >= 100 ? 0 : 1;
+  return `${fuel.toFixed(digits)} L`;
+};
+
+const median = (values: number[]) => {
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
+};
+
+const buildStableFuelSeries = (points: Array<{ at: string; value: number }>): FuelPoint[] => {
+  const sorted = points
+    .map((point) => ({ at: point.at, value: coerceFuelLitres(point.value) }))
+    .filter((point): point is { at: string; value: number } => Boolean(point.at) && point.value !== null)
+    .sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
+
+  const buckets = new Map<number, Array<{ at: string; value: number }>>();
+  for (const point of sorted) {
+    const ms = Date.parse(point.at);
+    if (!Number.isFinite(ms)) continue;
+    const bucket = Math.floor(ms / (2 * 60 * 1000)) * 2 * 60 * 1000;
+    const current = buckets.get(bucket) ?? [];
+    current.push(point);
+    buckets.set(bucket, current);
+  }
+
+  const bucketed = Array.from(buckets.entries())
+    .sort(([a], [b]) => a - b)
+    .map(([bucket, items]) => ({
+      at: new Date(bucket).toISOString(),
+      raw: median(items.map((item) => item.value)),
+      value: median(items.map((item) => item.value))
+    }));
+
+  const filtered = bucketed.filter((point, index) => {
+    const previous = bucketed[index - 1];
+    const next = bucketed[index + 1];
+    if (!previous || !next) return true;
+    const jump = Math.abs(point.value - previous.value);
+    const backToPrevious = Math.abs(next.value - previous.value);
+    const awayFromNext = Math.abs(point.value - next.value);
+    const threshold = Math.max(35, Math.abs(previous.value) * 0.18);
+    return !(jump > threshold && awayFromNext > threshold && backToPrevious <= threshold);
+  });
+
+  return filtered.map((point, index) => {
+    const windowValues = filtered
+      .slice(Math.max(0, index - 1), Math.min(filtered.length, index + 2))
+      .map((item) => item.value);
+    return { ...point, value: median(windowValues) };
+  });
+};
+
+const fuelPointsFromAsset = (asset: AssetRow): FuelPoint[] => {
+  const raw = asset.raw ?? {};
+  const histories = [raw.fuelHistory, raw.telemetryHistory, raw.history].filter(Array.isArray) as unknown[][];
+  const points = histories
+    .flat()
+    .map((item) => {
+      if (Array.isArray(item)) {
+        const at = String(item[0] ?? item[1] ?? "").trim();
+        const fuel = coerceFuelLitres(item[1] ?? item[0]);
+        return at && fuel !== null ? { at, value: fuel } : null;
+      }
+      const record = asRecord(item);
+      const at = String(record?.at ?? record?.createdAt ?? record?.timestamp ?? "").trim();
+      const fuel =
+        findFuelLitres(record) ??
+        coerceFuelLitres(record?.value) ??
+        coerceFuelLitres(record?.reading) ??
+        coerceFuelLitres(record?.litres) ??
+        coerceFuelLitres(record?.liters) ??
+        coerceFuelLitres(record?.level);
+      return at && fuel !== null ? { at, value: fuel } : null;
+    })
+    .filter((point): point is { at: string; value: number } => Boolean(point));
+  if (points.length) return buildStableFuelSeries(points);
+  return typeof asset.fuelLitres === "number" && asset.telemetryAt
+    ? buildStableFuelSeries([{ at: asset.telemetryAt, value: asset.fuelLitres }])
+    : [];
+};
+
+const fuelPointsFromHistory = (events: unknown[]): FuelPoint[] => {
+  const points = events
+    .map((event) => {
+      const record = asRecord(event);
+      const at = String(record?.createdAt ?? record?.created_at ?? asRecord(record?.data)?.createdAt ?? "").trim();
+      const fuel = findFuelLitres(record);
+      return at && fuel !== null ? { at, value: fuel } : null;
+    })
+    .filter((point): point is { at: string; value: number } => Boolean(point));
+  return buildStableFuelSeries(points);
+};
+
+const buildFuelChart = (points: FuelPoint[]) => {
+  const width = 720;
+  const height = 300;
+  const padding = { top: 24, right: 28, bottom: 42, left: 58 };
+  const values = points.map((point) => point.value);
+  const times = points.map((point) => Date.parse(point.at));
+  const minValue = Math.min(...values);
+  const maxValue = Math.max(...values);
+  const valuePad = Math.max(5, (maxValue - minValue) * 0.12);
+  const yMin = Math.max(0, minValue - valuePad);
+  const yMax = maxValue + valuePad;
+  const tMin = Math.min(...times);
+  const tMax = Math.max(...times);
+  const plotWidth = width - padding.left - padding.right;
+  const plotHeight = height - padding.top - padding.bottom;
+  const x = (at: string) => {
+    const ms = Date.parse(at);
+    if (!Number.isFinite(ms) || tMax === tMin) return padding.left + plotWidth / 2;
+    return padding.left + ((ms - tMin) / (tMax - tMin)) * plotWidth;
+  };
+  const y = (value: number) => {
+    if (yMax === yMin) return padding.top + plotHeight / 2;
+    return padding.top + (1 - (value - yMin) / (yMax - yMin)) * plotHeight;
+  };
+  const path = points.map((point, index) => `${index === 0 ? "M" : "L"} ${x(point.at).toFixed(1)} ${y(point.value).toFixed(1)}`).join(" ");
+  const yTicks = Array.from({ length: 5 }, (_, index) => {
+    const value = yMin + ((yMax - yMin) * index) / 4;
+    return { value, y: y(value) };
+  });
+  const xTicks = Array.from({ length: 5 }, (_, index) => {
+    const value = tMin + ((tMax - tMin) * index) / 4;
+    return { value, x: padding.left + (plotWidth * index) / 4 };
+  });
+  return { width, height, padding, plotWidth, plotHeight, path, yTicks, xTicks, x, y };
+};
+
 const normalizeIgnition = (value: unknown) => {
   if (typeof value === "boolean") return value ? "On" : "Off";
   const raw = String(value ?? "").trim();
@@ -240,6 +455,7 @@ const mapAssetToRow = (asset: Record<string, unknown>, index: number, previous?:
   const explicitMovement = normalizeMovement(firstKnown(latest?.movement, asset.movement));
   const lat = parseTelemetryNumber(firstKnown(latest?.lat, asset.lat, asset.latitude));
   const lng = parseTelemetryNumber(firstKnown(latest?.lng, latest?.lon, asset.lng, asset.lon, asset.longitude));
+  const fuelLitres = findFuelLitres(asset);
   const lastSeen = firstKnown(asset.lastSeen, asset.last_seen, asset.lastSeenAt, asset.last_seen_at, latest?.at);
   const telemetryAt = String(lastSeen ?? "").trim();
   const positionMovement = inferMovementFromPosition({ lat: lat ?? undefined, lng: lng ?? undefined, telemetryAt }, previous);
@@ -281,12 +497,15 @@ const mapAssetToRow = (asset: Record<string, unknown>, index: number, previous?:
     speed: String(speedRaw ?? "0"),
     timeInIgnition: String(asset.timeInIgnition ?? "—"),
     driverIdentified: String(asset.driverIdentified ?? "—"),
-    fuelReading: String(asset.fuelReading ?? "—"),
+    fuelReading: formatFuelLitres(fuelLitres),
     status,
     movement,
+    imei: String(asset.imei ?? asset.deviceId ?? "").trim() || undefined,
+    fuelLitres: fuelLitres ?? undefined,
     lat: lat ?? undefined,
     lng: lng ?? undefined,
-    telemetryAt
+    telemetryAt,
+    raw: asset
   };
 };
 
@@ -649,6 +868,7 @@ export default function LiveTracking() {
 
   const [assetRows, setAssetRows] = useState<AssetRow[]>(initialAssets);
   const assetRowsRef = useRef<AssetRow[]>(initialAssets);
+  const [fuelGraph, setFuelGraph] = useState<FuelGraphState | null>(null);
 
   useEffect(() => {
     assetRowsRef.current = assetRows;
@@ -717,6 +937,55 @@ export default function LiveTracking() {
       || asset.site.toLowerCase().includes(query)
     );
   });
+
+  const openFuelTachograph = async (asset: AssetRow) => {
+    const currentFuel = coerceFuelLitres(asset.fuelLitres ?? asset.fuelReading);
+    const fallbackPoints = fuelPointsFromAsset(asset);
+    const displayFallbackPoints =
+      fallbackPoints.length || currentFuel === null
+        ? fallbackPoints
+        : buildStableFuelSeries([{ at: asset.telemetryAt || new Date().toISOString(), value: currentFuel }]);
+    setFuelGraph({
+      asset,
+      status: "loading",
+      points: displayFallbackPoints,
+      rawCount: displayFallbackPoints.length
+    });
+
+    const to = new Date();
+    const from = new Date(to.getTime() - 12 * 60 * 60 * 1000);
+    const lookupAssetId = String(asset.raw?.id ?? asset.id ?? "").trim();
+    const lookupImei = String(asset.imei ?? asset.raw?.imei ?? "").trim();
+
+    if (!lookupAssetId && !lookupImei) {
+      setFuelGraph({
+        asset,
+        status: displayFallbackPoints.length ? "ready" : "error",
+        points: displayFallbackPoints,
+        rawCount: displayFallbackPoints.length,
+        error: displayFallbackPoints.length ? undefined : "No IMEI or asset id is available for fuel history."
+      });
+      return;
+    }
+
+    const result = await getTelemetryHistory({
+      imei: lookupImei || undefined,
+      assetId: lookupAssetId || undefined,
+      from: from.toISOString(),
+      to: to.toISOString(),
+      limit: 5000
+    });
+    const events = Array.isArray(result.body?.events) ? result.body.events : [];
+    const historyPoints = fuelPointsFromHistory(events);
+    const points = historyPoints.length ? historyPoints : displayFallbackPoints;
+    setFuelGraph({
+      asset,
+      status: points.length ? "ready" : "error",
+      points,
+      rawCount: events.length || fallbackPoints.length,
+      error: points.length ? result.error : result.error ?? "No fuel readings were found for the last 12 hours."
+    });
+  };
 
   const toggleLocation = (id: string) => {
     setSelectedLocations((current) => {
@@ -1133,8 +1402,25 @@ export default function LiveTracking() {
                 <div>{asset.ignition}</div>
               </div>
               <div className="easytrack-popup-row">
-                <span>Fuel</span>
-                <div>{asset.fuelReading}</div>
+                <span>Fuel (L)</span>
+                <div className="fuel-popup-actions">
+                  <strong>{asset.fuelReading}</strong>
+                  <button
+                    type="button"
+                    data-testid="fuel-tachograph-button"
+                    onMouseDown={(event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                    }}
+                    onClick={(event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      void openFuelTachograph(asset);
+                    }}
+                  >
+                    12h tachograph
+                  </button>
+                </div>
               </div>
             </div>
           </div>
@@ -1917,6 +2203,85 @@ export default function LiveTracking() {
         <div className="map-attribution">Map preview placeholder</div>
       </section>
       </div>
+      {fuelGraph && (
+        <div className="locations-modal" role="dialog" aria-modal="true" aria-label="12 hour fuel tachograph">
+          <div className="fuel-tacho-card" onClick={(event) => event.stopPropagation()}>
+            <div className="locations-card-header">
+              <div>
+                <div>12h tachograph</div>
+                <small>{fuelGraph.asset.assetDescription} · {fuelGraph.asset.registration}</small>
+              </div>
+              <button
+                type="button"
+                className="locations-close"
+                aria-label="Close"
+                onClick={() => setFuelGraph(null)}
+              >
+                ×
+              </button>
+            </div>
+            <div className="fuel-tacho-body">
+              {(() => {
+                const fallbackFuel = coerceFuelLitres(fuelGraph.asset.fuelLitres ?? fuelGraph.asset.fuelReading);
+                const visiblePoints =
+                  fuelGraph.points.length || fallbackFuel === null
+                    ? fuelGraph.points
+                    : buildStableFuelSeries([
+                        { at: fuelGraph.asset.telemetryAt || new Date().toISOString(), value: fallbackFuel }
+                      ]);
+
+                if (fuelGraph.status === "loading" && visiblePoints.length === 0) {
+                  return <div className="fuel-tacho-empty">Loading fuel history…</div>;
+                }
+                if (visiblePoints.length === 0) {
+                  return <div className="fuel-tacho-empty">{fuelGraph.error ?? "No fuel readings found."}</div>;
+                }
+
+                const chart = buildFuelChart(visiblePoints);
+                const latest = visiblePoints[visiblePoints.length - 1];
+                return (
+                  <>
+                    <div className="fuel-tacho-summary">
+                      <span>Stable fuel line</span>
+                      <strong>{formatFuelLitres(latest.value)}</strong>
+                      <small>{fuelGraph.rawCount} raw readings · spikes filtered</small>
+                    </div>
+                    <svg
+                      className="fuel-tacho-chart"
+                      viewBox={`0 0 ${chart.width} ${chart.height}`}
+                      role="img"
+                      aria-label="Stable fuel level over the last 12 hours"
+                    >
+                      <rect x="0" y="0" width={chart.width} height={chart.height} rx="14" />
+                      {chart.yTicks.map((tick) => (
+                        <g key={tick.value}>
+                          <line
+                            x1={chart.padding.left}
+                            x2={chart.padding.left + chart.plotWidth}
+                            y1={tick.y}
+                            y2={tick.y}
+                          />
+                          <text x={chart.padding.left - 10} y={tick.y + 4}>{tick.value.toFixed(0)}</text>
+                        </g>
+                      ))}
+                      {chart.xTicks.map((tick) => (
+                        <text key={tick.value} x={tick.x} y={chart.height - 14}>
+                          {new Date(tick.value).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                        </text>
+                      ))}
+                      <path d={chart.path} />
+                      {visiblePoints.map((point) => (
+                        <circle key={`${point.at}-${point.value}`} cx={chart.x(point.at)} cy={chart.y(point.value)} r="3" />
+                      ))}
+                    </svg>
+                    {fuelGraph.error && <div className="fuel-tacho-note">{fuelGraph.error}</div>}
+                  </>
+                );
+              })()}
+            </div>
+          </div>
+        </div>
+      )}
       {showLocationsModal && (
         <div className="locations-modal" role="dialog" aria-modal="true" aria-label="Select locations">
           <div className="locations-card" onClick={(event) => event.stopPropagation()}>
