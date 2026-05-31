@@ -88,7 +88,7 @@ const normalizeContextOptions = (stored: string | null, activeSite: string, dbSi
     if (!Array.isArray(parsed)) return [];
     if (parsed.length > 0 && typeof parsed[0] === "object") {
       return parsed
-        .filter((item) => item && typeof item === "object" && typeof item.name === "string")
+        .filter((item): item is { name: string; site?: string } => item !== null && typeof item === "object" && typeof item.name === "string")
         .filter((item) => {
           const site = item.site ?? "";
           if (activeSite) return site === activeSite;
