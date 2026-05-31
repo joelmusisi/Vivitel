@@ -334,6 +334,22 @@ const fuelPointsFromHistory = (events: unknown[]): FuelPoint[] => {
   return buildStableFuelSeries(points);
 };
 
+const includeCurrentFuelPoint = (points: FuelPoint[], asset: AssetRow) => {
+  const currentFuel = coerceFuelLitres(asset.fuelLitres ?? asset.fuelReading);
+  if (currentFuel === null) return points;
+  const at = asset.telemetryAt || new Date().toISOString();
+  const latest = points[points.length - 1];
+  if (latest && Math.abs(latest.value - currentFuel) < 0.1) return points;
+  return buildStableFuelSeries([...points.map((point) => ({ at: point.at, value: point.raw })), { at, value: currentFuel }]);
+};
+
+const buildDisplayFuelPoints = (points: FuelPoint[], asset: AssetRow) => {
+  const currentFuel = coerceFuelLitres(asset.fuelLitres ?? asset.fuelReading);
+  if (points.length) return includeCurrentFuelPoint(points, asset);
+  if (currentFuel === null) return points;
+  return buildStableFuelSeries([{ at: asset.telemetryAt || new Date().toISOString(), value: currentFuel }]);
+};
+
 const buildFuelChart = (points: FuelPoint[]) => {
   const width = 720;
   const height = 300;
@@ -939,12 +955,7 @@ export default function LiveTracking() {
   });
 
   const openFuelTachograph = async (asset: AssetRow) => {
-    const currentFuel = coerceFuelLitres(asset.fuelLitres ?? asset.fuelReading);
-    const fallbackPoints = fuelPointsFromAsset(asset);
-    const displayFallbackPoints =
-      fallbackPoints.length || currentFuel === null
-        ? fallbackPoints
-        : buildStableFuelSeries([{ at: asset.telemetryAt || new Date().toISOString(), value: currentFuel }]);
+    const displayFallbackPoints = buildDisplayFuelPoints(fuelPointsFromAsset(asset), asset);
     setFuelGraph({
       asset,
       status: "loading",
@@ -976,13 +987,13 @@ export default function LiveTracking() {
       limit: 5000
     });
     const events = Array.isArray(result.body?.events) ? result.body.events : [];
-    const historyPoints = fuelPointsFromHistory(events);
+    const historyPoints = buildDisplayFuelPoints(fuelPointsFromHistory(events), asset);
     const points = historyPoints.length ? historyPoints : displayFallbackPoints;
     setFuelGraph({
       asset,
       status: points.length ? "ready" : "error",
       points,
-      rawCount: events.length || fallbackPoints.length,
+      rawCount: events.length || displayFallbackPoints.length,
       error: points.length ? result.error : result.error ?? "No fuel readings were found for the last 12 hours."
     });
   };
@@ -1358,7 +1369,7 @@ export default function LiveTracking() {
     const lng = asset.lng ?? liveMapCenter[1] + 0.12 * Math.cos(index);
     return (
       <Marker
-        key={asset.id}
+        key={`${asset.id}-${lat.toFixed(6)}-${lng.toFixed(6)}`}
         position={[lat, lng]}
         icon={buildAssetIcon(asset)}
         eventHandlers={{
@@ -2222,13 +2233,7 @@ export default function LiveTracking() {
             </div>
             <div className="fuel-tacho-body">
               {(() => {
-                const fallbackFuel = coerceFuelLitres(fuelGraph.asset.fuelLitres ?? fuelGraph.asset.fuelReading);
-                const visiblePoints =
-                  fuelGraph.points.length || fallbackFuel === null
-                    ? fuelGraph.points
-                    : buildStableFuelSeries([
-                        { at: fuelGraph.asset.telemetryAt || new Date().toISOString(), value: fallbackFuel }
-                      ]);
+                const visiblePoints = buildDisplayFuelPoints(fuelGraph.points, fuelGraph.asset);
 
                 if (fuelGraph.status === "loading" && visiblePoints.length === 0) {
                   return <div className="fuel-tacho-empty">Loading fuel history…</div>;
@@ -2274,7 +2279,7 @@ export default function LiveTracking() {
                         <circle key={`${point.at}-${point.value}`} cx={chart.x(point.at)} cy={chart.y(point.value)} r="3" />
                       ))}
                     </svg>
-                    {fuelGraph.error && <div className="fuel-tacho-note">{fuelGraph.error}</div>}
+                    {fuelGraph.error && visiblePoints.length === 0 && <div className="fuel-tacho-note">{fuelGraph.error}</div>}
                   </>
                 );
               })()}
