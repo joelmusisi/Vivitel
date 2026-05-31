@@ -5,6 +5,7 @@ import L from "leaflet";
 import { useNavigate } from "react-router-dom";
 import StreetViewMini from "../components/StreetViewMini";
 import { getAssetsFromApi, saveToApi } from "../utils/api";
+import { computeAssetDotStatus } from "../utils/assetStatus";
 import "../index.css";
 
 type AssetRow = {
@@ -28,8 +29,10 @@ type AssetRow = {
   driverIdentified: string;
   fuelReading: string;
   status: "online" | "warning" | "offline";
+  movement?: "moving" | "stationary" | "unknown";
   lat?: number;
   lng?: number;
+  telemetryAt?: string;
 };
 
 type LocationRow = {
@@ -108,6 +111,8 @@ const columns: { key: ColumnKey; label: string; render: (a: AssetRow) => string 
 const liveMapCenter: [number, number] = [0.55, 32.45];
 
 const headingToDegrees = (heading: string) => {
+  const numeric = parseTelemetryNumber(heading);
+  if (numeric !== null) return ((numeric % 360) + 360) % 360;
   const dir = heading.trim().toUpperCase();
   const lookup: Record<string, number> = {
     N: 0,
@@ -131,14 +136,158 @@ const headingToDegrees = (heading: string) => {
 };
 
 const parseSpeedValue = (speed: string) => {
-  const num = parseFloat(speed.replace(/[^0-9.]/g, ""));
-  return Number.isNaN(num) ? 0 : num;
+  return parseTelemetryNumber(speed) ?? 0;
+};
+
+const asRecord = (value: unknown): Record<string, unknown> | null => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
+};
+
+const firstKnown = (...values: unknown[]) =>
+  values.find((value) => value !== undefined && value !== null && String(value).trim() !== "");
+
+const parseTelemetryNumber = (value: unknown): number | null => {
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  const raw = String(value ?? "").trim();
+  if (!raw || raw === "—") return null;
+  const num = parseFloat(raw.replace(/,/g, ""));
+  return Number.isFinite(num) ? num : null;
+};
+
+const normalizeIgnition = (value: unknown) => {
+  if (typeof value === "boolean") return value ? "On" : "Off";
+  const raw = String(value ?? "").trim();
+  if (!raw) return "—";
+  const lower = raw.toLowerCase();
+  if (["true", "1", "on", "ignition on"].includes(lower)) return "On";
+  if (["false", "0", "off", "ignition off"].includes(lower)) return "Off";
+  return raw;
+};
+
+const normalizeMovement = (value: unknown): AssetRow["movement"] => {
+  if (typeof value === "boolean") return value ? "moving" : "stationary";
+  const raw = String(value ?? "").trim().toLowerCase();
+  if (!raw) return undefined;
+  if (["moving", "move", "in motion", "in_motion", "driving", "driven"].includes(raw)) return "moving";
+  if (["stationary", "parked", "stopped", "idle", "not moving"].includes(raw)) return "stationary";
+  return "unknown";
+};
+
+const hasTelemetryWarning = (asset: Record<string, unknown>, warning: string) => {
+  const quality = asRecord(asset.telemetryQuality);
+  const warnings = quality?.warnings;
+  return Array.isArray(warnings) && warnings.some((item) => String(item ?? "") === warning);
+};
+
+const haversineMeters = (a: { lat: number; lng: number }, b: { lat: number; lng: number }) => {
+  const toRad = (value: number) => (value * Math.PI) / 180;
+  const earthMeters = 6371000;
+  const dLat = toRad(b.lat - a.lat);
+  const dLng = toRad(b.lng - a.lng);
+  const lat1 = toRad(a.lat);
+  const lat2 = toRad(b.lat);
+  const h =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2;
+  return 2 * earthMeters * Math.asin(Math.min(1, Math.sqrt(h)));
+};
+
+const inferMovementFromPosition = (current: { lat?: number; lng?: number; telemetryAt?: string }, previous?: AssetRow) => {
+  if (
+    typeof current.lat !== "number" ||
+    typeof current.lng !== "number" ||
+    typeof previous?.lat !== "number" ||
+    typeof previous?.lng !== "number"
+  ) {
+    return undefined;
+  }
+
+  const movedMeters = haversineMeters(
+    { lat: previous.lat, lng: previous.lng },
+    { lat: current.lat, lng: current.lng }
+  );
+  if (movedMeters < 15) return undefined;
+
+  const currentAt = Date.parse(String(current.telemetryAt ?? ""));
+  const previousAt = Date.parse(String(previous.telemetryAt ?? ""));
+  if (Number.isFinite(currentAt) && Number.isFinite(previousAt) && currentAt <= previousAt) return undefined;
+  return "moving" as const;
+};
+
+const movementFromAsset = (asset: AssetRow): AssetRow["movement"] => {
+  if (asset.movement === "moving" || asset.movement === "stationary") return asset.movement;
+  const speed = parseTelemetryNumber(asset.speed);
+  if (speed === null) return asset.movement;
+  return speed > 1.2 ? "moving" : "stationary";
 };
 
 const getNetworkStatus = (asset: AssetRow) => {
+  const movement = movementFromAsset(asset);
+  if (movement === "moving") return "live";
+  if (movement === "stationary") return "parked";
   if (asset.status === "offline") return "offline";
-  if (asset.status === "warning") return "parked";
+  if (asset.status === "warning") return "offline";
   return "live";
+};
+
+const mapAssetToRow = (asset: Record<string, unknown>, index: number, previous?: AssetRow): AssetRow => {
+  const latest = asRecord(asset.telemetryLatest);
+  const io = asRecord(latest?.io);
+  const speedRaw = firstKnown(latest?.speed, io?.Speed, io?.["GPS Speed"], io?.["GPS velocity"], asset.speed);
+  const headingRaw = firstKnown(latest?.heading, io?.Heading, asset.heading);
+  const ignitionRaw = firstKnown(asset.ignition, latest?.ignition, io?.Ignition);
+  const explicitMovement = normalizeMovement(firstKnown(latest?.movement, asset.movement));
+  const lat = parseTelemetryNumber(firstKnown(latest?.lat, asset.lat, asset.latitude));
+  const lng = parseTelemetryNumber(firstKnown(latest?.lng, latest?.lon, asset.lng, asset.lon, asset.longitude));
+  const lastSeen = firstKnown(asset.lastSeen, asset.last_seen, asset.lastSeenAt, asset.last_seen_at, latest?.at);
+  const telemetryAt = String(lastSeen ?? "").trim();
+  const positionMovement = inferMovementFromPosition({ lat: lat ?? undefined, lng: lng ?? undefined, telemetryAt }, previous);
+  const movement =
+    explicitMovement === "moving" ||
+    hasTelemetryWarning(asset, "movement_speed_mismatch") ||
+    positionMovement === "moving"
+      ? "moving"
+      : explicitMovement;
+  const statusByFreshness = computeAssetDotStatus({
+    availability: asset.status,
+    lastSeen,
+    lastPosition: asset.lastPosition,
+    lastTrip: asset.lastTrip,
+    speed: parseTelemetryNumber(speedRaw) ?? speedRaw,
+    staleHours: 2
+  });
+  const status =
+    movement === "moving" && String(asset.status ?? "").trim().toLowerCase() !== "unavailable"
+      ? "online"
+      : statusByFreshness;
+
+  return {
+    id: String(asset.id ?? asset.assetId ?? index),
+    assetDescription: String(asset.assetDescription ?? asset.description ?? "—"),
+    registration: String(asset.registration ?? "—"),
+    fleetNumber: String(asset.fleetNumber ?? "—"),
+    site: String(asset.site ?? "—"),
+    driver: String(asset.driver ?? asset.defaultDriver ?? asset.assignedDriver ?? "—"),
+    lastActive: String(asset.lastActive ?? "—"),
+    lastPosition: String(asset.lastPosition ?? lastSeen ?? "—"),
+    location: String(asset.lastLocation ?? asset.location ?? latest?.locationName ?? latest?.location ?? "—"),
+    assetId: String(asset.assetId ?? asset.id ?? "—"),
+    gps: String(asset.gps ?? (lat !== null && lng !== null ? `${lat}, ${lng}` : "—")),
+    heading: String(headingRaw ?? "NE"),
+    ignition: normalizeIgnition(ignitionRaw),
+    lastNotificationValue: String(asset.lastNotificationValue ?? "—"),
+    mobileDeviceType: String(asset.mobileDevice ?? asset.mobileDeviceType ?? "—"),
+    speed: String(speedRaw ?? "0"),
+    timeInIgnition: String(asset.timeInIgnition ?? "—"),
+    driverIdentified: String(asset.driverIdentified ?? "—"),
+    fuelReading: String(asset.fuelReading ?? "—"),
+    status,
+    movement,
+    lat: lat ?? undefined,
+    lng: lng ?? undefined,
+    telemetryAt
+  };
 };
 
 const buildAssetIcon = (asset: AssetRow) => {
@@ -499,6 +648,11 @@ export default function LiveTracking() {
   });
 
   const [assetRows, setAssetRows] = useState<AssetRow[]>(initialAssets);
+  const assetRowsRef = useRef<AssetRow[]>(initialAssets);
+
+  useEffect(() => {
+    assetRowsRef.current = assetRows;
+  }, [assetRows]);
 
   useEffect(() => {
     let mounted = true;
@@ -507,40 +661,15 @@ export default function LiveTracking() {
       const apiAssets = await getAssetsFromApi<Record<string, unknown>>();
       if (!mounted) return;
 
+      const previousById = new Map(assetRowsRef.current.map((asset) => [asset.id, asset]));
       const mapped = apiAssets.length
-        ? apiAssets.map((asset, index) => {
-            const statusRaw = String(asset.status ?? "online").toLowerCase();
-            const status: AssetRow["status"] =
-              statusRaw === "unavailable" || statusRaw === "offline"
-                ? "offline"
-                : statusRaw === "warning"
-                  ? "warning"
-                  : "online";
-            return {
-              id: String(asset.id ?? asset.assetId ?? index),
-              assetDescription: String(asset.assetDescription ?? asset.description ?? "—"),
-              registration: String(asset.registration ?? "—"),
-              fleetNumber: String(asset.fleetNumber ?? "—"),
-              site: String(asset.site ?? "—"),
-              driver: String(asset.driver ?? "—"),
-              lastActive: String(asset.lastActive ?? "—"),
-              lastPosition: String(asset.lastPosition ?? "—"),
-              location: String(asset.lastLocation ?? asset.location ?? "—"),
-              assetId: String(asset.assetId ?? asset.id ?? "—"),
-              gps: String(asset.gps ?? "—"),
-              heading: String(asset.heading ?? "NE"),
-              ignition: String(asset.ignition ?? "—"),
-              lastNotificationValue: String(asset.lastNotificationValue ?? "—"),
-              mobileDeviceType: String(asset.mobileDevice ?? asset.mobileDeviceType ?? "—"),
-              speed: String(asset.speed ?? "0"),
-              timeInIgnition: String(asset.timeInIgnition ?? "—"),
-              driverIdentified: String(asset.driverIdentified ?? "—"),
-              fuelReading: String(asset.fuelReading ?? "—"),
-              status,
-              lat: typeof asset.lat === "number" ? asset.lat : undefined,
-              lng: typeof asset.lng === "number" ? asset.lng : undefined
-            } as AssetRow;
-          })
+        ? apiAssets.map((asset, index) =>
+            mapAssetToRow(
+              asset,
+              index,
+              previousById.get(String(asset.id ?? asset.assetId ?? index))
+            )
+          )
         : [];
 
       if (mapped.length) {
@@ -550,28 +679,14 @@ export default function LiveTracking() {
         if (stored) {
           try {
             const parsed = JSON.parse(stored) as Record<string, unknown>[];
-            const fallback = parsed.map((asset, index) => ({
-              id: String(asset.id ?? asset.assetId ?? index),
-              assetDescription: String(asset.assetDescription ?? asset.description ?? "—"),
-              registration: String(asset.registration ?? "—"),
-              fleetNumber: String(asset.fleetNumber ?? "—"),
-              site: String(asset.site ?? "—"),
-              driver: String(asset.driver ?? "—"),
-              lastActive: String(asset.lastActive ?? "—"),
-              lastPosition: String(asset.lastPosition ?? "—"),
-              location: String(asset.lastLocation ?? asset.location ?? "—"),
-              assetId: String(asset.assetId ?? asset.id ?? "—"),
-              gps: String(asset.gps ?? "—"),
-              heading: String(asset.heading ?? "NE"),
-              ignition: String(asset.ignition ?? "—"),
-              lastNotificationValue: String(asset.lastNotificationValue ?? "—"),
-              mobileDeviceType: String(asset.mobileDevice ?? asset.mobileDeviceType ?? "—"),
-              speed: String(asset.speed ?? "0"),
-              timeInIgnition: String(asset.timeInIgnition ?? "—"),
-              driverIdentified: String(asset.driverIdentified ?? "—"),
-              fuelReading: String(asset.fuelReading ?? "—"),
-              status: "online"
-            } as AssetRow));
+            const previousById = new Map(assetRowsRef.current.map((asset) => [asset.id, asset]));
+            const fallback = parsed.map((asset, index) =>
+              mapAssetToRow(
+                asset,
+                index,
+                previousById.get(String(asset.id ?? asset.assetId ?? index))
+              )
+            );
             setAssetRows(fallback);
           } catch {
             setAssetRows(initialAssets);
