@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { NavLink, useNavigate } from "react-router-dom";
 import { monitorNav, manageNav, measureNav } from "../navData";
 import DropdownMenu from "./DropdownMenu";
+import { useAccess } from "../context/AccessContext";
+import { getRbacUsers } from "../utils/api";
 
 export function TopNav() {
   const [openMenu, setOpenMenu] = useState<"monitor" | "manage" | "measure" | null>(null);

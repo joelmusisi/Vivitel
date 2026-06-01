@@ -228,7 +228,8 @@ export default {
             "/d1/bindings",
             "/rbac/users",
             "/rbac/roles",
-            "/rbac/security-groups"
+            "/rbac/security-groups",
+            "/rbac/me"
           ]
         });
       case "/health":

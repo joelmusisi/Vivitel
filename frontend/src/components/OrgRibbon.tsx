@@ -1,4 +1,7 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, useEffect } from "react";
+import { useAccess } from "../context/AccessContext";
+import { filterDealersByScope, tenantFromSelection } from "../utils/accessControl";
+import { loadOrgDealers, saveOrgDealers, type OrgDealer } from "../types/org";
 import { useLocation, useNavigate } from "react-router-dom";
 import { manageNav, measureNav, monitorNav } from "../navData";
 
@@ -135,6 +138,7 @@ const initialDealers: Dealer[] = [
 ];
 
 export function OrgRibbon() {
+  const { profile, canAccessTenant } = useAccess();
   const location = useLocation();
   const navigate = useNavigate();
   const pageLabel = useMemo(() => {
@@ -152,7 +156,16 @@ export function OrgRibbon() {
   const [selectedPath, setSelectedPath] = useState(() => localStorage.getItem("vivi.selectedPath") ?? "");
   const [openActionRow, setOpenActionRow] = useState<string | null>(null);
   const [lastAction, setLastAction] = useState<string | null>(null);
-  const [dealerRows, setDealerRows] = useState<Dealer[]>(initialDealers);
+  const [dealerRows, setDealerRows] = useState<Dealer[]>(() => loadOrgDealers() ?? initialDealers);
+
+  useEffect(() => {
+    saveOrgDealers(dealerRows);
+  }, [dealerRows]);
+
+  const visibleDealers = useMemo(
+    () => filterDealersByScope(dealerRows as OrgDealer[], profile),
+    [dealerRows, profile]
+  );
   const [activeDealerId, setActiveDealerId] = useState<string>("");
   const [activeOrgId, setActiveOrgId] = useState<string>("");
   const [activeDbId, setActiveDbId] = useState<string>("");
@@ -161,8 +174,8 @@ export function OrgRibbon() {
   const [activeScope, setActiveScope] = useState<"dealer" | "org" | "db" | "site" | "asset">("dealer");
 
   const activeDealer = useMemo(
-    () => dealerRows.find((d) => d.id === activeDealerId),
-    [activeDealerId, dealerRows]
+    () => visibleDealers.find((d) => d.id === activeDealerId),
+    [activeDealerId, visibleDealers]
   );
   const organisations = activeDealer?.organisations ?? [];
   const activeOrg = useMemo(
@@ -220,7 +233,7 @@ export function OrgRibbon() {
   }, [activeDealer, activeOrg, activeDb, activeSite, activeScope]);
 
   const findAssetLocation = (assetName: string) => {
-    for (const dealer of dealerRows) {
+    for (const dealer of visibleDealers) {
       for (const org of dealer.organisations) {
         for (const db of org.databases) {
           for (const site of db.sites) {
@@ -319,7 +332,7 @@ export function OrgRibbon() {
                   </button>
                 </div>
                 <div className="org-list">
-                  {dealerRows.map((dealer) => (
+                  {visibleDealers.map((dealer) => (
                     <div key={dealer.id} className={`org-row ${dealer.id === activeDealerId ? "active" : ""}`}>
                       <button
                         className="org-row-main"
@@ -628,9 +641,16 @@ export function OrgRibbon() {
                       ? assetLabel.split(" - ").slice(-1)[0]
                       : assetLabel;
                     const dbSites = (activeDb?.sites ?? []).map((site) => site.name);
-                    const tenantId = [activeDealer?.id, activeOrg?.id, activeDb?.id, activeSite?.id]
-                      .filter(Boolean)
-                      .join(":") || "demo-tenant";
+                    const tenantId = tenantFromSelection({
+                      dealerId: activeDealer?.id,
+                      orgId: activeOrg?.id,
+                      dbId: activeDb?.id,
+                      siteId: activeSite?.id
+                    });
+                    if (!canAccessTenant(tenantId)) {
+                      setLastAction("Access denied: this organisation scope is not assigned to you.");
+                      return;
+                    }
                     localStorage.setItem("vivi.tenantId", tenantId);
                     localStorage.setItem("vivi.activeSite", activeSite?.name ?? "");
                     localStorage.setItem("vivi.activeAsset", assetLabel);

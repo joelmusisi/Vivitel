@@ -10,11 +10,17 @@ import {
   saveRbacRole,
   saveRbacSecurityGroup,
   updateRbacUser,
+  getUserScopesApi,
+  saveUserScopesApi,
   type RbacRole,
   type RbacRolePermission,
   type RbacSecurityGroup,
   type RbacUser
 } from "../../utils/api";
+import { ScopeTreePicker } from "../../components/ScopeTreePicker";
+import { seedOrgDealers } from "../../data/orgSeed";
+import { loadOrgDealers } from "../../types/org";
+import type { UserScopes } from "../../utils/accessControl";
 import "../../index.css";
 
 type SummaryCard = { label: string; value: string | number };
@@ -121,6 +127,13 @@ export default function UserAdmin() {
   const [allUsers, setAllUsers] = useState<RbacUser[]>([]);
   const [loading, setLoading] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [userScopes, setUserScopes] = useState<UserScopes & { allowAll?: boolean }>({
+    dealerIds: [],
+    orgIds: [],
+    databaseIds: [],
+    siteIds: []
+  });
+  const orgDealers = useMemo(() => loadOrgDealers() ?? seedOrgDealers, []);
 
   const permissionGroups = useMemo(
     () => [
@@ -148,7 +161,19 @@ export default function UserAdmin() {
       setRoleOptions(roles);
       setAllUsers(users);
 
-      if (location.pathname === USERS_PATH) {
+      if (location.pathname === USERS_PATH && editingRowId) {
+      const scopes = await getUserScopesApi(editingRowId);
+      if (scopes) {
+        setUserScopes({
+          dealerIds: scopes.dealerIds ?? [],
+          orgIds: scopes.orgIds ?? [],
+          databaseIds: scopes.databaseIds ?? [],
+          siteIds: scopes.siteIds ?? [],
+          allowAll: scopes.allowAll
+        });
+      }
+    }
+    if (location.pathname === USERS_PATH) {
         setRows(usersToRows(users));
         setSummary([
           { label: "Active", value: users.filter((u) => u.status === "active").length },
@@ -211,6 +236,45 @@ export default function UserAdmin() {
     }, {});
   };
 
+
+  const openUserModal = async (mode: "create" | "edit" | "view", row?: AdminRow) => {
+    setModalMode(mode);
+    setEditingRowId(row?.id ?? null);
+    setSaveError(null);
+    if (row) {
+      setFormDraft(buildDraftFromRow(row));
+      const user = allUsers.find((u) => u.id === row.id);
+      setSelectedRoleId(user?.assignedRoleId ?? "");
+    } else {
+      setFormDraft(
+        (page.formFields ?? []).reduce<Record<string, string>>((acc, field) => {
+          acc[field.label] = "";
+          return acc;
+        }, {})
+      );
+      setSelectedRoleId(roleOptions[0]?.id ?? "");
+      setUserScopes({ dealerIds: [], orgIds: [], databaseIds: [], siteIds: [], allowAll: false });
+    }
+    if (location.pathname === USERS_PATH && row?.id) {
+      const scopes = await getUserScopesApi(row.id);
+      if (scopes) {
+        setUserScopes({
+          dealerIds: scopes.dealerIds ?? [],
+          orgIds: scopes.orgIds ?? [],
+          databaseIds: scopes.databaseIds ?? [],
+          siteIds: scopes.siteIds ?? [],
+          allowAll: Boolean(scopes.allowAll)
+        });
+      }
+    }
+    if (location.pathname === ROLES_PATH && row?.id) {
+      await loadRolePermissions(row.id);
+    } else if (location.pathname === ROLES_PATH) {
+      setRolePermissions(new Set());
+    }
+    setModalOpen(true);
+  };
+
   const loadRolePermissions = async (roleId: string) => {
     const { permissions } = await getRbacRoles();
     setRolePermissions(
@@ -236,6 +300,14 @@ export default function UserAdmin() {
       if (!saved) {
         setSaveError("Could not save user. Create a role first and ensure the email is unique.");
         return;
+      }
+      const scopeUserId = (modalMode === "edit" && editingRowId) ? editingRowId : saved.id;
+      if (scopeUserId) {
+        const scopeOk = await saveUserScopesApi(scopeUserId, userScopes);
+        if (!scopeOk) {
+          setSaveError("User saved but organisation scope could not be saved.");
+          return;
+        }
       }
     } else if (location.pathname === ROLES_PATH) {
       const name = formDraft["Role name"]?.trim() ?? "";
@@ -495,6 +567,14 @@ export default function UserAdmin() {
                     </div>
                   ))}
                 </div>
+              )}
+              {location.pathname === USERS_PATH && (
+                <ScopeTreePicker
+                  dealers={orgDealers}
+                  scopes={userScopes}
+                  disabled={modalMode === "view"}
+                  onChange={setUserScopes}
+                />
               )}
               {saveError && <p style={{ color: "#b42318" }}>{saveError}</p>}
             </div>

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { Route, Routes, useNavigate } from "react-router-dom";
+import { Route, Routes, useLocation, useNavigate } from "react-router-dom";
+import { useAccess } from "./context/AccessContext";
 import { TopNav } from "./components/TopNav";
 import { manageNav, monitorNav, measureNav } from "./navData";
 import Home from "./pages/Home";
@@ -52,6 +53,8 @@ import ContactsAdmin from "./pages/manage/ContactsAdmin";
 import UserAdmin from "./pages/manage/UserAdmin";
 import NotificationsAdmin from "./pages/manage/NotificationsAdmin";
 import UserSettingsAdmin from "./pages/manage/UserSettingsAdmin";
+import AccessDenied from "./components/AccessDenied";
+import { ProtectedRoute } from "./components/ProtectedRoute";
 
 function routeElements() {
   const routes: { path: string; title: string; description?: string }[] = [];
@@ -68,13 +71,24 @@ function routeElements() {
 }
 
 export function App() {
+  const location = useLocation();
+  const navigate = useNavigate();
+  const { loading, canViewPath } = useAccess();
+
+  useEffect(() => {
+    if (loading) return;
+    if (location.pathname === "/access-denied" || location.pathname === "/") return;
+    if (!canViewPath(location.pathname)) {
+      navigate("/access-denied", { replace: true, state: { from: location.pathname } });
+    }
+  }, [loading, location.pathname, canViewPath, navigate]);
+
   const [modal, setModal] = useState<{
     title: string;
     subtitle?: string;
     fields: string[];
   } | null>(null);
   const [modalValues, setModalValues] = useState<Record<string, string>>({});
-  const navigate = useNavigate();
   const generatedRoutes = routeElements();
   const customComponents: Record<string, JSX.Element> = {
     "/measure/insights/dashboards": <Dashboards />,
@@ -186,16 +200,21 @@ export function App() {
       <OrgRibbon />
       <Routes>
         <Route path="/" element={<Home />} />
+        <Route path="/access-denied" element={<AccessDenied />} />
         {generatedRoutes.map((r) => (
           <Route
             key={r.path}
             path={r.path}
-            element={customComponents[r.path] ?? <PageShell title={r.title} description={r.description} />}
+            element={
+              <ProtectedRoute>
+                {customComponents[r.path] ?? <PageShell title={r.title} description={r.description} />}
+              </ProtectedRoute>
+            }
           />
         ))}
-        <Route path="/monitor/videos/video-gallery" element={<VideoGallery />} />
-        <Route path="/monitor/videos/live-video-streaming" element={<LiveVideoStreaming />} />
-        <Route path="/monitor/videos/device-remote-actions" element={<DeviceRemoteActions />} />
+        <Route path="/monitor/videos/video-gallery" element={<ProtectedRoute><VideoGallery /></ProtectedRoute>} />
+        <Route path="/monitor/videos/live-video-streaming" element={<ProtectedRoute><LiveVideoStreaming /></ProtectedRoute>} />
+        <Route path="/monitor/videos/device-remote-actions" element={<ProtectedRoute><DeviceRemoteActions /></ProtectedRoute>} />
         <Route path="*" element={<PageShell title="Not Found" description="The requested page does not exist." />} />
       </Routes>
       {modal && (

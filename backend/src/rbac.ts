@@ -258,6 +258,8 @@ const listGroupUserLinks = async (env: RbacEnv, tenantId: string) => {
     .filter((r) => r.groupId && r.userId);
 };
 
+import { handleRbacAccessRequest } from "./rbacAccess";
+
 export async function handleRbacRequest(
   env: RbacEnv,
   request: Request,
@@ -265,6 +267,9 @@ export async function handleRbacRequest(
   tenantId: string
 ): Promise<Response | null> {
   if (!pathname.startsWith("/rbac/")) return null;
+
+  const accessResponse = await handleRbacAccessRequest(env, request, pathname, tenantId);
+  if (accessResponse) return accessResponse;
 
   if (pathname === "/rbac/roles") {
     if (request.method === "GET") {

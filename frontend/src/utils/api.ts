@@ -108,6 +108,8 @@ export async function saveBinding(
   return Boolean(response?.stored);
 }
 
+import type { AccessProfile, UserScopes } from "./accessControl";
+
 export type RbacUser = {
   id: string;
   name: string;
@@ -207,4 +209,29 @@ export async function saveRbacSecurityGroup(
     body: JSON.stringify(payload)
   });
   return response?.group ?? null;
+}
+
+export async function getAccessProfile(userId: string): Promise<AccessProfile | null> {
+  const response = await fetchJson<{ profile: AccessProfile }>(
+    `/rbac/me?userId=${encodeURIComponent(userId)}`
+  );
+  return response?.profile ?? null;
+}
+
+export async function getUserScopesApi(userId: string): Promise<(UserScopes & { allowAll?: boolean }) | null> {
+  const response = await fetchJson<{ scopes: UserScopes & { allowAll?: boolean } }>(
+    `/rbac/user-scopes?userId=${encodeURIComponent(userId)}`
+  );
+  return response?.scopes ?? null;
+}
+
+export async function saveUserScopesApi(
+  userId: string,
+  scopes: UserScopes & { allowAll?: boolean }
+): Promise<boolean> {
+  const response = await fetchJson<{ ok: boolean }>("/rbac/user-scopes", {
+    method: "PUT",
+    body: JSON.stringify({ userId, ...scopes })
+  });
+  return Boolean(response?.ok);
 }
