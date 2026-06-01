@@ -16,6 +16,7 @@ const parseTimestamp = (value: unknown) => {
 export function computeAssetDotStatus(input: AssetDotInput): "online" | "warning" | "offline" {
   const availability = String(input.availability ?? "").trim().toLowerCase();
   if (availability === "unavailable" || availability === "not available") return "offline";
+  if (availability === "warning" || availability === "parked") return "warning";
 
   const latest = Math.max(
     parseTimestamp(input.lastSeen),

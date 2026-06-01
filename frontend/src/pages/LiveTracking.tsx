@@ -103,8 +103,24 @@ type ColumnKey =
   | "speed"
   | "timeInIgnition";
 
+const getLiveAssetStatus = (asset: AssetRow): AssetRow["status"] => {
+  if (asset.movement === "moving") return "online";
+  return computeAssetDotStatus({
+    availability: asset.status,
+    lastSeen: asset.telemetryAt,
+    lastPosition: asset.lastPosition,
+    speed: asset.speed,
+    staleHours: 2
+  });
+};
+
+const renderLiveAssetDescription = (asset: AssetRow) => {
+  const status = getLiveAssetStatus(asset);
+  return <span className={`live-asset-description-text status-${status}`}>{asset.assetDescription}</span>;
+};
+
 const columns: { key: ColumnKey; label: string; render: (a: AssetRow) => string | JSX.Element }[] = [
-  { key: "assetDescription", label: "Asset description", render: (a) => a.assetDescription },
+  { key: "assetDescription", label: "Asset description", render: renderLiveAssetDescription },
   { key: "assetIcon", label: "Asset icon", render: () => "🚚" },
   { key: "assetId", label: "Asset ID", render: (a) => a.assetId },
   { key: "driver", label: "Driver", render: (a) => a.driver },
@@ -472,7 +488,7 @@ const mapAssetToRow = (asset: Record<string, unknown>, index: number, previous?:
   const lat = parseTelemetryNumber(firstKnown(latest?.lat, asset.lat, asset.latitude));
   const lng = parseTelemetryNumber(firstKnown(latest?.lng, latest?.lon, asset.lng, asset.lon, asset.longitude));
   const fuelLitres = findFuelLitres(asset);
-  const lastSeen = firstKnown(asset.lastSeen, asset.last_seen, asset.lastSeenAt, asset.last_seen_at, latest?.at);
+  const lastSeen = firstKnown(asset.telemetryAt, asset.lastSeen, asset.last_seen, asset.lastSeenAt, asset.last_seen_at, latest?.at);
   const telemetryAt = String(lastSeen ?? "").trim();
   const positionMovement = inferMovementFromPosition({ lat: lat ?? undefined, lng: lng ?? undefined, telemetryAt }, previous);
   const movement =
@@ -864,7 +880,7 @@ export default function LiveTracking() {
     .map((key) => columns.find((c) => c.key === key)!)
     .filter(Boolean);
   // Add 3 for: checkbox, status, actions
-  const gridTemplate = `32px 24px repeat(${activeCols.length}, minmax(160px, max-content)) 48px`;
+  const gridTemplate = `32px 72px repeat(${activeCols.length}, minmax(160px, max-content)) 64px`;
 
   const filteredLocations = locations.filter((loc) => {
     const query = locationFilter.trim().toLowerCase();
@@ -1536,7 +1552,7 @@ export default function LiveTracking() {
         >
           <div className="live-table-head" style={{ gridTemplateColumns: gridTemplate }}>
             <div />
-            <div />
+            <div className="live-col status">Status</div>
             {activeCols.map((col) => (
               <div
                 key={col.key}
@@ -1568,7 +1584,7 @@ export default function LiveTracking() {
                 {col.label}
               </div>
             ))}
-            <div />
+            <div className="live-col actions">Actions</div>
           </div>
           <div className="live-table">
             {assetRows.map((a) => (
@@ -1576,7 +1592,7 @@ export default function LiveTracking() {
                 <div className="live-cell">
                   <input type="checkbox" defaultChecked />
                 </div>
-                <div className="live-cell status">{statusDot(a.status)}</div>
+                <div className="live-cell status">{statusDot(getLiveAssetStatus(a))}</div>
                 {activeCols.map((col) => (
                   <div key={col.key} className="live-cell">
                     {col.render(a)}

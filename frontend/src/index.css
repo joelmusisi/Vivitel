@@ -6760,6 +6760,19 @@ h1 {
   justify-content: center;
 }
 
+.live-col.status,
+.live-col.actions {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: default;
+  text-align: center;
+}
+
+.live-cell.status .status-dot {
+  margin-right: 0;
+}
+
 .status-dot {
   width: 14px;
   height: 14px;
@@ -6778,6 +6791,52 @@ h1 {
 
 .status-dot.status-offline {
   background: var(--status-offline);
+}
+
+.assets-cell--asset-description,
+.live-asset-description-text {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  font-weight: 800;
+}
+
+.assets-asset-description-btn,
+.assets-asset-description-text,
+.live-asset-description-text {
+  color: #0f172a;
+}
+
+.assets-asset-description-btn {
+  border: none;
+  background: transparent;
+  padding: 0;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 800;
+  text-align: left;
+}
+
+.assets-asset-description-btn:hover {
+  text-decoration: underline;
+}
+
+.assets-asset-description-btn.status-online,
+.assets-asset-description-text.status-online,
+.live-asset-description-text.status-online {
+  color: var(--status-live);
+}
+
+.assets-asset-description-btn.status-warning,
+.assets-asset-description-text.status-warning,
+.live-asset-description-text.status-warning {
+  color: var(--status-warning);
+}
+
+.assets-asset-description-btn.status-offline,
+.assets-asset-description-text.status-offline,
+.live-asset-description-text.status-offline {
+  color: var(--status-offline);
 }
 
 .live-cell.more {
