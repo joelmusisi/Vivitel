@@ -1330,6 +1330,31 @@ const normalizeKey = (value: string) =>
     .replace(/temperature/g, "temp")
     .replace(/[^a-z0-9]+/g, "");
 
+const isFuelLevelName = (name: string) => {
+  const normalized = normalizeKey(name);
+  if (!normalized.includes("fuel")) return false;
+  if (/(percent|percentage|rate|consumption|consumed|used|economy|efficiency|trip|target)/.test(normalized)) {
+    return false;
+  }
+  return (
+    normalized === "fuel" ||
+    normalized.includes("fuellevel") ||
+    normalized.includes("fuellitre") ||
+    normalized.includes("fuelliter") ||
+    normalized.includes("fuelvolume") ||
+    normalized.includes("fuelreading") ||
+    normalized.includes("tankfuel") ||
+    normalized.includes("fmfuel")
+  );
+};
+
+const coerceFuelLitres = (value: unknown) => {
+  const n = normalizeNumber(value);
+  if (n === null) return null;
+  if (n < 0 || n > 5000) return null;
+  return n;
+};
+
 const flattenTelemetry = (payload: any, limit = 2500) => {
   const out: Array<{ key: string; value: unknown }> = [];
   const queue: Array<{ v: any; path: string; depth: number }> = [{ v: payload, path: "", depth: 0 }];
@@ -1504,6 +1529,108 @@ const extractLatLng = (payload: Record<string, unknown>) => {
   const lng = normalizeNumber(data.lon ?? data.lng ?? data.longitude);
   if (lat === null || lng === null) return null;
   return { lat, lng };
+};
+
+const extractFuelLitresFromTelemetry = (
+  payload: Record<string, unknown>,
+  ioNamed: Record<string, unknown> = {},
+  ioById: Record<number, unknown> = {}
+) => {
+  const directCandidates = [
+    payload.fuelLitres,
+    payload.fuelLiters,
+    payload.fuelLevelLitres,
+    payload.fuelLevelLiters,
+    payload.fuelLevelL,
+    payload.fuelVolumeLitres,
+    payload.fuelVolume,
+    payload.fuelReading,
+    payload.fuel,
+    (payload.data as any)?.fuelLitres,
+    (payload.data as any)?.fuelLiters,
+    (payload.data as any)?.fuelLevelLitres,
+    (payload.data as any)?.fuelLevelLiters,
+    (payload.data as any)?.fuelLevelL,
+    (payload.data as any)?.fuelVolumeLitres,
+    (payload.data as any)?.fuelVolume,
+    (payload.data as any)?.fuelReading,
+    (payload.data as any)?.fuel,
+    (payload.attributes as any)?.fuelLitres,
+    (payload.attributes as any)?.fuelLiters,
+    (payload.attributes as any)?.fuelLevelLitres,
+    (payload.attributes as any)?.fuelLevelLiters,
+    (payload.attributes as any)?.fuelLevelL,
+    (payload.attributes as any)?.fuelVolume,
+    (payload.attributes as any)?.fuel
+  ];
+  for (const candidate of directCandidates) {
+    const value = coerceFuelLitres(candidate);
+    if (value !== null) return value;
+  }
+
+  for (const [name, value] of Object.entries(ioNamed)) {
+    if (!isFuelLevelName(name)) continue;
+    const fuel = coerceFuelLitres(value);
+    if (fuel !== null) return fuel;
+  }
+
+  const flat = flattenTelemetry(payload);
+  for (const { key, value } of flat) {
+    if (!isFuelLevelName(key)) continue;
+    const fuel = coerceFuelLitres(value);
+    if (fuel !== null) return fuel;
+  }
+
+  // Last-resort support for common integrations that only expose raw IO ids.
+  // These are intentionally checked after named/direct keys to avoid mislabelled values winning.
+  for (const id of [9, 13, 48, 89, 107, 201, 202, 203, 204, 759, 1207]) {
+    const fuel = coerceFuelLitres(ioById[id]);
+    if (fuel !== null) return fuel;
+  }
+
+  return null;
+};
+
+const deriveMovementState = (params: {
+  speed: number | null;
+  satellites: number | null;
+  ignition: unknown;
+  previousAsset: Record<string, unknown> | null;
+  latLng: { lat: number; lng: number };
+  now: string;
+}) => {
+  const ignitionBool = typeof params.ignition === "boolean"
+    ? params.ignition
+    : String(params.ignition ?? "").trim().toLowerCase() === "on"
+      ? true
+      : String(params.ignition ?? "").trim().toLowerCase() === "off"
+        ? false
+        : null;
+  if (params.speed !== null) {
+    if (params.speed > 1.2) return "moving" as const;
+    if (params.satellites !== null && params.satellites <= 3 && params.speed < 8) return "stationary" as const;
+    if (ignitionBool === false && params.speed < 8) return "stationary" as const;
+  }
+
+  const previousLat = toNumberOrNull((params.previousAsset as any)?.lat ?? (params.previousAsset as any)?.latitude);
+  const previousLng = toNumberOrNull((params.previousAsset as any)?.lng ?? (params.previousAsset as any)?.lon ?? (params.previousAsset as any)?.longitude);
+  const previousAtRaw = String((params.previousAsset as any)?.lastSeen ?? (params.previousAsset as any)?.lastPosition ?? "").trim();
+  const previousAtMs = previousAtRaw ? Date.parse(previousAtRaw) : NaN;
+  const currentAtMs = Date.parse(params.now);
+  if (
+    previousLat !== null &&
+    previousLng !== null &&
+    Number.isFinite(previousAtMs) &&
+    Number.isFinite(currentAtMs) &&
+    currentAtMs > previousAtMs
+  ) {
+    const deltaSeconds = (currentAtMs - previousAtMs) / 1000;
+    const distanceMeters = haversineMeters(previousLat, previousLng, params.latLng.lat, params.latLng.lng);
+    if (deltaSeconds > 0 && distanceMeters >= 15) return "moving" as const;
+  }
+
+  if (ignitionBool === false) return "stationary" as const;
+  return "unknown" as const;
 };
 
 const haversineMeters = (aLat: number, aLng: number, bLat: number, bLng: number) => {
@@ -1952,13 +2079,16 @@ function storeTelemetryEventForTenant(tenant: string, body: any) {
 
   try {
     const snapshot = buildIoNamedSnapshotFromTelemetry(body);
+    const io = snapshot.ioNamed;
     (nextAsset as any).telemetryLatest = {
       at: now,
       ...(deviceAtIso ? { deviceAt: deviceAtIso } : {}),
+      lat: latLng.lat,
+      lng: latLng.lng,
+      lon: latLng.lng,
       ioById: snapshot.ioById,
-      io: snapshot.ioNamed
+      io
     };
-    const io = snapshot.ioNamed;
     const speedFromPayload = Number(body?.data?.speed ?? body?.speed);
     const headingFromPayload = Number(body?.data?.heading ?? body?.heading);
     const satellitesFromPayload = Number(body?.data?.satellites ?? body?.satellites);
@@ -1970,6 +2100,38 @@ function storeTelemetryEventForTenant(tenant: string, body: any) {
     if (typeof io["GSM Signal"] !== "undefined") (nextAsset as any).gsmSignal = io["GSM Signal"];
     if (typeof io["External Voltage"] !== "undefined") (nextAsset as any).powerVoltage = io["External Voltage"];
     if (typeof io["ICCID"] !== "undefined") (nextAsset as any).iccid = io["ICCID"];
+    const speed = toNumberOrNull((nextAsset as any).speed);
+    const heading = toNumberOrNull((nextAsset as any).heading);
+    const satellites = toNumberOrNull((nextAsset as any).satellites);
+    const movement = deriveMovementState({
+      speed,
+      satellites,
+      ignition: (nextAsset as any).ignition,
+      previousAsset,
+      latLng,
+      now
+    });
+    const fuelLitres = extractFuelLitresFromTelemetry(body, io, snapshot.ioById as Record<number, unknown>);
+    if (fuelLitres !== null) {
+      (nextAsset as any).fuelLitres = fuelLitres;
+      (nextAsset as any).fuelLevelLitres = fuelLitres;
+      (nextAsset as any).fuelReading = fuelLitres;
+    }
+    (nextAsset as any).movement = movement;
+    (nextAsset as any).telemetryLatest = {
+      ...(nextAsset as any).telemetryLatest,
+      lat: latLng.lat,
+      lng: latLng.lng,
+      lon: latLng.lng,
+      gps: `${latLng.lat}, ${latLng.lng}`,
+      speed: speed === null ? undefined : speed,
+      heading: heading === null ? undefined : heading,
+      satellites: satellites === null ? undefined : satellites,
+      movement,
+      fuelLitres: fuelLitres === null ? undefined : fuelLitres,
+      fuelLevelLitres: fuelLitres === null ? undefined : fuelLitres,
+      fuelReading: fuelLitres === null ? undefined : fuelLitres
+    };
   } catch {
     // ignore
   }
@@ -3864,6 +4026,7 @@ const buildLatestTelemetrySummary = (event: any, createdAt: string) => {
   const heading = coerceNumber(pick(event, ["data.data.heading", "data.heading", "heading", "attributes.heading", "position.course", "position.heading"]));
   const motionRaw = pick(event, ["data.data.motion", "data.motion", "motion", "attributes.motion", "data.data.moving", "data.moving", "moving"]);
   const motion = coerceBool(motionRaw);
+  const fuelLitres = extractFuelLitresFromTelemetry(event);
   const movement = (() => {
     if (speed !== null) {
       if (speed <= 1.2) return "stationary" as const;
@@ -3892,6 +4055,9 @@ const buildLatestTelemetrySummary = (event: any, createdAt: string) => {
     lng: lng === null ? undefined : lng,
     speed: speed === null ? undefined : speed,
     heading: heading === null ? undefined : heading,
+    fuelLitres: fuelLitres === null ? undefined : fuelLitres,
+    fuelLevelLitres: fuelLitres === null ? undefined : fuelLitres,
+    fuelReading: fuelLitres === null ? undefined : fuelLitres,
     movement
   };
 };
