@@ -27,7 +27,7 @@ export function DropdownMenu({ label, groups, isOpen, onToggle, onItemSelect }: 
       </button>
       {isOpen && (
         <div className="dropdown" role="menu">
-          {groups.map((group) => (
+          {visibleGroups.map((group) => (
             <div key={group.title} className="dropdown-col">
               <p className="dropdown-title">{group.title}</p>
               <ul>
