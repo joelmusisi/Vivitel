@@ -167,19 +167,7 @@ export default function UserAdmin() {
       setRoleOptions(roles);
       setAllUsers(users);
 
-      if (location.pathname === USERS_PATH && editingRowId) {
-      const scopes = await getUserScopesApi(editingRowId);
-      if (scopes) {
-        setUserScopes({
-          dealerIds: scopes.dealerIds ?? [],
-          orgIds: scopes.orgIds ?? [],
-          databaseIds: scopes.databaseIds ?? [],
-          siteIds: scopes.siteIds ?? [],
-          allowAll: scopes.allowAll
-        });
-      }
-    }
-    if (location.pathname === USERS_PATH) {
+      if (location.pathname === USERS_PATH) {
         setRows(usersToRows(users));
         setSummary([
           { label: "Active", value: users.filter((u) => u.status === "active").length },
@@ -263,15 +251,13 @@ export default function UserAdmin() {
     }
     if (location.pathname === USERS_PATH && row?.id) {
       const scopes = await getUserScopesApi(row.id);
-      if (scopes) {
-        setUserScopes({
-          dealerIds: scopes.dealerIds ?? [],
-          orgIds: scopes.orgIds ?? [],
-          databaseIds: scopes.databaseIds ?? [],
-          siteIds: scopes.siteIds ?? [],
-          allowAll: Boolean(scopes.allowAll)
-        });
-      }
+      setUserScopes({
+        dealerIds: scopes?.dealerIds ?? [],
+        orgIds: scopes?.orgIds ?? [],
+        databaseIds: scopes?.databaseIds ?? [],
+        siteIds: scopes?.siteIds ?? [],
+        allowAll: Boolean(scopes?.allowAll)
+      });
     }
 
     if (location.pathname === GROUPS_PATH && row?.id) {
@@ -384,24 +370,7 @@ export default function UserAdmin() {
           <button type="button" className="admin-btn ghost" onClick={() => void reload()} disabled={loading}>
             Refresh
           </button>
-          <button
-            type="button"
-            className="admin-btn"
-            onClick={() => {
-              setFormDraft(
-                (page.formFields ?? []).reduce<Record<string, string>>((acc, field) => {
-                  acc[field.label] = "";
-                  return acc;
-                }, {})
-              );
-              setSelectedRoleId(roleOptions[0]?.id ?? "");
-              setRolePermissions(new Set());
-              setModalMode("create");
-              setEditingRowId(null);
-              setSaveError(null);
-              setModalOpen(true);
-            }}
-          >
+          <button type="button" className="admin-btn" onClick={() => void openUserModal("create")}>
             Create
           </button>
         </div>
@@ -466,32 +435,14 @@ export default function UserAdmin() {
                         <button
                           type="button"
                           className="admin-action"
-                          onClick={() => {
-                            setFormDraft(buildDraftFromRow(row));
-                            setEditingRowId(row.id);
-                            setModalMode("view");
-                            if (location.pathname === USERS_PATH) {
-                              setSelectedRoleId(allUsers.find((u) => u.id === row.id)?.assignedRoleId ?? "");
-                            }
-                            if (location.pathname === ROLES_PATH) void loadRolePermissions(row.id);
-                            setModalOpen(true);
-                          }}
+                          onClick={() => void openUserModal("view", row)}
                         >
                           Open
                         </button>
                         <button
                           type="button"
                           className="admin-action ghost"
-                          onClick={() => {
-                            setFormDraft(buildDraftFromRow(row));
-                            setEditingRowId(row.id);
-                            setModalMode("edit");
-                            if (location.pathname === USERS_PATH) {
-                              setSelectedRoleId(allUsers.find((u) => u.id === row.id)?.assignedRoleId ?? "");
-                            }
-                            if (location.pathname === ROLES_PATH) void loadRolePermissions(row.id);
-                            setModalOpen(true);
-                          }}
+                          onClick={() => void openUserModal("edit", row)}
                         >
                           Edit
                         </button>
