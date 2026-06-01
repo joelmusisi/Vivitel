@@ -1,7 +1,20 @@
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useLocation } from "react-router-dom";
 import { manageNav, measureNav, monitorNav } from "../../navData";
-import { saveToApi } from "../../utils/api";
+import {
+  createRbacUser,
+  getRbacRoles,
+  getRbacSecurityGroups,
+  getRbacUsers,
+  getTenantId,
+  saveRbacRole,
+  saveRbacSecurityGroup,
+  updateRbacUser,
+  type RbacRole,
+  type RbacRolePermission,
+  type RbacSecurityGroup,
+  type RbacUser
+} from "../../utils/api";
 import "../../index.css";
 
 type SummaryCard = { label: string; value: string | number };
@@ -12,50 +25,32 @@ type AdminPageConfig = {
   pathLabel: string;
   summary: SummaryCard[];
   columns: string[];
-  rows: AdminRow[];
   statusOptions?: string[];
   formFields?: { label: string; placeholder: string }[];
 };
 
+const USERS_PATH = "/manage/user-admin/users";
+const ROLES_PATH = "/manage/user-admin/roles";
+const GROUPS_PATH = "/manage/user-admin/security-groups";
+
 const pageConfigs: Record<string, AdminPageConfig> = {
-  "/manage/user-admin/users": {
+  [USERS_PATH]: {
     title: "Users",
     pathLabel: "Manage / User admin / Users",
-    summary: [
-      { label: "Active", value: 34 },
-      { label: "Inactive", value: 5 },
-      { label: "Admins", value: 4 },
-      { label: "Invites", value: 2 }
-    ],
+    summary: [],
     columns: ["User", "Role", "Email", "Status", "Actions"],
-    rows: [
-      { id: "usr-1", cells: ["Grace Nanyonga", "Admin", "grace@vivi.co", "Active"], status: "active" },
-      { id: "usr-2", cells: ["Musa Okello", "Dispatcher", "musa@vivi.co", "Active"], status: "active" },
-      { id: "usr-3", cells: ["Asha Kibanja", "Viewer", "asha@vivi.co", "Inactive"], status: "inactive" }
-    ],
     statusOptions: ["active", "inactive"],
     formFields: [
       { label: "Full name", placeholder: "Grace Nanyonga" },
       { label: "Email", placeholder: "grace@vivi.co" },
-      { label: "Role", placeholder: "Dispatcher" }
+      { label: "Role", placeholder: "Select role" }
     ]
   },
-  "/manage/user-admin/roles": {
+  [ROLES_PATH]: {
     title: "Roles",
     pathLabel: "Manage / User admin / Roles",
-    summary: [
-      { label: "Roles", value: 8 },
-      { label: "Admins", value: 2 },
-      { label: "Dispatch", value: 3 },
-      { label: "Custom", value: 1 }
-    ],
+    summary: [],
     columns: ["Role", "Users", "Level", "Status", "Actions"],
-    rows: [
-      { id: "role-1", cells: ["Administrator", "4", "System", "Active"], status: "active" },
-      { id: "role-2", cells: ["Dispatcher", "12", "Operations", "Active"], status: "active" },
-      { id: "role-3", cells: ["Viewer", "18", "Read-only", "Active"], status: "active" },
-      { id: "role-4", cells: ["Support", "6", "Operations", "Active"], status: "active" }
-    ],
     statusOptions: ["active"],
     formFields: [
       { label: "Role name", placeholder: "Dispatcher" },
@@ -63,21 +58,11 @@ const pageConfigs: Record<string, AdminPageConfig> = {
       { label: "Description", placeholder: "Access scope" }
     ]
   },
-  "/manage/user-admin/security-groups": {
+  [GROUPS_PATH]: {
     title: "Security groups",
     pathLabel: "Manage / User admin / Security groups",
-    summary: [
-      { label: "Groups", value: 5 },
-      { label: "Members", value: 38 },
-      { label: "Policies", value: 6 },
-      { label: "Last review", value: "Jan 12" }
-    ],
+    summary: [],
     columns: ["Group", "Members", "Owner", "Status", "Actions"],
-    rows: [
-      { id: "sg-1", cells: ["Ops Admin", "8", "Security", "Active"], status: "active" },
-      { id: "sg-2", cells: ["Dispatch Leads", "12", "Operations", "Active"], status: "active" },
-      { id: "sg-3", cells: ["Audit", "4", "Compliance", "Draft"], status: "draft" }
-    ],
     statusOptions: ["active", "draft"],
     formFields: [
       { label: "Group name", placeholder: "Dispatch Leads" },
@@ -86,6 +71,38 @@ const pageConfigs: Record<string, AdminPageConfig> = {
     ]
   }
 };
+
+const capitalize = (value: string) => {
+  const v = value.trim();
+  if (!v) return "—";
+  return v.charAt(0).toUpperCase() + v.slice(1);
+};
+
+const usersToRows = (users: RbacUser[]): AdminRow[] =>
+  users.map((user) => ({
+    id: user.id,
+    cells: [user.name, user.assignedRoleName ?? "—", user.email, capitalize(user.status)],
+    status: user.status.toLowerCase()
+  }));
+
+const rolesToRows = (roles: RbacRole[], users: RbacUser[]): AdminRow[] =>
+  roles.map((role) => ({
+    id: role.id,
+    cells: [
+      role.name,
+      String(users.filter((u) => u.assignedRoleId === role.id).length),
+      role.description || "—",
+      capitalize(role.status)
+    ],
+    status: role.status.toLowerCase()
+  }));
+
+const groupsToRows = (groups: RbacSecurityGroup[]): AdminRow[] =>
+  groups.map((group) => ({
+    id: group.id,
+    cells: [group.name, String(group.memberCount ?? 0), group.description || "—", capitalize(group.status)],
+    status: group.status.toLowerCase()
+  }));
 
 export default function UserAdmin() {
   const location = useLocation();
@@ -96,10 +113,14 @@ export default function UserAdmin() {
   const [modalMode, setModalMode] = useState<"create" | "edit" | "view">("create");
   const [editingRowId, setEditingRowId] = useState<string | null>(null);
   const [formDraft, setFormDraft] = useState<Record<string, string>>({});
+  const [selectedRoleId, setSelectedRoleId] = useState("");
   const [rolePermissions, setRolePermissions] = useState<Set<string>>(new Set());
-  const [rowsByPath, setRowsByPath] = useState<Record<string, AdminRow[]>>(() =>
-    Object.fromEntries(Object.entries(pageConfigs).map(([pathKey, config]) => [pathKey, [...config.rows]]))
-  );
+  const [rows, setRows] = useState<AdminRow[]>([]);
+  const [summary, setSummary] = useState<SummaryCard[]>([]);
+  const [roleOptions, setRoleOptions] = useState<RbacRole[]>([]);
+  const [allUsers, setAllUsers] = useState<RbacUser[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   const permissionGroups = useMemo(
     () => [
@@ -115,37 +136,72 @@ export default function UserAdmin() {
     [permissionGroups]
   );
 
+  const reload = useCallback(async () => {
+    if (!page) return;
+    setLoading(true);
+    try {
+      const [{ roles, permissions }, users, groups] = await Promise.all([
+        getRbacRoles(),
+        getRbacUsers(),
+        getRbacSecurityGroups()
+      ]);
+      setRoleOptions(roles);
+      setAllUsers(users);
+
+      if (location.pathname === USERS_PATH) {
+        setRows(usersToRows(users));
+        setSummary([
+          { label: "Active", value: users.filter((u) => u.status === "active").length },
+          { label: "Inactive", value: users.filter((u) => u.status === "inactive").length },
+          {
+            label: "Admins",
+            value: users.filter((u) => /admin/i.test(u.assignedRoleName ?? "")).length
+          },
+          { label: "Total", value: users.length }
+        ]);
+      } else if (location.pathname === ROLES_PATH) {
+        setRows(rolesToRows(roles, users));
+        setSummary([
+          { label: "Roles", value: roles.length },
+          { label: "Active", value: roles.filter((r) => r.status === "active").length },
+          { label: "Custom", value: Math.max(0, roles.length - 2) },
+          { label: "Permissions", value: permissions.length }
+        ]);
+      } else if (location.pathname === GROUPS_PATH) {
+        setRows(groupsToRows(groups));
+        setSummary([
+          { label: "Groups", value: groups.length },
+          { label: "Members", value: groups.reduce((n, g) => n + (g.memberCount ?? 0), 0) },
+          { label: "Active", value: groups.filter((g) => g.status === "active").length },
+          { label: "Draft", value: groups.filter((g) => g.status === "draft").length }
+        ]);
+      }
+    } finally {
+      setLoading(false);
+    }
+  }, [location.pathname, page]);
+
+  useEffect(() => {
+    void reload();
+  }, [reload]);
+
+  useEffect(() => {
+    const onOrgChange = () => void reload();
+    window.addEventListener("vivi:orgchange", onOrgChange);
+    return () => window.removeEventListener("vivi:orgchange", onOrgChange);
+  }, [reload]);
+
   const filteredRows = useMemo(() => {
-    if (!page) return [];
-    const rows = rowsByPath[location.pathname] ?? [];
     return rows.filter((row) => {
       const matchesSearch = row.cells.some((cell) => cell.toLowerCase().includes(search.toLowerCase()));
       const matchesStatus = statusFilter === "all" || row.status === statusFilter;
       return matchesSearch && matchesStatus;
     });
-  }, [location.pathname, page, rowsByPath, search, statusFilter]);
+  }, [rows, search, statusFilter]);
 
   if (!page) {
     return <div className="page admin-page">Page not found.</div>;
   }
-
-  const buildRowFromDraft = () => {
-    const columns = page.columns.filter((col) => col !== "Actions");
-    const fields = page.formFields ?? [];
-    const cells = columns.map((col, index) => {
-      const field = fields[index];
-      if (field) return formDraft[field.label] ?? "";
-      if (col.toLowerCase() === "status") return "Active";
-      return "—";
-    });
-    const statusIndex = columns.findIndex((col) => col.toLowerCase() === "status");
-    const statusValue = statusIndex >= 0 ? String(cells[statusIndex] ?? "active").toLowerCase() : undefined;
-    return {
-      id: `row-${Date.now()}`,
-      cells,
-      status: statusValue
-    } as AdminRow;
-  };
 
   const buildDraftFromRow = (row: AdminRow) => {
     const fields = page.formFields ?? [];
@@ -155,8 +211,74 @@ export default function UserAdmin() {
     }, {});
   };
 
-  const resetRolePermissions = () => {
-    setRolePermissions(new Set());
+  const loadRolePermissions = async (roleId: string) => {
+    const { permissions } = await getRbacRoles();
+    setRolePermissions(
+      new Set(permissions.filter((p) => p.roleId === roleId && p.canView > 0).map((p) => p.pagePath))
+    );
+  };
+
+  const handleSave = async () => {
+    setSaveError(null);
+    if (location.pathname === USERS_PATH) {
+      const name = formDraft["Full name"]?.trim() ?? "";
+      const email = formDraft["Email"]?.trim() ?? "";
+      const roleId = selectedRoleId.trim();
+      if (!name || !email || !roleId) {
+        setSaveError("Name, email, and role are required.");
+        return;
+      }
+      const payload = { name, email, roleId, status: "active" as const };
+      const saved =
+        modalMode === "edit" && editingRowId
+          ? await updateRbacUser({ id: editingRowId, ...payload })
+          : await createRbacUser(payload);
+      if (!saved) {
+        setSaveError("Could not save user. Create a role first and ensure the email is unique.");
+        return;
+      }
+    } else if (location.pathname === ROLES_PATH) {
+      const name = formDraft["Role name"]?.trim() ?? "";
+      if (!name) {
+        setSaveError("Role name is required.");
+        return;
+      }
+      const saved = await saveRbacRole(
+        {
+          id: editingRowId ?? undefined,
+          name,
+          description: formDraft["Description"] || formDraft["Level"] || "",
+          permissions: Array.from(rolePermissions)
+            .filter((path) => permissionIds.has(path))
+            .map((pagePath) => ({ pagePath, view: true }))
+        },
+        modalMode === "edit"
+      );
+      if (!saved) {
+        setSaveError("Could not save role.");
+        return;
+      }
+    } else if (location.pathname === GROUPS_PATH) {
+      const name = formDraft["Group name"]?.trim() ?? "";
+      if (!name) {
+        setSaveError("Group name is required.");
+        return;
+      }
+      const saved = await saveRbacSecurityGroup(
+        {
+          id: editingRowId ?? undefined,
+          name,
+          description: formDraft["Notes"] || formDraft["Owner"] || ""
+        },
+        modalMode === "edit"
+      );
+      if (!saved) {
+        setSaveError("Could not save security group.");
+        return;
+      }
+    }
+    setModalOpen(false);
+    await reload();
   };
 
   return (
@@ -167,21 +289,24 @@ export default function UserAdmin() {
           <div className="admin-path">{page.pathLabel}</div>
         </div>
         <div className="admin-actions">
-          <button type="button" className="admin-btn ghost">Export</button>
+          <button type="button" className="admin-btn ghost" onClick={() => void reload()} disabled={loading}>
+            Refresh
+          </button>
           <button
             type="button"
             className="admin-btn"
             onClick={() => {
-              const initial = (page.formFields ?? []).reduce<Record<string, string>>((acc, field) => {
-                acc[field.label] = "";
-                return acc;
-              }, {});
-              setFormDraft(initial);
+              setFormDraft(
+                (page.formFields ?? []).reduce<Record<string, string>>((acc, field) => {
+                  acc[field.label] = "";
+                  return acc;
+                }, {})
+              );
+              setSelectedRoleId(roleOptions[0]?.id ?? "");
+              setRolePermissions(new Set());
               setModalMode("create");
               setEditingRowId(null);
-              if (location.pathname === "/manage/user-admin/roles") {
-                resetRolePermissions();
-              }
+              setSaveError(null);
               setModalOpen(true);
             }}
           >
@@ -191,7 +316,7 @@ export default function UserAdmin() {
       </div>
 
       <section className="admin-summary">
-        {page.summary.map((card) => (
+        {summary.map((card) => (
           <div key={card.label} className="admin-summary-card">
             <div className="admin-summary-label">{card.label}</div>
             <div className="admin-summary-value">{card.value}</div>
@@ -203,7 +328,9 @@ export default function UserAdmin() {
         <div className="admin-panel-header">
           <div>
             <div className="admin-panel-title">Admin list</div>
-            <div className="admin-panel-sub">User accounts and access configuration.</div>
+            <div className="admin-panel-sub">
+              {loading ? "Loading…" : `Tenant: ${getTenantId()}`}
+            </div>
           </div>
           <div className="admin-filter-row">
             <input
@@ -221,7 +348,7 @@ export default function UserAdmin() {
                 <option value="all">All status</option>
                 {page.statusOptions.map((status) => (
                   <option key={status} value={status}>
-                    {status.replace("-", " ")}
+                    {status}
                   </option>
                 ))}
               </select>
@@ -236,7 +363,7 @@ export default function UserAdmin() {
             ))}
           </div>
           {filteredRows.length === 0 ? (
-            <div className="admin-empty">No rows match your filters.</div>
+            <div className="admin-empty">{loading ? "Loading…" : "No users yet. Create a role, then add a user."}</div>
           ) : (
             filteredRows.map((row) => (
               <div key={row.id} className="admin-row">
@@ -251,9 +378,10 @@ export default function UserAdmin() {
                             setFormDraft(buildDraftFromRow(row));
                             setEditingRowId(row.id);
                             setModalMode("view");
-                            if (location.pathname === "/manage/user-admin/roles") {
-                              resetRolePermissions();
+                            if (location.pathname === USERS_PATH) {
+                              setSelectedRoleId(allUsers.find((u) => u.id === row.id)?.assignedRoleId ?? "");
                             }
+                            if (location.pathname === ROLES_PATH) void loadRolePermissions(row.id);
                             setModalOpen(true);
                           }}
                         >
@@ -266,9 +394,10 @@ export default function UserAdmin() {
                             setFormDraft(buildDraftFromRow(row));
                             setEditingRowId(row.id);
                             setModalMode("edit");
-                            if (location.pathname === "/manage/user-admin/roles") {
-                              resetRolePermissions();
+                            if (location.pathname === USERS_PATH) {
+                              setSelectedRoleId(allUsers.find((u) => u.id === row.id)?.assignedRoleId ?? "");
                             }
+                            if (location.pathname === ROLES_PATH) void loadRolePermissions(row.id);
                             setModalOpen(true);
                           }}
                         >
@@ -279,9 +408,8 @@ export default function UserAdmin() {
                   }
                   const cellValue = row.cells[index] ?? "";
                   if (col === "Status") {
-                    const status = row.status ?? cellValue.toLowerCase();
                     return (
-                      <span key={`${row.id}-${col}`} className={`admin-pill ${status}`}>
+                      <span key={`${row.id}-${col}`} className={`admin-pill ${row.status}`}>
                         {cellValue}
                       </span>
                     );
@@ -302,104 +430,87 @@ export default function UserAdmin() {
                 <div className="admin-modal-title">
                   {modalMode === "create" ? "Create" : modalMode === "edit" ? "Edit" : "View"} {page.title}
                 </div>
-                <div className="admin-modal-sub">Set up access and roles.</div>
               </div>
-              <button
-                type="button"
-                className="admin-modal-close"
-                onClick={() => setModalOpen(false)}
-              >
+              <button type="button" className="admin-modal-close" onClick={() => setModalOpen(false)}>
                 ✕
               </button>
             </div>
             <div className="admin-modal-body">
-              {(page.formFields ?? []).map((field) => (
-                <label key={field.label} className="admin-modal-field">
-                  {field.label}
-                  <input
-                    type="text"
-                    placeholder={field.placeholder}
-                    value={formDraft[field.label] ?? ""}
-                    onChange={(event) =>
-                      setFormDraft((current) => ({ ...current, [field.label]: event.target.value }))
-                    }
-                    disabled={modalMode === "view"}
-                  />
-                </label>
-              ))}
-              {location.pathname === "/manage/user-admin/roles" && (
-                <div className="admin-modal-field" style={{ gap: 12 }}>
-                  <span>Permissions</span>
-                  <div className="admin-permissions">
-                    {permissionGroups.map((group) => (
-                      <div key={group.title} className="admin-permissions-group">
-                        <div className="admin-permissions-title">{group.title}</div>
-                        <div className="admin-permissions-list">
-                          {group.items.map((item) => (
-                            <label key={item.path} className="admin-permission-item">
-                              <input
-                                type="checkbox"
-                                checked={rolePermissions.has(item.path)}
-                                onChange={(event) => {
-                                  setRolePermissions((current) => {
-                                    const next = new Set(current);
-                                    if (event.target.checked) {
-                                      next.add(item.path);
-                                    } else {
-                                      next.delete(item.path);
-                                    }
-                                    return next;
-                                  });
-                                }}
-                                disabled={modalMode === "view"}
-                              />
-                              <span>{item.label}</span>
-                            </label>
-                          ))}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
+              {(page.formFields ?? []).map((field) => {
+                if (location.pathname === USERS_PATH && field.label === "Role") {
+                  return (
+                    <label key={field.label} className="admin-modal-field">
+                      {field.label}
+                      <select
+                        value={selectedRoleId}
+                        onChange={(e) => setSelectedRoleId(e.target.value)}
+                        disabled={modalMode === "view"}
+                      >
+                        <option value="">Select role</option>
+                        {roleOptions.map((role) => (
+                          <option key={role.id} value={role.id}>
+                            {role.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  );
+                }
+                return (
+                  <label key={field.label} className="admin-modal-field">
+                    {field.label}
+                    <input
+                      type={field.label === "Email" ? "email" : "text"}
+                      value={formDraft[field.label] ?? ""}
+                      onChange={(e) => setFormDraft((c) => ({ ...c, [field.label]: e.target.value }))}
+                      disabled={modalMode === "view"}
+                      placeholder={field.placeholder}
+                    />
+                  </label>
+                );
+              })}
+              {location.pathname === ROLES_PATH && (
+                <div className="admin-permissions">
+                  {permissionGroups.map((group) => (
+                    <div key={group.title}>
+                      <div className="admin-permissions-title">{group.title}</div>
+                      {group.items.map((item) => (
+                        <label key={item.path} className="admin-permission-item">
+                          <input
+                            type="checkbox"
+                            checked={rolePermissions.has(item.path)}
+                            disabled={modalMode === "view"}
+                            onChange={(e) => {
+                              setRolePermissions((current) => {
+                                const next = new Set(current);
+                                if (e.target.checked) next.add(item.path);
+                                else next.delete(item.path);
+                                return next;
+                              });
+                            }}
+                          />
+                          {item.label}
+                        </label>
+                      ))}
+                    </div>
+                  ))}
                 </div>
               )}
+              {saveError && <p style={{ color: "#b42318" }}>{saveError}</p>}
             </div>
             <div className="admin-modal-actions">
               <button type="button" className="admin-btn ghost" onClick={() => setModalOpen(false)}>
-                {modalMode === "view" ? "Close" : "Cancel"}
+                Cancel
               </button>
               <button
                 type="button"
                 className="admin-btn"
                 onClick={() => {
-                  if (modalMode === "view") {
-                    setModalOpen(false);
-                    return;
-                  }
-                  void saveToApi(`manage:user-admin:${page.title}`, {
-                    title: page.title,
-                    values: formDraft,
-                    permissions:
-                      location.pathname === "/manage/user-admin/roles"
-                        ? Array.from(rolePermissions).filter((path) => permissionIds.has(path))
-                        : undefined,
-                    updatedAt: new Date().toISOString()
-                  });
-                  const nextRow = buildRowFromDraft();
-                  setRowsByPath((current) => {
-                    const rows = current[location.pathname] ?? [];
-                    if (modalMode === "edit" && editingRowId) {
-                      const existing = rows.find((r) => r.id === editingRowId);
-                      const updated = rows.map((r) =>
-                        r.id === editingRowId ? { ...nextRow, id: editingRowId, status: existing?.status } : r
-                      );
-                      return { ...current, [location.pathname]: updated };
-                    }
-                    return { ...current, [location.pathname]: [...rows, nextRow] };
-                  });
-                  setModalOpen(false);
+                  if (modalMode === "view") setModalOpen(false);
+                  else void handleSave();
                 }}
               >
-                {modalMode === "view" ? "Close" : "Save"}
+                Save
               </button>
             </div>
           </div>

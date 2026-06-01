@@ -107,3 +107,104 @@ export async function saveBinding(
   });
   return Boolean(response?.stored);
 }
+
+export type RbacUser = {
+  id: string;
+  name: string;
+  email: string;
+  status: string;
+  assignedRoleId?: string;
+  assignedRoleName?: string;
+  assignedTenantId?: string;
+};
+
+export type RbacRole = {
+  id: string;
+  name: string;
+  description?: string;
+  status: string;
+};
+
+export type RbacRolePermission = {
+  roleId: string;
+  pagePath: string;
+  canView: number;
+};
+
+export type RbacSecurityGroup = {
+  id: string;
+  name: string;
+  description?: string;
+  status: string;
+  memberCount?: number;
+};
+
+export async function getRbacUsers(): Promise<RbacUser[]> {
+  const response = await fetchJson<{ users: RbacUser[] }>("/rbac/users");
+  return response?.users ?? [];
+}
+
+export async function createRbacUser(payload: {
+  name: string;
+  email: string;
+  roleId: string;
+  status?: string;
+}): Promise<RbacUser | null> {
+  const response = await fetchJson<{ ok: boolean; user: RbacUser }>("/rbac/users", {
+    method: "POST",
+    body: JSON.stringify({ ...payload, assignment: { tenantId: getTenantId() } })
+  });
+  return response?.user ?? null;
+}
+
+export async function updateRbacUser(payload: {
+  id: string;
+  name: string;
+  email: string;
+  roleId: string;
+  status?: string;
+}): Promise<RbacUser | null> {
+  const response = await fetchJson<{ ok: boolean; user: RbacUser }>("/rbac/users", {
+    method: "PUT",
+    body: JSON.stringify(payload)
+  });
+  return response?.user ?? null;
+}
+
+export async function getRbacRoles(): Promise<{ roles: RbacRole[]; permissions: RbacRolePermission[] }> {
+  const response = await fetchJson<{ roles: RbacRole[]; permissions: RbacRolePermission[] }>("/rbac/roles");
+  return { roles: response?.roles ?? [], permissions: response?.permissions ?? [] };
+}
+
+export async function saveRbacRole(
+  payload: {
+    id?: string;
+    name: string;
+    description?: string;
+    status?: string;
+    permissions?: Array<{ pagePath: string; view?: boolean }>;
+  },
+  isEdit: boolean
+): Promise<RbacRole | null> {
+  const response = await fetchJson<{ ok: boolean; role: RbacRole }>("/rbac/roles", {
+    method: isEdit ? "PUT" : "POST",
+    body: JSON.stringify(payload)
+  });
+  return response?.role ?? null;
+}
+
+export async function getRbacSecurityGroups(): Promise<RbacSecurityGroup[]> {
+  const response = await fetchJson<{ groups: RbacSecurityGroup[] }>("/rbac/security-groups");
+  return response?.groups ?? [];
+}
+
+export async function saveRbacSecurityGroup(
+  payload: { id?: string; name: string; description?: string; status?: string },
+  isEdit: boolean
+): Promise<RbacSecurityGroup | null> {
+  const response = await fetchJson<{ ok: boolean; group: RbacSecurityGroup }>("/rbac/security-groups", {
+    method: isEdit ? "PUT" : "POST",
+    body: JSON.stringify(payload)
+  });
+  return response?.group ?? null;
+}

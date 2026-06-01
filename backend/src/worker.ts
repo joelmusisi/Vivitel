@@ -1,3 +1,5 @@
+import { handleRbacRequest } from "./rbac";
+
 export interface Env {
   APP_NAME?: string;
   ViviTEL: KVNamespace;
@@ -203,7 +205,7 @@ export default {
         status: 204,
         headers: {
           "access-control-allow-origin": "*",
-          "access-control-allow-methods": "GET, POST, OPTIONS",
+          "access-control-allow-methods": "GET, POST, PUT, OPTIONS",
           "access-control-allow-headers": "content-type, x-tenant-id"
         }
       });
@@ -223,7 +225,10 @@ export default {
             "/d1/assets",
             "/d1/device-reporting-settings",
             "/d1/configuration-groups",
-            "/d1/bindings"
+            "/d1/bindings",
+            "/rbac/users",
+            "/rbac/roles",
+            "/rbac/security-groups"
           ]
         });
       case "/health":
@@ -459,6 +464,10 @@ export default {
       case "/kv":
         return badRequest("Provide a key, e.g. /kv/demo");
       default: {
+        await ensureD1Tables(env);
+        const rbacResponse = await handleRbacRequest(env, request, url.pathname, getTenantId(request, url));
+        if (rbacResponse) return rbacResponse;
+
         if (url.pathname.startsWith("/pat/") && url.pathname.endsWith("/revoke")) {
           const parts = url.pathname.split("/");
           const id = parts[2];
