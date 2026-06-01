@@ -53,6 +53,8 @@ import ContactsAdmin from "./pages/manage/ContactsAdmin";
 import UserAdmin from "./pages/manage/UserAdmin";
 import NotificationsAdmin from "./pages/manage/NotificationsAdmin";
 import UserSettingsAdmin from "./pages/manage/UserSettingsAdmin";
+import Login from "./pages/Login";
+import { AuthGate } from "./components/AuthGate";
 import AccessDenied from "./components/AccessDenied";
 import { ProtectedRoute } from "./components/ProtectedRoute";
 
@@ -195,10 +197,12 @@ export function App() {
   }, [navigate]);
 
   return (
+    <AuthGate>
     <div className="app-shell">
       <TopNav />
       <OrgRibbon />
       <Routes>
+        <Route path="/login" element={<Login />} />
         <Route path="/" element={<Home />} />
         <Route path="/access-denied" element={<AccessDenied />} />
         {generatedRoutes.map((r) => (
@@ -286,6 +290,7 @@ export function App() {
         </div>
       )}
     </div>
+    </AuthGate>
   );
 }
 

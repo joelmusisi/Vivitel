@@ -7,10 +7,12 @@ import {
   useState,
   type ReactNode
 } from "react";
-import { getTenantId, getRbacUsers } from "../utils/api";
+import { getAccessProfile, getTenantId } from "../utils/api";
 import {
   canAccessTenant,
   canViewPath,
+  clearSession,
+  getSessionToken,
   getSessionUserId,
   setSessionUserId,
   type AccessProfile
@@ -19,33 +21,15 @@ import {
 type AccessContextValue = {
   profile: AccessProfile | null;
   loading: boolean;
+  isAuthenticated: boolean;
   sessionUserId: string;
-  setSessionUserId: (userId: string) => void;
+  logout: () => void;
   refresh: () => Promise<void>;
   canViewPath: (path: string) => boolean;
   canAccessTenant: (tenantId: string) => boolean;
 };
 
 const AccessContext = createContext<AccessContextValue | null>(null);
-
-async function fetchProfile(userId: string): Promise<AccessProfile | null> {
-  const apiBase = ((import.meta as any).env?.VITE_API_BASE_URL as string | undefined) ?? "";
-  const url = `${apiBase.replace(/\/$/, "")}/rbac/me?userId=${encodeURIComponent(userId)}`;
-  try {
-    const response = await fetch(url, {
-      headers: {
-        "content-type": "application/json",
-        "x-tenant-id": getTenantId(),
-        "x-user-id": userId
-      }
-    });
-    if (!response.ok) return null;
-    const data = (await response.json()) as { profile: AccessProfile };
-    return data.profile ?? null;
-  } catch {
-    return null;
-  }
-}
 
 export function AccessProvider({ children }: { children: ReactNode }) {
   const [profile, setProfile] = useState<AccessProfile | null>(null);
@@ -55,20 +39,18 @@ export function AccessProvider({ children }: { children: ReactNode }) {
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      let userId = getSessionUserId();
-      if (!userId) {
-        const users = await getRbacUsers();
-        const admin = users.find((u) => /admin/i.test(u.email));
-        userId = admin?.id ?? users[0]?.id ?? "";
-        if (userId) setSessionUserId(userId);
-        setSessionUserIdState(userId);
-      }
-      if (!userId) {
+      const token = getSessionToken();
+      const userId = getSessionUserId();
+      if (!token || !userId) {
         setProfile(null);
         return;
       }
-      const next = await fetchProfile(userId);
+      const next = await getAccessProfile(userId);
       setProfile(next);
+      if (next?.userId) {
+        setSessionUserId(next.userId);
+        setSessionUserIdState(next.userId);
+      }
     } finally {
       setLoading(false);
     }
@@ -76,10 +58,13 @@ export function AccessProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     void refresh();
-  }, [refresh, sessionUserId]);
+  }, [refresh]);
 
   useEffect(() => {
-    const onSession = () => setSessionUserIdState(getSessionUserId());
+    const onSession = () => {
+      setSessionUserIdState(getSessionUserId());
+      void refresh();
+    };
     const onOrg = () => void refresh();
     window.addEventListener("vivi:sessionchange", onSession);
     window.addEventListener("vivi:orgchange", onOrg);
@@ -89,20 +74,28 @@ export function AccessProvider({ children }: { children: ReactNode }) {
     };
   }, [refresh]);
 
+  const logout = useCallback(() => {
+    clearSession();
+    setProfile(null);
+    setSessionUserIdState("");
+    window.dispatchEvent(new Event("vivi:sessionchange"));
+  }, []);
+
   const value = useMemo<AccessContextValue>(
     () => ({
       profile,
       loading,
+      isAuthenticated: Boolean(getSessionToken() && profile),
       sessionUserId,
-      setSessionUserId: (userId: string) => {
-        setSessionUserId(userId);
-        setSessionUserIdState(userId);
-      },
+      logout,
       refresh,
-      canViewPath: (path: string) => canViewPath(profile, path),
+      canViewPath: (path: string) => {
+        if (path === "/login") return true;
+        return canViewPath(profile, path);
+      },
       canAccessTenant: (tenantId: string) => canAccessTenant(profile, tenantId)
     }),
-    [profile, loading, sessionUserId, refresh]
+    [profile, loading, sessionUserId, logout, refresh]
   );
 
   return <AccessContext.Provider value={value}>{children}</AccessContext.Provider>;

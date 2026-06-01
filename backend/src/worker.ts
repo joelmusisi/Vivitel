@@ -1,4 +1,6 @@
 import { handleRbacRequest } from "./rbac";
+import { handleAuthRequest } from "./auth";
+import { enforceApiAccess } from "./accessGuard";
 
 export interface Env {
   APP_NAME?: string;
@@ -211,6 +213,13 @@ export default {
       });
     }
 
+    const tenantHeader = getTenantId(request, url);
+    const accessDenied = await enforceApiAccess(env, request, url.pathname, tenantHeader);
+    if (accessDenied) return accessDenied;
+
+    const authResponse = await handleAuthRequest(env, request, url.pathname, tenantHeader);
+    if (authResponse) return authResponse;
+
     switch (url.pathname) {
       case "/":
         return json({
@@ -229,6 +238,9 @@ export default {
             "/rbac/users",
             "/rbac/roles",
             "/rbac/security-groups",
+            "/auth/login",
+            "/auth/logout",
+            "/auth/session",
             "/rbac/me"
           ]
         });

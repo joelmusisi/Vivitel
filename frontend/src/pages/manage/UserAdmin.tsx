@@ -12,11 +12,14 @@ import {
   updateRbacUser,
   getUserScopesApi,
   saveUserScopesApi,
+  deleteRbacUser,
+  getRbacSecurityGroupsFull,
   type RbacRole,
   type RbacRolePermission,
   type RbacSecurityGroup,
   type RbacUser
 } from "../../utils/api";
+import { SecurityGroupMembers } from "../../components/SecurityGroupMembers";
 import { ScopeTreePicker } from "../../components/ScopeTreePicker";
 import { seedOrgDealers } from "../../data/orgSeed";
 import { loadOrgDealers } from "../../types/org";
@@ -133,6 +136,9 @@ export default function UserAdmin() {
     databaseIds: [],
     siteIds: []
   });
+  const [groupRoleIds, setGroupRoleIds] = useState<string[]>([]);
+  const [groupUserIds, setGroupUserIds] = useState<string[]>([]);
+  const [userPassword, setUserPassword] = useState("");
   const orgDealers = useMemo(() => loadOrgDealers() ?? seedOrgDealers, []);
 
   const permissionGroups = useMemo(
@@ -267,6 +273,16 @@ export default function UserAdmin() {
         });
       }
     }
+
+    if (location.pathname === GROUPS_PATH && row?.id) {
+      const full = await getRbacSecurityGroupsFull();
+      setGroupRoleIds(full.groupRoles.filter((l) => l.groupId === row.id).map((l) => l.roleId));
+      setGroupUserIds(full.groupUsers.filter((l) => l.groupId === row.id).map((l) => l.userId));
+    }
+    if (location.pathname === GROUPS_PATH && !row) {
+      setGroupRoleIds([]);
+      setGroupUserIds([]);
+    }
     if (location.pathname === ROLES_PATH && row?.id) {
       await loadRolePermissions(row.id);
     } else if (location.pathname === ROLES_PATH) {
@@ -292,7 +308,8 @@ export default function UserAdmin() {
         setSaveError("Name, email, and role are required.");
         return;
       }
-      const payload = { name, email, roleId, status: "active" as const };
+      const status = (formDraft.Status?.toLowerCase() === "inactive" ? "inactive" : "active") as const;
+      const payload = { name, email, roleId, status, password: userPassword };
       const saved =
         modalMode === "edit" && editingRowId
           ? await updateRbacUser({ id: editingRowId, ...payload })
@@ -340,7 +357,10 @@ export default function UserAdmin() {
         {
           id: editingRowId ?? undefined,
           name,
-          description: formDraft["Notes"] || formDraft["Owner"] || ""
+          description: formDraft["Notes"] || formDraft["Owner"] || "",
+          status: formDraft.Status?.toLowerCase() === "draft" ? "draft" : "active",
+          roleIds: groupRoleIds,
+          userIds: groupUserIds
         },
         modalMode === "edit"
       );
@@ -475,6 +495,24 @@ export default function UserAdmin() {
                         >
                           Edit
                         </button>
+                        {location.pathname === USERS_PATH && (
+                          <button
+                            type="button"
+                            className="admin-action ghost danger"
+                            onClick={() => {
+                              void (async () => {
+                                if (!window.confirm("Delete this user permanently?")) return;
+                                if (!(await deleteRbacUser(row.id))) {
+                                  setSaveError("Could not delete user.");
+                                  return;
+                                }
+                                await reload();
+                              })();
+                            }}
+                          >
+                            Delete
+                          </button>
+                        )}
                       </span>
                     );
                   }
@@ -568,7 +606,40 @@ export default function UserAdmin() {
                   ))}
                 </div>
               )}
+              
+              {location.pathname === USERS_PATH && modalMode === "create" && (
+                <label className="admin-modal-field">
+                  Temporary password
+                  <input type="password" value={userPassword} onChange={(e) => setUserPassword(e.target.value)} />
+                </label>
+              )}
               {location.pathname === USERS_PATH && (
+                <label className="admin-modal-field">
+                  Status
+                  <select
+                    value={formDraft.Status ?? "Active"}
+                    disabled={modalMode === "view"}
+                    onChange={(e) => setFormDraft((c) => ({ ...c, Status: e.target.value }))}
+                  >
+                    <option value="Active">Active</option>
+                    <option value="Inactive">Inactive</option>
+                  </select>
+                </label>
+              )}
+              {location.pathname === GROUPS_PATH && (
+                <SecurityGroupMembers
+                  roles={roleOptions}
+                  users={allUsers}
+                  roleIds={groupRoleIds}
+                  userIds={groupUserIds}
+                  disabled={modalMode === "view"}
+                  onChange={({ roleIds, userIds }) => {
+                    setGroupRoleIds(roleIds);
+                    setGroupUserIds(userIds);
+                  }}
+                />
+              )}
+{location.pathname === USERS_PATH && (
                 <ScopeTreePicker
                   dealers={orgDealers}
                   scopes={userScopes}

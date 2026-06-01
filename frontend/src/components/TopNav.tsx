@@ -3,12 +3,15 @@ import { NavLink, useNavigate } from "react-router-dom";
 import { monitorNav, manageNav, measureNav } from "../navData";
 import DropdownMenu from "./DropdownMenu";
 import { useAccess } from "../context/AccessContext";
+import { logout as apiLogout } from "../utils/api";
+import { useAccess } from "../context/AccessContext";
 import { getRbacUsers } from "../utils/api";
 
 export function TopNav() {
   const [openMenu, setOpenMenu] = useState<"monitor" | "manage" | "measure" | null>(null);
   const navRef = useRef<HTMLElement | null>(null);
   const navigate = useNavigate();
+  const { profile, canViewPath, logout } = useAccess();
 
   useEffect(() => {
     const handleClick = (event: MouseEvent) => {
@@ -48,6 +51,7 @@ export function TopNav() {
           isOpen={openMenu === "monitor"}
           onToggle={() => toggleMenu("monitor")}
           onItemSelect={() => setOpenMenu(null)}
+          canViewPath={canViewPath}
         />
 
         <DropdownMenu
@@ -56,6 +60,7 @@ export function TopNav() {
           isOpen={openMenu === "manage"}
           onToggle={() => toggleMenu("manage")}
           onItemSelect={() => setOpenMenu(null)}
+          canViewPath={canViewPath}
         />
 
         <DropdownMenu
@@ -64,6 +69,7 @@ export function TopNav() {
           isOpen={openMenu === "measure"}
           onToggle={() => toggleMenu("measure")}
           onItemSelect={() => setOpenMenu(null)}
+          canViewPath={canViewPath}
         />
       </div>
 
@@ -92,7 +98,19 @@ export function TopNav() {
         <div className="icon-button" title="Power">
           <PowerIcon />
         </div>
-        <div className="topnav-user">Welcome Joel Musisi</div>
+        <div className="topnav-user">{profile?.name ? `Welcome ${profile.name}` : "Signed in"}</div>
+        <button
+          type="button"
+          className="admin-btn ghost"
+          style={{ fontSize: 12, padding: "6px 10px" }}
+          onClick={async () => {
+            await apiLogout();
+            logout();
+            navigate("/login");
+          }}
+        >
+          Sign out
+        </button>
       </div>
     </nav>
   );

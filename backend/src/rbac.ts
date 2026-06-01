@@ -1,3 +1,5 @@
+import { handleRbacAccessRequest } from "./rbacAccess";
+
 export interface RbacEnv {
   VIVI_D1: D1Database;
 }
@@ -258,7 +260,57 @@ const listGroupUserLinks = async (env: RbacEnv, tenantId: string) => {
     .filter((r) => r.groupId && r.userId);
 };
 
-import { handleRbacAccessRequest } from "./rbacAccess";
+
+const replaceGroupLinks = async (
+  env: RbacEnv,
+  tenantId: string,
+  groupId: string,
+  roleIds: string[],
+  userIds: string[]
+) => {
+  const roleRows = await listBindingsByType(env, RBAC_GROUP_ROLES, tenantId);
+  for (const row of roleRows) {
+    if (String(row.groupId ?? "").trim() !== groupId) continue;
+    const id = String(row.id ?? "").trim();
+    if (id) {
+      await env.VIVI_D1.prepare("DELETE FROM bindings WHERE type = ?1 AND tenant_id = ?2 AND id = ?3")
+        .bind(RBAC_GROUP_ROLES, tenantId, id)
+        .run();
+    }
+  }
+  for (const roleId of roleIds) {
+    if (!roleId) continue;
+    const id = `${tenantId}:${groupId}:${roleId}`;
+    await persistBinding(env, RBAC_GROUP_ROLES, tenantId, id, {
+      id,
+      tenantId,
+      groupId,
+      roleId,
+      updatedAt: new Date().toISOString()
+    });
+  }
+  const userRows = await listBindingsByType(env, RBAC_GROUP_USERS, tenantId);
+  for (const row of userRows) {
+    if (String(row.groupId ?? "").trim() !== groupId) continue;
+    const id = String(row.id ?? "").trim();
+    if (id) {
+      await env.VIVI_D1.prepare("DELETE FROM bindings WHERE type = ?1 AND tenant_id = ?2 AND id = ?3")
+        .bind(RBAC_GROUP_USERS, tenantId, id)
+        .run();
+    }
+  }
+  for (const userId of userIds) {
+    if (!userId) continue;
+    const id = `${tenantId}:${groupId}:${userId}`;
+    await persistBinding(env, RBAC_GROUP_USERS, tenantId, id, {
+      id,
+      tenantId,
+      groupId,
+      userId,
+      updatedAt: new Date().toISOString()
+    });
+  }
+};
 
 export async function handleRbacRequest(
   env: RbacEnv,
@@ -380,7 +432,8 @@ export async function handleRbacRequest(
           assignedTenantId,
           assignedSiteId: String(assignment.siteId ?? "").trim(),
           assignedSiteName: String(assignment.siteName ?? "").trim(),
-          assignedRoleId: roleId
+          assignedRoleId: roleId,
+          password: String(body.password ?? "").trim()
         };
         await saveUser(env, rec);
         await saveAssignment(env, assignedTenantId, id, {
@@ -392,6 +445,17 @@ export async function handleRbacRequest(
       } catch {
         return badRequest("Invalid JSON body.");
       }
+    }
+
+    if (request.method === "DELETE") {
+      const id = new URL(request.url).searchParams.get("id")?.trim() ?? "";
+      if (!id) return badRequest("User id is required");
+      await env.VIVI_D1.prepare(
+        "DELETE FROM bindings WHERE type = ?1 AND tenant_id = ?2 AND id = ?3"
+      )
+        .bind(RBAC_USERS, GLOBAL_TENANT, id)
+        .run();
+      return json({ deleted: true, id });
     }
     if (request.method === "PUT") {
       try {
@@ -456,6 +520,12 @@ export async function handleRbacRequest(
           return notFound();
         }
 
+        const roleIds = Array.isArray(body.roleIds)
+          ? (body.roleIds as unknown[]).map((x) => String(x ?? "").trim()).filter(Boolean)
+          : [];
+        const userIds = Array.isArray(body.userIds)
+          ? (body.userIds as unknown[]).map((x) => String(x ?? "").trim()).filter(Boolean)
+          : [];
         const saved = await saveGroup(
           env,
           tenantId,
@@ -463,7 +533,8 @@ export async function handleRbacRequest(
           { name, description, status },
           existing?.createdAt
         );
-        return json({ ok: true, group: saved });
+        await replaceGroupLinks(env, tenantId, id, roleIds, userIds);
+        return json({ ok: true, group: saved, roleIds, userIds });
       } catch {
         return badRequest("Invalid JSON body.");
       }

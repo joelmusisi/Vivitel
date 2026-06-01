@@ -1,3 +1,12 @@
+import type { AccessProfile, UserScopes } from "./accessControl";
+import {
+  clearSession,
+  getSessionToken,
+  getSessionUserId,
+  setSessionToken,
+  setSessionUserId
+} from "./accessControl";
+
 const apiBase = ((import.meta as any).env?.VITE_API_BASE_URL as string | undefined) ?? "";
 const defaultTenantId = "demo-tenant";
 
@@ -28,14 +37,19 @@ export async function saveToApi(key: string, payload: unknown): Promise<boolean>
 
 async function fetchJson<T>(path: string, options: RequestInit = {}): Promise<T | null> {
   try {
+    const token = getSessionToken();
+    const userId = getSessionUserId();
     const response = await fetch(buildUrl(path), {
       ...options,
       headers: {
         "content-type": "application/json",
         "x-tenant-id": getTenantId(),
+        ...(token ? { "x-session-token": token, authorization: `Bearer ${token}` } : {}),
+        ...(userId ? { "x-user-id": userId } : {}),
         ...(options.headers ?? {})
       }
     });
+    if (response.status === 401) return null;
     if (!response.ok) return null;
     return (await response.json()) as T;
   } catch {
@@ -108,7 +122,6 @@ export async function saveBinding(
   return Boolean(response?.stored);
 }
 
-import type { AccessProfile, UserScopes } from "./accessControl";
 
 export type RbacUser = {
   id: string;
@@ -154,7 +167,7 @@ export async function createRbacUser(payload: {
 }): Promise<RbacUser | null> {
   const response = await fetchJson<{ ok: boolean; user: RbacUser }>("/rbac/users", {
     method: "POST",
-    body: JSON.stringify({ ...payload, assignment: { tenantId: getTenantId() } })
+    body: JSON.stringify({ ...payload, password: (payload as { password?: string }).password, assignment: { tenantId: getTenantId() } })
   });
   return response?.user ?? null;
 }
@@ -201,7 +214,7 @@ export async function getRbacSecurityGroups(): Promise<RbacSecurityGroup[]> {
 }
 
 export async function saveRbacSecurityGroup(
-  payload: { id?: string; name: string; description?: string; status?: string },
+  payload: { id?: string; name: string; description?: string; status?: string; roleIds?: string[]; userIds?: string[] },
   isEdit: boolean
 ): Promise<RbacSecurityGroup | null> {
   const response = await fetchJson<{ ok: boolean; group: RbacSecurityGroup }>("/rbac/security-groups", {
@@ -234,4 +247,55 @@ export async function saveUserScopesApi(
     body: JSON.stringify({ userId, ...scopes })
   });
   return Boolean(response?.ok);
+}
+
+export async function login(
+  email: string,
+  password: string
+): Promise<{ token: string; user: { id: string; email: string; name: string }; profile: AccessProfile } | null> {
+  const apiBase = ((import.meta as any).env?.VITE_API_BASE_URL as string | undefined) ?? "";
+  const url = `${apiBase.replace(/\/$/, "")}/auth/login`;
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-tenant-id": getTenantId() },
+      body: JSON.stringify({ email, password })
+    });
+    if (!response.ok) return null;
+    const data = (await response.json()) as {
+      token: string;
+      user: { id: string; email: string; name: string };
+      profile: AccessProfile;
+    };
+    if (!data.token) return null;
+    setSessionToken(data.token);
+    setSessionUserId(data.user.id);
+    return data;
+  } catch {
+    return null;
+  }
+}
+
+export async function logout(): Promise<void> {
+  await fetchJson("/auth/logout", { method: "POST" });
+  clearSession();
+}
+
+export async function deleteRbacUser(id: string): Promise<boolean> {
+  const response = await fetchJson<{ deleted: boolean }>(
+    `/rbac/users?id=${encodeURIComponent(id)}`,
+    { method: "DELETE" }
+  );
+  return Boolean(response?.deleted);
+}
+
+export type RbacSecurityGroupsResponse = {
+  groups: RbacSecurityGroup[];
+  groupRoles: { groupId: string; roleId: string }[];
+  groupUsers: { groupId: string; userId: string }[];
+};
+
+export async function getRbacSecurityGroupsFull(): Promise<RbacSecurityGroupsResponse> {
+  const response = await fetchJson<RbacSecurityGroupsResponse>("/rbac/security-groups");
+  return response ?? { groups: [], groupRoles: [], groupUsers: [] };
 }

@@ -29,6 +29,24 @@ export type AccessProfile = {
 };
 
 export const SESSION_USER_KEY = "vivi.session.userId";
+export const SESSION_TOKEN_KEY = "vivi.session.token";
+
+export function getSessionToken(): string {
+  if (typeof window === "undefined") return "";
+  return window.localStorage.getItem(SESSION_TOKEN_KEY)?.trim() ?? "";
+}
+
+export function setSessionToken(token: string) {
+  if (typeof window === "undefined") return;
+  if (token) window.localStorage.setItem(SESSION_TOKEN_KEY, token);
+  else window.localStorage.removeItem(SESSION_TOKEN_KEY);
+  window.dispatchEvent(new Event("vivi:sessionchange"));
+}
+
+export function clearSession() {
+  setSessionUserId("");
+  setSessionToken("");
+}
 
 export function getSessionUserId(): string {
   if (typeof window === "undefined") return "";
