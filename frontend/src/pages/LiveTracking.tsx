@@ -45,6 +45,7 @@ import {
   type TelemetryLookupResponse
 } from "../utils/api";
 import DeviceHealthModal from "../components/DeviceHealthModal";
+import { movementFromSpeedKph, parseSpeedKph } from "../utils/assetTelemetryFields";
 import { isCms808Server, isGpsIotServer } from "../utils/regionServers";
 import { rememberLivePositions } from "../utils/assetLiveCache";
 import {
@@ -209,6 +210,8 @@ type AssetRow = {
   speedKph?: number | string;
   /** GPS fix time of the last live (Traccar) update applied to this row. */
   liveFixAtMs?: number;
+  /** Which feed set the live fields: Traccar (primary) or the telemetry stream. */
+  liveSource?: "traccar" | "stream";
   movement?: string;
   timeInIgnition: string;
   driverIdentified?: string;
@@ -1017,6 +1020,7 @@ const mergeTraccarLiveSnapshotIntoAssetRow = (
     lastPosition: applyTimestamp && snapshot.fixTime ? shownAt : row.lastPosition,
     telemetryAtMs: applyTimestamp && Number.isFinite(incomingAtMs) ? incomingAtMs : row.telemetryAtMs,
     liveFixAtMs: applyTimestamp && Number.isFinite(incomingAtMs) ? incomingAtMs : row.liveFixAtMs,
+    liveSource: applyTimestamp && Number.isFinite(incomingAtMs) ? "traccar" : row.liveSource,
     lastMoveAtMs,
     status: computeStatus({
       ...row,
@@ -1831,6 +1835,7 @@ const mergeAssetRows = (current: AssetRow[], incoming: AssetRow[]): AssetRow[] =
           lastPosition: previous.lastPosition,
           telemetryAtMs: previous.telemetryAtMs,
           liveFixAtMs: previous.liveFixAtMs,
+          liveSource: previous.liveSource,
           lastSeen: (previous as any).lastSeen ?? (asset as any).lastSeen
         }
       : keepPreviousDisplay
@@ -1933,6 +1938,9 @@ const formatDriverValue = (value: unknown): string => {
   }
   return text;
 };
+
+/** While a vehicle has a Traccar fix this recent, the telemetry stream does not override it. */
+const TRACCAR_PRIMARY_WINDOW_MS = 10 * 60_000;
 
 const parseTelemetryAtMs = (payload: any, fallback?: unknown): number => {
   const at =
@@ -2960,6 +2968,22 @@ export default function LiveTracking() {
                     const lastTrip = payload?.data?.lastTrip ?? payload?.lastTrip ?? "";
                     const incomingAtMs = parseTelemetryAtMs(payload, ev?.createdAt ?? ev?.created_at);
                     const isNewTelemetry = Number.isFinite(incomingAtMs) && incomingAtMs > existingTelemetryAtMs;
+                    // Traccar is the primary live source. This stream's samples are stamped with
+                    // server receive time (or "now" when they carry none), so they always looked
+                    // newer than Traccar's GPS fix and overwrote speed / position for the whole
+                    // fleet, then blocked the next Traccar update for ~30 s. While a vehicle has a
+                    // recent Traccar fix the stream leaves it alone; otherwise only newer samples apply.
+                    const existingLiveAt = Number((existing as any).liveFixAtMs);
+                    const hasRecentTraccarFix =
+                      (existing as any).liveSource === "traccar"
+                      && Number.isFinite(existingLiveAt)
+                      && Date.now() - existingLiveAt < TRACCAR_PRIMARY_WINDOW_MS;
+                    if (
+                      hasRecentTraccarFix
+                      || (Number.isFinite(existingLiveAt) && !(Number.isFinite(incomingAtMs) && incomingAtMs > existingLiveAt))
+                    ) {
+                      continue;
+                    }
 
                     const lastPosition = lastSeen ? formatTimestamp(String(lastSeen)) : existing.lastPosition;
                     const availabilityStatus = String(
@@ -3039,7 +3063,13 @@ export default function LiveTracking() {
                       lastMoveAtMs,
                       telemetryAtMs: Number.isFinite(incomingAtMs)
                         ? Math.max(existingTelemetryAtMs, incomingAtMs)
-                        : existingTelemetryAtMs
+                        : existingTelemetryAtMs,
+                      // Status reads speedKph first: derive it from this sample's speed, never
+                      // from whatever speed fields the raw payload happened to carry.
+                      speedKph: parseSpeedKph(speed) ?? (existing as any).speedKph,
+                      movement: movementFromSpeedKph(speed) ?? (existing as any).movement,
+                      liveFixAtMs: Number.isFinite(incomingAtMs) ? incomingAtMs : (existing as any).liveFixAtMs,
+                      liveSource: "stream"
                     };
                     if (typeof resolvedLat === "number" && typeof resolvedLng === "number" && locked && isNewTelemetry) {
                       lastLat = resolvedLat;
