@@ -3566,10 +3566,11 @@ export default function LiveTracking() {
       next.set(id, entry);
       const before = previous.get(id);
       if (!before) continue;
+      // Rows without coordinates (NaN) never count as moved: NaN !== NaN is always true.
       const moved =
         Number.isFinite(before.lat) && Number.isFinite(entry.lat)
           ? Math.hypot(entry.lat - before.lat, entry.lng - before.lng) > 0.01
-          : before.lat !== entry.lat;
+          : Number.isFinite(before.lat) !== Number.isFinite(entry.lat);
       if (before.status !== entry.status || moved) {
         changes.push({
           asset: row.registration || row.assetDescription || id,
