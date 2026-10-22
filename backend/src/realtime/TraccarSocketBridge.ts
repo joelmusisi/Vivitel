@@ -5,14 +5,23 @@
 
 import {
   fetchTraccarLivePayload,
+  traccarFetch,
   type RealtimeEnv
 } from "./realtimeSources";
+import { normalizeTraccarForwardPayload } from "./traccarForward";
 import { buildTraccarLivePayload, type TraccarLivePayload } from "./traccarLivePayload";
 
 const BRIDGE_NAME = "__traccar_socket_bridge__";
 const RECONNECT_ALARM_MS = 15_000;
 const INTEREST_TTL_MS = 5 * 60_000;
 const EVENT_RING_MAX = 200;
+/** Recent positions kept per device for Device Health (about 20 min at a 30 s report rate). */
+const HISTORY_MAX = 40;
+/** Forwarded positions arrive one at a time; push the fleet snapshot at most this often. */
+const FORWARD_FANOUT_MS = 2_000;
+
+type HistorySource = "socket" | "forward" | "http";
+type HistoryEntry = Record<string, any> & { __receivedAt: string; __source: HistorySource };
 
 type BridgeEnv = RealtimeEnv & {
   REALTIME_HUB?: DurableObjectNamespace;
@@ -50,6 +59,10 @@ export class TraccarSocketBridge implements DurableObject {
   private lastError = "";
   private interested: InterestMap = {};
   private recentEvents: any[] = [];
+  private history = new Map<number, HistoryEntry[]>();
+  private lastSocketAt = "";
+  private lastForwardAt = "";
+  private fanOutTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(
     private readonly state: DurableObjectState,
@@ -180,6 +193,77 @@ export class TraccarSocketBridge implements DurableObject {
     await this.state.storage.put("lastPayload", this.lastPayload);
   }
 
+  /** Latest position per device plus a short history for Device Health. */
+  private recordPosition(position: any, source: HistorySource) {
+    const id = Number(position?.deviceId ?? 0);
+    if (!Number.isFinite(id) || id <= 0) return false;
+    this.positions.set(id, position);
+    const list = this.history.get(id) ?? [];
+    const key = (row: any) => String(row?.id ?? "") || `${row?.fixTime ?? ""}|${row?.serverTime ?? ""}`;
+    const incomingKey = key(position);
+    if (!list.some((row) => key(row) === incomingKey)) {
+      list.push({ ...position, __receivedAt: new Date().toISOString(), __source: source });
+      if (list.length > HISTORY_MAX) list.splice(0, list.length - HISTORY_MAX);
+      this.history.set(id, list);
+    }
+    return true;
+  }
+
+  private scheduleFanOut() {
+    if (this.fanOutTimer) return;
+    this.fanOutTimer = setTimeout(() => {
+      this.fanOutTimer = null;
+      void this.fanOutLive();
+    }, FORWARD_FANOUT_MS);
+  }
+
+  /**
+   * Traccar HTTP forwarding (forward.url / event.forward.url with JSON). Fed by Traccar
+   * as positions arrive, so live data keeps flowing without polling the Traccar API.
+   */
+  private applyForwarded(body: unknown): { positions: number; events: any[] } {
+    const { devices, positions, events } = normalizeTraccarForwardPayload(body);
+    for (const device of devices) {
+      const id = Number(device?.id ?? 0);
+      if (Number.isFinite(id) && id > 0) this.devices.set(id, { ...(this.devices.get(id) ?? {}), ...device });
+    }
+    let recorded = 0;
+    for (const position of positions) {
+      if (this.recordPosition(position, "forward")) recorded += 1;
+    }
+    if (events.length) this.recentEvents = [...this.recentEvents, ...events].slice(-EVENT_RING_MAX);
+    if (recorded || events.length) this.lastForwardAt = new Date().toISOString();
+    return { positions: recorded, events };
+  }
+
+  /** Pushed data is current: the socket is open or Traccar forwarded something recently. */
+  private feedIsFresh(): boolean {
+    if (this.socket && this.socket.readyState === WebSocket.OPEN) return true;
+    const forwardedMs = Date.parse(this.lastForwardAt);
+    return Number.isFinite(forwardedMs) && Date.now() - forwardedMs < 2 * 60_000;
+  }
+
+  private resolveDeviceId(deviceIdRaw: string, imeiRaw: string): number {
+    const direct = Number(deviceIdRaw);
+    if (Number.isFinite(direct) && direct > 0) return direct;
+    const imei = String(imeiRaw ?? "").trim();
+    if (!imei) return 0;
+    for (const [id, device] of this.devices) {
+      if (String(device?.uniqueId ?? "").trim() === imei) return id;
+    }
+    return 0;
+  }
+
+  /** Cold start only: one Traccar read so the popup is not empty until the next report. */
+  private async seedHistoryFromHttp(deviceId: number) {
+    const to = new Date();
+    const from = new Date(to.getTime() - 30 * 60_000);
+    const query = new URLSearchParams({ deviceId: String(deviceId), from: from.toISOString(), to: to.toISOString() });
+    const resp = await traccarFetch(this.env, `/api/positions?${query.toString()}`).catch(() => null);
+    const rows = resp?.ok && Array.isArray(resp.body) ? (resp.body as any[]) : [];
+    for (const row of rows.slice(-HISTORY_MAX)) this.recordPosition(row, "http");
+  }
+
   private applySocketMessage(raw: string): { liveChanged: boolean; events: any[] } {
     let body: any = null;
     try {
@@ -198,11 +282,9 @@ export class TraccarSocketBridge implements DurableObject {
       liveChanged = true;
     }
     for (const position of positions) {
-      const id = Number(position?.deviceId ?? 0);
-      if (!Number.isFinite(id) || id <= 0) continue;
-      this.positions.set(id, position);
-      liveChanged = true;
+      if (this.recordPosition(position, "socket")) liveChanged = true;
     }
+    if (positions.length || devices.length) this.lastSocketAt = new Date().toISOString();
     if (events.length) {
       this.recentEvents = [...this.recentEvents, ...events].slice(-EVENT_RING_MAX);
     }
@@ -376,10 +458,76 @@ export class TraccarSocketBridge implements DurableObject {
       if (!this.lastPayload || !this.lastPayload.live?.length) {
         await this.seedFromHttp();
       }
-      const payload = this.lastPayload ?? this.buildPayload(this.socket ? "socket" : "cache");
-      return new Response(JSON.stringify(payload), {
+      // Rebuild when forwarding updated positions since the last snapshot.
+      const payload =
+        this.lastForwardAt && (!this.lastPayload || String(this.lastPayload.at ?? "") < this.lastForwardAt)
+          ? this.buildPayload("socket")
+          : this.lastPayload ?? this.buildPayload(this.socket ? "socket" : "cache");
+      return new Response(JSON.stringify({ ...payload, feedFresh: this.feedIsFresh() }), {
         headers: { "content-type": "application/json" }
       });
+    }
+
+    if ((path.endsWith("/forward") || path === "/forward") && request.method === "POST") {
+      let body: unknown = null;
+      try {
+        body = await request.json();
+      } catch {
+        return new Response(JSON.stringify({ ok: false, error: "invalid json" }), {
+          status: 400,
+          headers: { "content-type": "application/json" }
+        });
+      }
+      const applied = this.applyForwarded(body);
+      if (applied.positions) this.scheduleFanOut();
+      if (applied.events.length) void this.fanOutEvents(applied.events);
+      return new Response(JSON.stringify({ ok: true, positions: applied.positions, events: applied.events.length }), {
+        headers: { "content-type": "application/json" }
+      });
+    }
+
+    if (path.endsWith("/telemetry") || path === "/telemetry") {
+      const deviceId = this.resolveDeviceId(
+        String(url.searchParams.get("deviceId") ?? ""),
+        String(url.searchParams.get("imei") ?? "")
+      );
+      if (!deviceId) {
+        return new Response(JSON.stringify({ ok: false, error: "device not found" }), {
+          status: 404,
+          headers: { "content-type": "application/json" }
+        });
+      }
+      // Keep the push feed open while someone is watching.
+      await this.connectSocket();
+      await this.ensureAlarm();
+      if (!(this.history.get(deviceId)?.length)) await this.seedHistoryFromHttp(deviceId);
+      const history = [...(this.history.get(deviceId) ?? [])].reverse();
+      const device = this.devices.get(deviceId) ?? null;
+      return new Response(
+        JSON.stringify({
+          ok: true,
+          deviceId,
+          device: device
+            ? {
+                id: device.id,
+                name: device.name,
+                uniqueId: device.uniqueId,
+                status: device.status,
+                lastUpdate: device.lastUpdate,
+                model: device.model,
+                phone: device.phone
+              }
+            : null,
+          history,
+          feed: {
+            socket: Boolean(this.socket),
+            lastSocketAt: this.lastSocketAt || null,
+            lastForwardAt: this.lastForwardAt || null,
+            error: this.lastError || undefined
+          }
+        }),
+        { headers: { "content-type": "application/json", "cache-control": "no-store" } }
+      );
     }
 
     if (path.endsWith("/status") || path === "/status") {
@@ -390,6 +538,8 @@ export class TraccarSocketBridge implements DurableObject {
           devices: this.devices.size,
           positions: this.positions.size,
           interested: Object.keys(this.interested).length,
+          lastSocketAt: this.lastSocketAt || null,
+          lastForwardAt: this.lastForwardAt || null,
           error: this.lastError || undefined
         }),
         { headers: { "content-type": "application/json" } }
@@ -459,5 +609,45 @@ export async function fetchTraccarLiveFromBridge(
     return (await res.json()) as TraccarLivePayload;
   } catch {
     return null;
+  }
+}
+
+/** Hand a Traccar forwarding payload to the bridge (positions, devices, events). */
+export async function forwardTraccarPayloadToBridge(
+  env: { TRACCAR_SOCKET_BRIDGE?: DurableObjectNamespace },
+  body: unknown
+): Promise<{ ok: boolean; positions?: number; events?: number }> {
+  const ns = env.TRACCAR_SOCKET_BRIDGE;
+  if (!ns) return { ok: false };
+  try {
+    const stub = ns.get(ns.idFromName(BRIDGE_NAME));
+    const res = await stub.fetch("https://traccar-bridge/forward", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body)
+    });
+    if (!res.ok) return { ok: false };
+    return (await res.json()) as { ok: boolean; positions?: number; events?: number };
+  } catch {
+    return { ok: false };
+  }
+}
+
+/** Recent telemetry for one device from the push feed (Device Health). */
+export async function readDeviceTelemetryFromBridge(
+  env: { TRACCAR_SOCKET_BRIDGE?: DurableObjectNamespace },
+  params: { deviceId?: string; imei?: string }
+): Promise<{ status: number; body: unknown }> {
+  const ns = env.TRACCAR_SOCKET_BRIDGE;
+  if (!ns) return { status: 503, body: { ok: false, error: "Live telemetry bridge is not configured" } };
+  const query = new URLSearchParams();
+  if (params.deviceId) query.set("deviceId", params.deviceId);
+  if (params.imei) query.set("imei", params.imei);
+  try {
+    const stub = ns.get(ns.idFromName(BRIDGE_NAME));
+    const res = await stub.fetch(`https://traccar-bridge/telemetry?${query.toString()}`, { method: "GET" });
+    return { status: res.status, body: await res.json() };
+  } catch {
+    return { status: 502, body: { ok: false, error: "Live telemetry bridge unavailable" } };
   }
 }

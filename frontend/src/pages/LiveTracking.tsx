@@ -44,6 +44,7 @@ import {
   type SiteTimeZoneSettings,
   type TelemetryLookupResponse
 } from "../utils/api";
+import DeviceHealthModal from "../components/DeviceHealthModal";
 import { isCms808Server, isGpsIotServer } from "../utils/regionServers";
 import { rememberLivePositions } from "../utils/assetLiveCache";
 import {
@@ -2396,6 +2397,10 @@ export default function LiveTracking() {
   });
   const [trailAssetId, setTrailAssetId] = useState<string | null>(null);
   const [trailLoadingAssetId, setTrailLoadingAssetId] = useState<string | null>(null);
+  // Device Health: live raw telemetry for one device. Platform Admin and Own Support only
+  // (the server enforces the same rule on /api/device-health).
+  const canViewDeviceHealth = isOwnSupportPrincipal();
+  const [deviceHealthAsset, setDeviceHealthAsset] = useState<AssetRow | null>(null);
   const [showDiagnosticsModal, setShowDiagnosticsModal] = useState(false);
   const [diagnosticsAsset, setDiagnosticsAsset] = useState<AssetRow | null>(null);
   const [diagnosticsOpen, setDiagnosticsOpen] = useState({
@@ -7755,6 +7760,17 @@ export default function LiveTracking() {
             >
               Diagnostics
             </button>
+            {canViewDeviceHealth && (
+              <button
+                type="button"
+                onClick={() => {
+                  setDeviceHealthAsset(activeMenuAsset);
+                  setOpenActions(null);
+                }}
+              >
+                Device Health
+              </button>
+            )}
             <button
               type="button"
               onClick={() => {
@@ -9640,6 +9656,19 @@ export default function LiveTracking() {
                 </div>
               </div>
             </div>
+          )}
+          {canViewDeviceHealth && deviceHealthAsset && (
+            <DeviceHealthModal
+              assetLabel={
+                String(deviceHealthAsset.assetDescription ?? "").trim()
+                || String(deviceHealthAsset.registration ?? "").trim()
+                || String(deviceHealthAsset.imei ?? "").trim()
+                || "Asset"
+              }
+              deviceId={deviceHealthAsset.traccarDeviceId}
+              imei={String(deviceHealthAsset.imei ?? "").replace(/\D+/g, "") || undefined}
+              onClose={() => setDeviceHealthAsset(null)}
+            />
           )}
           {showDiagnosticsModal && diagnosticsAsset && (
             <div className="assets-add-modal" role="dialog" aria-modal="true" aria-label="Diagnostics">

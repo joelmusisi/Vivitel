@@ -1,0 +1,132 @@
+.assets-add-card.device-health-card {
+  width: min(1280px, 97vw);
+  max-height: 92vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.device-health-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow: hidden;
+  min-height: 0;
+}
+
+.device-health-refresh {
+  font-size: 12px;
+  color: #64748b;
+  align-self: center;
+  white-space: nowrap;
+}
+
+.device-health-error {
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: #fef2f2;
+  color: #991b1b;
+  font-size: 13px;
+}
+
+.device-health-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 8px;
+}
+
+.device-health-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid #e2e8f0;
+  border-left-width: 4px;
+  background: #ffffff;
+}
+
+.device-health-stat strong {
+  font-size: 16px;
+  color: #0f172a;
+  word-break: break-all;
+}
+
+.device-health-stat-label,
+.device-health-stat-hint {
+  font-size: 11px;
+  color: #64748b;
+}
+
+.device-health-ok { border-left-color: #16a34a; }
+.device-health-warn { border-left-color: #d97706; }
+.device-health-bad { border-left-color: #dc2626; }
+.device-health-info { border-left-color: #94a3b8; }
+
+.device-health-feed {
+  font-size: 12px;
+  color: #475569;
+}
+
+.device-health-empty {
+  padding: 24px;
+  text-align: center;
+  color: #64748b;
+  border: 1px dashed #cbd5e1;
+  border-radius: 10px;
+}
+
+.device-health-table-wrap {
+  overflow: auto;
+  min-height: 0;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+}
+
+.device-health-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.device-health-table th,
+.device-health-table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid #f1f5f9;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.device-health-table th {
+  position: sticky;
+  top: 0;
+  background: #f8fafc;
+  color: #334155;
+  font-weight: 600;
+  cursor: help;
+}
+
+.device-health-table td.is-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.device-health-table tbody tr {
+  cursor: pointer;
+}
+
+.device-health-table tbody tr:hover,
+.device-health-table tbody tr.is-expanded {
+  background: #f1f5f9;
+}
+
+.device-health-raw td {
+  background: #0f172a;
+}
+
+.device-health-raw pre {
+  margin: 0;
+  color: #e2e8f0;
+  font-size: 11px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}

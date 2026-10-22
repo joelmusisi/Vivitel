@@ -191,8 +191,14 @@ import {
   readRouteLibraryFromDurableStore,
   readScopedKvFromDurableStore
 } from "./realtime/ViviRealtimeHub";
-import { TraccarSocketBridge } from "./realtime/TraccarSocketBridge";
-import { buildTraccarLivePayload } from "./realtime/traccarLivePayload";
+import {
+  TraccarSocketBridge,
+  fetchTraccarLiveFromBridge,
+  forwardTraccarPayloadToBridge,
+  readDeviceTelemetryFromBridge
+} from "./realtime/TraccarSocketBridge";
+import { normalizeTraccarForwardPayload } from "./realtime/traccarForward";
+import { buildTraccarLivePayload, type TraccarLivePayload } from "./realtime/traccarLivePayload";
 import {
   gpsIotLiveCacheKey,
   mergeGpsIotLiveDevices,
@@ -7860,6 +7866,21 @@ async function handleWorkerFetch(request: Request, rawEnv: Env, ctx: ExecutionCo
         return json(result.body, { status: result.status });
       }
 
+      // Device Health (Live Tracking): recent raw telemetry for one device from the
+      // push feed (Traccar socket / forwarding). Platform Admin and Own Support only.
+      if (url.pathname === "/api/device-health") {
+        if (request.method !== "GET") return badRequest("Use GET.");
+        const tenantId = getTenantId(request, url);
+        const actor = await readRbacActorContext(request, env, tenantId || "");
+        if (!actor) return unauthorized();
+        if (!(actor.isAdmin || actor.isOwnSupport)) return forbidden();
+        const deviceId = String(url.searchParams.get("deviceId") ?? "").trim();
+        const imei = String(url.searchParams.get("imei") ?? "").trim();
+        if (!deviceId && !imei) return badRequest("deviceId or imei is required.");
+        const result = await readDeviceTelemetryFromBridge(env, { deviceId, imei });
+        return json(result.body, { status: result.status, headers: { "cache-control": "no-store" } });
+      }
+
       if (url.pathname.startsWith("/api/home/dashboard/")) {
         const auth = await requireApiKey(request, env);
         if (auth) return auth;
@@ -10659,6 +10680,12 @@ async function handleWorkerFetch(request: Request, rawEnv: Env, ctx: ExecutionCo
       case "/api/traccar/proxy/live": {
         const auth = await requireApiKey(request, env);
         if (auth) return auth;
+        // Pushed feed first (Traccar socket / forwarding): no Traccar API calls per request.
+        const bridged = (await fetchTraccarLiveFromBridge(env)) as (TraccarLivePayload & { feedFresh?: boolean }) | null;
+        if (bridged?.feedFresh && Array.isArray(bridged.live) && bridged.live.length) {
+          const { feedFresh: _fresh, ...payload } = bridged;
+          return json(payload);
+        }
         try {
           const [devicesResp, positionsResp] = await Promise.all([
             traccarFetch(env, "/api/devices?all=true"),
@@ -11428,12 +11455,40 @@ async function handleWorkerFetch(request: Request, rawEnv: Env, ctx: ExecutionCo
           return badRequest("Invalid JSON body.");
         }
 
+        let tenantId = getTenantId(request, url);
+
+        // Traccar HTTP forwarding (forward.url + forward.json, event.forward.url):
+        // { position, device } / { event, position, device }. These are pushed by Traccar
+        // as data arrives, so live views stay current without polling the Traccar API.
+        const forwarded = normalizeTraccarForwardPayload(body);
+        const isWrappedForward =
+          (Array.isArray(body) ? body : [body]).some(
+            (item: any) => item && typeof item === "object" && (item.position || item.device || item.event)
+          );
+        if (isWrappedForward) {
+          await forwardTraccarPayloadToBridge(env, body);
+          for (const event of forwarded.events) {
+            await processTraccarUserAlertEventIngest(env, event as Record<string, unknown>, tenantId || undefined).catch(
+              (error) => console.warn("Forwarded Traccar event dispatch failed:", error)
+            );
+          }
+          return json({
+            stored: true,
+            kind: "traccar-forward",
+            positions: forwarded.positions.length,
+            events: forwarded.events.length
+          });
+        }
+        // Bare positions / events (older webhook setups) also feed the live bridge.
+        if (forwarded.positions.length || forwarded.events.length) {
+          await forwardTraccarPayloadToBridge(env, body);
+        }
+
         // Traccar webhooks can vary. We accept:
         // - a Position object (with latitude/longitude)
         // - an array of Positions
         // - an object with { positionId } and optionally { deviceId }
         const payload = Array.isArray(body) ? body[0] : body;
-        let tenantId = getTenantId(request, url);
 
         if (payload && typeof payload === "object" && isTraccarEventPayload(payload as Record<string, unknown>)) {
           const preferredTenant = tenantId;
