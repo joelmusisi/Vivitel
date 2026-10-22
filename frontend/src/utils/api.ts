@@ -6,7 +6,9 @@ import {
   readActiveSiteName,
   readActiveTenantId,
   registerKvCacheInvalidator,
-  registerSessionCacheFlusher
+  registerSessionCacheFlusher,
+  restoreSessionResume,
+  saveSessionResume
 } from "./tenantContext";
 import { mergeAssetsKeepingNewerLive, overlayLivePositions, rememberLivePositions } from "./assetLiveCache";
 import {
@@ -388,6 +390,9 @@ export const setStoredApiKey = (value: string) => {
   const previous = String(window.localStorage.getItem(scopedKey) ?? "").trim();
   if (!v) {
     const previousTenantId = readActiveTenantId();
+    // Every sign-out path (button, inactivity, expired session) ends here: save the
+    // account's hierarchy and page while its principal and tenant are still known.
+    saveSessionResume();
     window.localStorage.removeItem(scopedKey);
     window.localStorage.removeItem(storedApiKeyKey);
     window.localStorage.removeItem("vivi.auth.principal");
@@ -402,6 +407,7 @@ export const setStoredApiKey = (value: string) => {
   }
   if (previous !== v) {
     const previousTenantId = readActiveTenantId();
+    saveSessionResume();
     window.localStorage.removeItem("vivi.auth.principal");
     window.localStorage.removeItem("vivi.tenantId");
     // New session must not keep another account's site/data.
@@ -1343,17 +1349,27 @@ export async function login(email: string, password: string, region?: string): P
     }
     const token = String(body?.token ?? "").trim();
     if (!token) return { ok: false, error: "Login did not return a token." };
+    // The principal is gone after a sign-out, so compare login emails to tell
+    // "same account back" from "someone else on this browser".
+    const previousEmail =
+      typeof window === "undefined" ? "" : String(window.localStorage.getItem("vivi.auth.lastLoginEmail") ?? "").trim();
+    const sameAccount = Boolean(previousEmail) && previousEmail.toLowerCase() === String(email ?? "").trim().toLowerCase();
     if (typeof window !== "undefined") {
       window.localStorage.setItem("vivi.auth.lastLoginEmail", String(email ?? "").trim());
       window.localStorage.removeItem("vivi.impersonatedLabel");
       window.localStorage.removeItem("vivi.adminApiKey");
       window.localStorage.removeItem("vivi.adminTenantId");
       window.localStorage.removeItem("vivi.returnSession");
-      // Drop prior site/org/session data before the new session hydrates.
+    }
+    if (typeof window !== "undefined") {
+      // Drop prior site/org/session data before the new session hydrates
+      // (this also saves the previous account's selection for its next login).
       clearSessionClientState(readActiveTenantId());
     }
     setStoredApiKey(token);
     await refreshAuthMe();
+    // Same account back: land on the hierarchy and page it left.
+    restoreSessionResume(sameAccount);
     return { ok: true };
   } catch (err: any) {
     const message = String(err?.message ?? err ?? "").trim();

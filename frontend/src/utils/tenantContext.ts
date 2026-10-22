@@ -1,4 +1,5 @@
 import { isSyntheticTenantId } from "./hierarchyDisplay";
+import { POST_LOGIN_PATH_KEY } from "./phoneMode";
 import { isLegacyFlatTenantId } from "./regionHierarchy";
 
 const LIVE_TRACKING_KEYS = [
@@ -286,8 +287,99 @@ export function clearTenantClientState(previousTenantId?: string) {
   flushRuntimeCaches();
 }
 
+/** Hierarchy picks restored for the same account after it signs back in. */
+const RESUME_SELECTION_KEYS = [
+  "vivi.tenantId",
+  "vivi.activeSite",
+  "vivi.activeSiteId",
+  "vivi.activeDealerId",
+  "vivi.activeOrgId",
+  "vivi.activeDbId",
+  "vivi.activeDbSites",
+  "vivi.selectedPath",
+  "vivi.selectedScope"
+] as const;
+/** User-scoped keys (e.g. `vivi.contextType:<tenant>:<user>`) are matched by prefix. */
+const RESUME_SELECTION_PREFIXES = ["vivi.contextType", "vivi.contextName", "vivi.dbProfile.selected"] as const;
+const SESSION_RESUME_PREFIX = "vivi.sessionResume:";
+const SESSION_RESUME_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+
+type SessionResume = { savedAt: number; path: string; values: Record<string, string> };
+
+const sessionResumeKey = (userId: string) => `${SESSION_RESUME_PREFIX}${userId.trim().toLowerCase()}`;
+
+/**
+ * Remember this account's hierarchy selection and page before the session state is
+ * wiped (logout, expiry, or the next login), so the same account lands back on them.
+ * An empty selection never overwrites a saved one.
+ */
+export function saveSessionResume(userId = readActiveUserId()) {
+  if (typeof window === "undefined" || !userId) return;
+  try {
+    const ls = window.localStorage;
+    const values: Record<string, string> = {};
+    for (const key of RESUME_SELECTION_KEYS) {
+      const value = ls.getItem(key);
+      if (value != null && value.trim()) values[key] = value;
+    }
+    for (let i = 0; i < ls.length; i += 1) {
+      const key = ls.key(i) ?? "";
+      if (RESUME_SELECTION_PREFIXES.some((prefix) => key.startsWith(prefix))) {
+        const value = ls.getItem(key);
+        if (value != null && value.trim()) values[key] = value;
+      }
+    }
+    const hasSelection = Boolean(
+      values["vivi.selectedPath"] || values["vivi.activeSite"] || values["vivi.activeDbId"] || values["vivi.activeOrgId"]
+    );
+    if (!hasSelection) return;
+    const record: SessionResume = {
+      savedAt: Date.now(),
+      path: String(ls.getItem(POST_LOGIN_PATH_KEY) ?? "").trim(),
+      values
+    };
+    ls.setItem(sessionResumeKey(userId), JSON.stringify(record));
+  } catch {
+    // ignore quota / private mode
+  }
+}
+
+/**
+ * After a successful login: put back the signed-in account's saved hierarchy and page.
+ * OrgRibbon validates the restored path against the account's current access, so a
+ * site the user lost is dropped there. A different account never inherits the previous
+ * account's return page.
+ */
+export function restoreSessionResume(sameAccount: boolean, userId = readActiveUserId()) {
+  if (typeof window === "undefined" || !userId) return;
+  const ls = window.localStorage;
+  let record: SessionResume | null = null;
+  try {
+    const raw = ls.getItem(sessionResumeKey(userId));
+    record = raw ? (JSON.parse(raw) as SessionResume) : null;
+  } catch {
+    record = null;
+  }
+  const fresh = record && Number.isFinite(record.savedAt) && Date.now() - record.savedAt < SESSION_RESUME_MAX_AGE_MS;
+  try {
+    if (fresh && record) {
+      for (const [key, value] of Object.entries(record.values ?? {})) {
+        if (typeof value === "string") ls.setItem(key, value);
+      }
+      if (record.path) ls.setItem(POST_LOGIN_PATH_KEY, record.path);
+      else if (!sameAccount) ls.removeItem(POST_LOGIN_PATH_KEY);
+    } else if (!sameAccount) {
+      // The stored return page belongs to whoever used this browser before.
+      ls.removeItem(POST_LOGIN_PATH_KEY);
+    }
+  } catch {
+    // ignore
+  }
+}
+
 /** Full wipe for logout / new login — selection, site UI, tenant caches, memory. */
 export function clearSessionClientState(previousTenantId?: string) {
+  saveSessionResume();
   clearSelectionClientState();
   clearTenantClientState(previousTenantId);
   if (typeof window === "undefined") return;

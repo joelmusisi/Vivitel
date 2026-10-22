@@ -7561,7 +7561,14 @@ async function refreshZaCms808Fleet(env: Env) {
           }
         }
       });
-      await invalidateAssetsListCache(env, tenantId);
+      // Positions only: clear the list cache but tell clients it is a position refresh,
+      // so open Live Tracking pages do not reload their whole asset list every 2 minutes.
+      await kvDeleteSafe(env, workerAssetsCacheKey(tenantId));
+      try {
+        await notifyRealtimeCatalog(env, tenantId, { reason: "positions" });
+      } catch {
+        // best-effort realtime fan-out
+      }
     } catch {
       // One tenant must not stop the live 808 refresh for the others.
     }

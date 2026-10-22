@@ -1028,6 +1028,20 @@ type LiveMapMarkerProps = {
   zIndexOffset?: number;
 };
 
+type MarkerRenderRow = {
+  asset: AssetRow;
+  index: number;
+  lat: number;
+  lng: number;
+  markerKey: string;
+};
+
+/** How long a marker stays at its last position after its asset drops out of one refresh. */
+const LIVE_MARKER_GRACE_MS = 8_000;
+
+const hideLiveMarkerAssetIdFor = (tripReplayOpen: boolean, tripReplayTrailAssetId: string | null | undefined) =>
+  tripReplayOpen && tripReplayTrailAssetId ? tripReplayTrailAssetId : "";
+
 function LiveMapMarker({ position, icon, eventHandlers, zIndexOffset = 0 }: LiveMapMarkerProps) {
   const lat = position[0];
   const lng = position[1];
@@ -4105,6 +4119,9 @@ export default function LiveTracking() {
       onStatus: (status) => setWsLiveOpen(status === "open"),
       onMessage: (message) => {
         if (message.type === "catalog.assets") {
+          // Position-only refreshes (the CMS808 cron) are already covered by the live
+          // polls; a full context refresh here reloaded the list and blinked markers.
+          if (String((message.payload as any)?.reason ?? "").trim() === "positions") return;
           const eventTenant = String((message.payload as any)?.tenantId ?? "").trim();
           const activeTenant = String(readActiveTenantId() || getTenantId() || "").trim();
           if (eventTenant && activeTenant && eventTenant !== activeTenant) return;
@@ -6434,14 +6451,23 @@ export default function LiveTracking() {
     };
   }, [trailAssetIdentityKey, mapLayers.eventsOnTrail, mapLayers.showEntireLastTrip, mapLayers.hours, trailAssetId, selectedNotificationTokens]);
 
+  // Same filters → same fleet on the map. A change here (site, lock, single-asset view,
+  // fleet filter) drops markers at once instead of holding them through the grace period.
+  const markerScopeKey = [
+    readScopeSignature(),
+    activeSiteFilter,
+    lockedAssetId ?? "",
+    isSingleAssetView ? `single:${singleAsset?.id ?? ""}` : "",
+    fleetFilter ? "fleet-filter" : "",
+    hideLiveMarkerAssetIdFor(tripReplayOpen, tripReplayTrailAssetId)
+  ].join("|");
+  const lastMarkerRowsRef = useRef<{ scopeKey: string; rows: Map<string, { row: MarkerRenderRow; seenAtMs: number }> }>({
+    scopeKey: "",
+    rows: new Map()
+  });
+
   const markerRenderRows = useMemo(() => {
-    const rows: Array<{
-      asset: AssetRow;
-      index: number;
-      lat: number;
-      lng: number;
-      markerKey: string;
-    }> = [];
+    const rows: MarkerRenderRow[] = [];
     const seen = new Set<string>();
     mapAssets.forEach((asset, index) => {
       const pos = getAssetLatLng(asset, index);
@@ -6458,11 +6484,33 @@ export default function LiveTracking() {
         markerKey: identity
       });
     });
-    return rows;
-  }, [mapAssets]);
 
-  const hideLiveMarkerAssetId =
-    tripReplayOpen && tripReplayTrailAssetId ? tripReplayTrailAssetId : null;
+    // An asset can drop out of one refresh (list reload, a merge without coordinates)
+    // and come back on the next, which unmounted its marker for a couple of seconds.
+    // Keep drawing it at its last position for a short grace period instead.
+    const memo = lastMarkerRowsRef.current;
+    if (memo.scopeKey !== markerScopeKey) {
+      memo.scopeKey = markerScopeKey;
+      memo.rows = new Map();
+    }
+    const now = Date.now();
+    const present = new Set<string>();
+    for (const row of rows) {
+      present.add(row.markerKey);
+      memo.rows.set(row.markerKey, { row, seenAtMs: now });
+    }
+    for (const [key, entry] of memo.rows) {
+      if (present.has(key)) continue;
+      if (now - entry.seenAtMs > LIVE_MARKER_GRACE_MS) {
+        memo.rows.delete(key);
+        continue;
+      }
+      rows.push(entry.row);
+    }
+    return rows;
+  }, [mapAssets, markerScopeKey]);
+
+  const hideLiveMarkerAssetId = hideLiveMarkerAssetIdFor(tripReplayOpen, tripReplayTrailAssetId) || null;
   const clusterMarkerRows = hideLiveMarkerAssetId
     ? markerRenderRows.filter((row) => String(row.asset.id ?? "").trim() !== hideLiveMarkerAssetId)
     : markerRenderRows;

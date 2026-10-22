@@ -4,7 +4,13 @@ import {
   eventTypeMatchesStreamMonitor,
   readInfoHubStreamMonitor
 } from "./infoHubStreamMonitor";
-import { buildAlertMapAttachment, type AlertMapAttachment } from "./alertMapImage";
+import {
+  AlertEmailRetryableError,
+  alertEmailEventKey,
+  createRecipientEmailResolver,
+  sendAlertEmailOnce
+} from "./alertEmailDelivery";
+import { buildAlertMapAttachment } from "./alertMapImage";
 import {
   buildAlertMapImageUrl,
   buildDeviceAlertEmailHtml,
@@ -18,7 +24,6 @@ import {
   loadSiteTimeZoneSettings,
   resolveNotificationValue,
   resolveSystemAssetId,
-  VIVI_ALERT_EMAIL_FROM_NAME,
   type DeviceAlertEmailEvent
 } from "./deviceAlertEmail";
 import { createRegionScopedKv, isTraccarStorageTenant } from "./regionStorage";
@@ -154,38 +159,6 @@ async function traccarFetch(env: UserAlertDispatchEnv, pathnameWithQuery: string
     body = null;
   }
   return { ok: response.ok, status: response.status, body };
-}
-
-async function sendResendEmail(
-  env: UserAlertDispatchEnv,
-  input: { to: string; subject: string; text: string; html?: string; attachments?: AlertMapAttachment[] }
-) {
-  const apiKey = String(env.RESEND_API_KEY ?? "").trim();
-  const fromEmail = String(env.MAIL_FROM ?? "").trim();
-  const fromName = String(env.MAIL_FROM_NAME ?? VIVI_ALERT_EMAIL_FROM_NAME).trim() || VIVI_ALERT_EMAIL_FROM_NAME;
-  if (!apiKey || !fromEmail) {
-    throw new Error("MAIL_FROM or RESEND_API_KEY is not configured");
-  }
-  const from = fromName ? `${fromName} <${fromEmail}>` : fromEmail;
-  const response = await fetch("https://api.resend.com/emails", {
-    method: "POST",
-    headers: {
-      authorization: `Bearer ${apiKey}`,
-      "content-type": "application/json"
-    },
-    body: JSON.stringify({
-      from,
-      to: [input.to],
-      subject: input.subject,
-      text: input.text,
-      ...(input.html ? { html: input.html } : {}),
-      ...(input.attachments?.length ? { attachments: input.attachments } : {})
-    })
-  });
-  if (!response.ok) {
-    const text = await response.text().catch(() => "");
-    throw new Error(`Resend failed (${response.status}): ${text || response.statusText}`);
-  }
 }
 
 async function listDistinctTenantIds(env: UserAlertDispatchEnv): Promise<string[]> {
@@ -545,12 +518,18 @@ function personUserId(person: AlertPerson): string {
   return id;
 }
 
-/** People explicitly added on an alert. Site membership alone is not a recipient. */
+/**
+ * People explicitly added on an alert. Site membership alone is not a recipient.
+ * A user picked from the site list counts even without a saved address: the current
+ * address is looked up by user id when the email is sent.
+ */
 export function explicitAlertRecipients(binding: NotificationBindingRow): {
   email: AlertPerson[];
   push: AlertPerson[];
 } {
-  const email = (binding.emailRecipients ?? []).filter((person) => personEmail(person).includes("@"));
+  const email = (binding.emailRecipients ?? []).filter(
+    (person) => personEmail(person).includes("@") || Boolean(personUserId(person))
+  );
   const push = (binding.pushRecipients ?? []).filter((person) => personUserId(person) || personEmail(person).includes("@"));
   if (email.length || push.length) return { email, push };
 
@@ -618,7 +597,7 @@ export async function loadSiteNotificationLibrary(
   }
 }
 
-type ViviNotificationRule = {
+export type ViviNotificationRule = {
   traccarType: string;
   description: string;
   delivery: UserAlertDelivery;
@@ -637,7 +616,7 @@ function readSelectedLocations(viviConfig: unknown): string[] {
   }
 }
 
-async function loadViviNotificationRules(env: UserAlertDispatchEnv): Promise<ViviNotificationRule[]> {
+export async function loadViviNotificationRules(env: UserAlertDispatchEnv): Promise<ViviNotificationRule[]> {
   const resp = await traccarFetch(env, "/api/notifications");
   if (!resp.ok || !Array.isArray(resp.body)) return [];
 
@@ -864,10 +843,11 @@ export async function dispatchViviUserAlertsForTraccarEvent(
 
   const emailTo = new Map<string, string>();
   const pushUsers = new Map<string, string>();
+  const resolveEmail = createRecipientEmailResolver(env);
   for (const binding of audienceBindings) {
     const people = explicitAlertRecipients(binding);
     for (const person of people.email) {
-      const email = personEmail(person);
+      const email = await resolveEmail(person);
       if (email) emailTo.set(email, String(person.name ?? email).trim() || email);
     }
     for (const person of people.push) {
@@ -919,6 +899,7 @@ export async function dispatchViviUserAlertsForTraccarEvent(
   const subject = buildDeviceAlertEmailSubject(emailEvent);
   const text = buildDeviceAlertEmailText(emailEvent);
   const html = buildDeviceAlertEmailHtml(emailEvent);
+  const retryableEmailFailures: unknown[] = [];
 
   await Promise.all([
     ...[...pushUsers.keys()].map(async (userId) => {
@@ -948,7 +929,9 @@ export async function dispatchViviUserAlertsForTraccarEvent(
     }),
     ...[...emailTo.keys()].map(async (email) => {
       try {
-        await sendResendEmail(env, {
+        await sendAlertEmailOnce(env, {
+          tenantId,
+          eventKey: alertEmailEventKey({ ...input.traccarEvent, type: eventType }),
           to: email,
           subject,
           text,
@@ -956,12 +939,17 @@ export async function dispatchViviUserAlertsForTraccarEvent(
           attachments: mapAttachment ? [mapAttachment] : undefined
         });
       } catch (error) {
-        // Continue with the other people added on this alert.
+        // Continue with the other people added on this alert; retry this one next poll.
+        retryableEmailFailures.push(error);
         console.warn("User alert email failed:", email, error);
       }
     })
   ]);
 
+  if (retryableEmailFailures.length) {
+    // Leave the event open: the poll window is retried, and people already emailed are skipped.
+    throw new AlertEmailRetryableError(`${retryableEmailFailures.length} alert email(s) failed; will retry`);
+  }
   if (Number.isFinite(eventId) && eventId > 0) {
     await env.ViviTEL.put(alertDedupeKey(tenantId, eventId), "1", { expirationTtl: 60 * 60 * 24 * 14 });
   }
@@ -1113,8 +1101,14 @@ export async function processTraccarUserAlertEventIngest(
 ) {
   const deviceId = Number(payload.deviceId);
   const tenants = await resolveTenantsForTraccarDevice(env, deviceId, preferredTenantId);
+  const rules = await loadViviNotificationRules(env).catch(() => [] as ViviNotificationRule[]);
+  const logFailure = (label: string) => (error: unknown) => {
+    // The scheduled poll covers the same events and retries failed emails.
+    console.warn(label, error);
+  };
   for (const tenantId of tenants) {
     await dispatchViviUserAlertsForTraccarEvent(env, {
+      rules,
       tenantId,
       traccarEvent: {
         id: Number(payload.id),
@@ -1127,7 +1121,7 @@ export async function processTraccarUserAlertEventIngest(
           ? payload.attributes
           : {}) as Record<string, unknown>
       }
-    });
+    }).catch(logFailure("User alert dispatch failed:"));
     await dispatchInfoHubStreamMonitorAlerts(env, {
       tenantId,
       traccarEvent: {
@@ -1140,10 +1134,11 @@ export async function processTraccarUserAlertEventIngest(
           ? payload.attributes
           : {}) as Record<string, unknown>
       }
-    });
+    }).catch(logFailure("Stream alert dispatch failed:"));
     const { dispatchDeviceAlertEmailsForTraccarEvent } = await import("./deviceAlertDispatch");
     await dispatchDeviceAlertEmailsForTraccarEvent(env, {
       tenantId,
+      rules,
       traccarEvent: {
         id: Number(payload.id),
         type: String(payload.type ?? ""),
@@ -1152,9 +1147,8 @@ export async function processTraccarUserAlertEventIngest(
         attributes: (payload.attributes && typeof payload.attributes === "object"
           ? payload.attributes
           : {}) as Record<string, unknown>
-      },
-      notificationName: String(payload.description ?? payload.type ?? "").trim() || undefined
-    });
+      }
+    }).catch(logFailure("Device alert email failed:"));
   }
 }
 
@@ -1261,10 +1255,12 @@ async function pollTenantEvents(
           console.warn("Stream alert dispatch failed:", error);
         });
         const { dispatchDeviceAlertEmailsForTraccarEvent } = await import("./deviceAlertDispatch");
+        // Traccar events carry a type (e.g. deviceOverspeed), not the alert's name; the
+        // dispatcher maps the type to the site's notification names through the rules.
         await dispatchDeviceAlertEmailsForTraccarEvent(env, {
           tenantId,
           traccarEvent,
-          notificationName: String(event.description ?? event.type ?? "").trim() || undefined
+          rules
         }).catch((error) => {
           failed = true;
           console.warn("Device alert email failed:", error);

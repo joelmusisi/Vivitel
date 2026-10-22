@@ -591,20 +591,68 @@ export default function Streams() {
     setStoredNotifications(readStoredNotifications());
   }, []);
 
+  // Saving the full history to storage on every batch blocked the main thread;
+  // write the latest list once things settle instead.
+  const latestNotificationsRef = useRef<StreamLiveNotification[]>([]);
+  const persistTimerRef = useRef<number | undefined>(undefined);
+  const schedulePersistNotifications = useCallback(() => {
+    window.clearTimeout(persistTimerRef.current);
+    persistTimerRef.current = window.setTimeout(() => {
+      // Persist on top of the saved history so reopening the page never overwrites older events.
+      const persisted = mergeLiveNotifications(
+        readStoredNotifications() as unknown as StreamLiveNotification[],
+        latestNotificationsRef.current
+      );
+      writeStoredNotifications(
+        persisted.map((note) => ({
+          id: note.id,
+          asset: note.asset,
+          event: note.event,
+          location: note.location,
+          speed: note.speed,
+          distance: note.distance,
+          driver: note.driver,
+          actioned: note.actioned,
+          severity: note.severity,
+          timestamp: note.timestamp,
+          deviceId: note.deviceId,
+          traccarType: note.traccarType,
+          positionId: note.positionId,
+          lat: note.lat,
+          lng: note.lng,
+          heading: note.heading
+        }))
+      );
+    }, 1500);
+  }, []);
+  useEffect(() => () => window.clearTimeout(persistTimerRef.current), []);
+
+  const commitLiveNotifications = useCallback(
+    (notes: StreamLiveNotification[]) => {
+      setLiveNotifications((current) => {
+        const merged = mergeLiveNotifications(current, notes);
+        latestNotificationsRef.current = merged;
+        return merged;
+      });
+      schedulePersistNotifications();
+    },
+    [schedulePersistNotifications]
+  );
+
   const ingestLiveNotifications = useCallback(
     async (fresh: StreamLiveNotification[], opts?: { playSound?: boolean; trusted?: boolean }) => {
       if (!fresh.length) return;
-      const enrichedFresh = await enrichLiveNotifications(fresh);
-      if (!enrichedFresh.length) return;
+      // Enrichment only fills location, speed, driver and coordinates; it never changes
+      // the asset or event, so filter and show the raw events first.
       const siteNames = availableAssetsRef.current.map((asset) => asset.name);
       // Trusted batches were already scoped to this site by the server / scoped device lookup,
       // so an empty (not yet cached) asset list must not discard them.
       const scopedFresh =
         siteNames.length > 0
-          ? enrichedFresh.filter((note) => assetMatchesAllowedNames(note.asset, siteNames))
+          ? fresh.filter((note) => assetMatchesAllowedNames(note.asset, siteNames))
           : readActiveSiteName() && !opts?.trusted
             ? []
-            : enrichedFresh;
+            : fresh;
       if (!scopedFresh.length) return;
 
       // Only keep events that match at least one active stream selection.
@@ -624,35 +672,13 @@ export default function Streams() {
           );
       if (!trackedFresh.length) return;
 
-      setLiveNotifications((current) => {
-        const merged = mergeLiveNotifications(current, trackedFresh);
-        // Persist on top of the saved history so reopening the page never overwrites older events.
-        const persisted = mergeLiveNotifications(
-          readStoredNotifications() as unknown as StreamLiveNotification[],
-          merged
-        );
-        writeStoredNotifications(
-          persisted.map((note) => ({
-            id: note.id,
-            asset: note.asset,
-            event: note.event,
-            location: note.location,
-            speed: note.speed,
-            distance: note.distance,
-            driver: note.driver,
-            actioned: note.actioned,
-            severity: note.severity,
-            timestamp: note.timestamp,
-            deviceId: note.deviceId,
-            traccarType: note.traccarType,
-            positionId: note.positionId,
-            lat: note.lat,
-            lng: note.lng,
-            heading: note.heading
-          }))
-        );
-        return merged;
-      });
+      // Paint immediately; the position/address lookup can take seconds.
+      commitLiveNotifications(trackedFresh);
+      void enrichLiveNotifications(trackedFresh)
+        .then((enriched) => {
+          if (enriched.length) commitLiveNotifications(enriched);
+        })
+        .catch(() => undefined);
       if (opts?.playSound !== false && !isInitialLivePollRef.current) {
         setNewNotificationIds((current) => {
           const next = new Set(current);
@@ -672,10 +698,10 @@ export default function Streams() {
         }, 8000);
       }
     },
-    []
+    [commitLiveNotifications]
   );
 
-  const runLivePoll = useCallback(async () => {
+  const runLivePollOnce = useCallback(async () => {
     // When the realtime WS is open, rely on streams.events for live updates and
     // only HTTP-poll infrequently for label repair / catch-up (Traccar has no API rate limit).
     if (typeof document !== "undefined" && document.visibilityState === "hidden") {
@@ -734,6 +760,19 @@ export default function Streams() {
       setLiveFeedStatus("error");
     }
   }, [ingestLiveNotifications]);
+
+  // One poll at a time: a slow Traccar scan used to overlap the next 12s tick,
+  // stacking requests and pushing every later event further behind.
+  const pollInFlightRef = useRef(false);
+  const runLivePoll = useCallback(async () => {
+    if (pollInFlightRef.current) return;
+    pollInFlightRef.current = true;
+    try {
+      await runLivePollOnce();
+    } finally {
+      pollInFlightRef.current = false;
+    }
+  }, [runLivePollOnce]);
 
   useEffect(() => {
     markStreamsBackgroundEnabled();

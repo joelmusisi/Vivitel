@@ -1,4 +1,10 @@
-import { buildAlertMapAttachment, type AlertMapAttachment } from "./alertMapImage";
+import {
+  AlertEmailRetryableError,
+  alertEmailEventKey,
+  createRecipientEmailResolver,
+  sendAlertEmailOnce
+} from "./alertEmailDelivery";
+import { buildAlertMapAttachment } from "./alertMapImage";
 import {
   buildAlertMapImageUrl,
   buildDeviceAlertEmailHtml,
@@ -7,13 +13,11 @@ import {
   reverseGeocodeLabel,
   resolveAssetOrganisation,
   resolveAssetRegistration,
-  DEVICE_ALERT_EMAIL_FROM,
   formatCompassHeading,
   formatNotificationDateTime,
   loadSiteTimeZoneSettings,
   resolveNotificationValue,
   resolveSystemAssetId,
-  VIVI_ALERT_EMAIL_FROM_NAME,
   type DeviceAlertEmailEvent,
   type SiteTimeZoneSettings
 } from "./deviceAlertEmail";
@@ -22,7 +26,9 @@ import {
   alertDedupeKey,
   appendInAppAlert,
   loadSiteNotificationLibrary,
-  type UserAlertDispatchEnv
+  loadViviNotificationRules,
+  type UserAlertDispatchEnv,
+  type ViviNotificationRule
 } from "./userAlertDispatch";
 
 type AlertRecipientRef = {
@@ -65,7 +71,11 @@ function isDeviceAlertBinding(binding: DeviceAlertBinding): boolean {
 
 function readBindingEmailRecipients(binding: DeviceAlertBinding): AlertRecipientRef[] {
   if (Array.isArray(binding.emailRecipients) && binding.emailRecipients.length) {
-    return binding.emailRecipients.filter((row) => String(row?.email ?? "").includes("@"));
+    // Users without a saved address still count: their current email is looked up by id.
+    return binding.emailRecipients.filter((row) => {
+      const id = String(row?.id ?? "").trim();
+      return String(row?.email ?? "").includes("@") || (Boolean(id) && !id.startsWith("contact-"));
+    });
   }
   return (binding.recipients ?? [])
     .filter((row) => normalize(row?.channel) === "email" || !row?.channel)
@@ -130,36 +140,6 @@ async function findAssetsByImei(env: UserAlertDispatchEnv, tenantId: string, ime
     }
   }
   return assets;
-}
-
-async function sendResendHtmlEmail(
-  env: UserAlertDispatchEnv,
-  input: { to: string; subject: string; text: string; html: string; attachments?: AlertMapAttachment[] }
-) {
-  const apiKey = String(env.RESEND_API_KEY ?? "").trim();
-  const fromEmail = String(env.MAIL_FROM ?? DEVICE_ALERT_EMAIL_FROM).trim() || DEVICE_ALERT_EMAIL_FROM;
-  const fromName = String(env.MAIL_FROM_NAME ?? VIVI_ALERT_EMAIL_FROM_NAME).trim() || VIVI_ALERT_EMAIL_FROM_NAME;
-  if (!apiKey) throw new Error("RESEND_API_KEY is not configured");
-  const from = fromName ? `${fromName} <${fromEmail}>` : fromEmail;
-  const response = await fetch("https://api.resend.com/emails", {
-    method: "POST",
-    headers: {
-      authorization: `Bearer ${apiKey}`,
-      "content-type": "application/json"
-    },
-    body: JSON.stringify({
-      from,
-      to: [input.to],
-      subject: input.subject,
-      text: input.text,
-      html: input.html,
-      ...(input.attachments?.length ? { attachments: input.attachments } : {})
-    })
-  });
-  if (!response.ok) {
-    const text = await response.text().catch(() => "");
-    throw new Error(`Resend failed (${response.status}): ${text || response.statusText}`);
-  }
 }
 
 function bindingMatchesEvent(
@@ -245,12 +225,49 @@ function buildEmailEventFromContext(input: {
   };
 }
 
+/** Separate from the user-alert marker so neither dispatcher hides the other's event. */
+const deviceAlertDedupeKey = (tenantId: string, eventId: number) => `${alertDedupeKey(tenantId, eventId)}:device`;
+
+/**
+ * Names this event may be monitored under. Alerts store the library description
+ * (e.g. "Speeding"), while Traccar only reports a type (e.g. deviceOverspeed):
+ * - an event that names itself (alarm / description attribute) uses that name;
+ * - otherwise every library rule of the same Traccar type is a candidate (an
+ *   unnamed alarm is shared by many rows, so it never borrows one);
+ * - the raw type and an explicit name are kept for bindings that store those.
+ */
+export function deviceAlertNotificationNames(input: {
+  eventType: string;
+  attributes?: Record<string, unknown>;
+  rules?: Array<Pick<ViviNotificationRule, "traccarType" | "description">>;
+  explicitName?: string;
+}): string[] {
+  const names: string[] = [];
+  const add = (value: unknown) => {
+    const name = String(value ?? "").trim();
+    if (name && !names.some((existing) => existing.toLowerCase() === name.toLowerCase())) names.push(name);
+  };
+  const attrs = input.attributes ?? {};
+  const named = String(attrs.alarm ?? attrs.description ?? "").trim();
+  add(input.explicitName);
+  if (named) add(named);
+  else if (input.eventType !== "alarm") {
+    for (const rule of input.rules ?? []) {
+      if (rule.traccarType === input.eventType) add(rule.description);
+    }
+  }
+  add(attrs.message);
+  add(input.eventType);
+  return names;
+}
+
 export async function dispatchDeviceAlertEmailsForTraccarEvent(
   env: UserAlertDispatchEnv,
   input: {
     tenantId: string;
     traccarEvent: { id?: number; type?: string; eventTime?: string; deviceId?: number; attributes?: Record<string, unknown> };
     notificationName?: string;
+    rules?: ViviNotificationRule[];
   }
 ): Promise<{ dispatched: boolean; emailed: number; reason?: string }> {
   const tenantId = String(input.tenantId ?? "").trim();
@@ -261,7 +278,7 @@ export async function dispatchDeviceAlertEmailsForTraccarEvent(
     return { dispatched: false, emailed: 0, reason: "missing tenant or device" };
   }
   if (Number.isFinite(eventId) && eventId > 0) {
-    const alreadySent = await env.ViviTEL.get(alertDedupeKey(tenantId, eventId));
+    const alreadySent = await env.ViviTEL.get(deviceAlertDedupeKey(tenantId, eventId));
     if (alreadySent) return { dispatched: false, emailed: 0, reason: "already sent to the people added on this alert" };
   }
 
@@ -273,9 +290,15 @@ export async function dispatchDeviceAlertEmailsForTraccarEvent(
   const imei = String(device?.uniqueId ?? "").trim();
   const assets = await findAssetsByImei(env, tenantId, imei);
   const attrs = (input.traccarEvent.attributes ?? {}) as Record<string, unknown>;
-  const notificationName =
-    String(input.notificationName ?? attrs.description ?? attrs.message ?? input.traccarEvent.type ?? "").trim();
-  if (!notificationName) return { dispatched: false, emailed: 0, reason: "missing notification name" };
+  const eventType = String(input.traccarEvent.type ?? "").trim();
+  const rules = input.rules ?? (await loadViviNotificationRules(env).catch(() => [] as ViviNotificationRule[]));
+  const candidateNames = deviceAlertNotificationNames({
+    eventType,
+    attributes: attrs,
+    rules,
+    explicitName: input.notificationName
+  });
+  if (!candidateNames.length) return { dispatched: false, emailed: 0, reason: "missing notification name" };
 
   const matches = (assets.length ? assets : []).flatMap((asset) => {
     const assetSite = String(asset.site ?? "").trim();
@@ -283,11 +306,23 @@ export async function dispatchDeviceAlertEmailsForTraccarEvent(
       asset.assetDescription ?? asset.description ?? asset.registration ?? asset.name ?? device?.name ?? "Asset"
     ).trim();
     const driverName = String(asset.driverName ?? asset.driver ?? asset.assignedDriver ?? "Unknown").trim() || "Unknown";
-    return bindings
-      .filter((binding) => bindingMatchesEvent(binding, notificationName, assetLabel, driverName, assetSite))
-      .map((binding) => ({ binding, asset, assetLabel, driverName }));
+    return bindings.flatMap((binding) => {
+      const notificationName = candidateNames.find((name) =>
+        bindingMatchesEvent(binding, name, assetLabel, driverName, assetSite)
+      );
+      return notificationName ? [{ binding, asset, assetLabel, driverName, notificationName }] : [];
+    });
   });
   if (!matches.length) return { dispatched: false, emailed: 0, reason: "no matching device alert bindings" };
+  // Several thresholds of one type (e.g. two speed alerts) cannot be told apart from an
+  // unnamed event; do not email under the wrong alert's name.
+  const matchedNames = new Set(matches.map((match) => match.notificationName.toLowerCase()));
+  const eventNamesItself = Boolean(String(attrs.alarm ?? attrs.description ?? "").trim());
+  const isGeofence = eventType === "geofenceEnter" || eventType === "geofenceExit";
+  if (matchedNames.size > 1 && !eventNamesItself && !isGeofence) {
+    console.warn("Device alert skipped: event matches several alerts", { tenantId, eventType, names: [...matchedNames] });
+    return { dispatched: false, emailed: 0, reason: "event does not name one site notification" };
+  }
 
   const positionResp = await traccarFetch(
     env,
@@ -298,8 +333,11 @@ export async function dispatchDeviceAlertEmailsForTraccarEvent(
 
   const emailedRecipients = new Set<string>();
   const notifiedUsers = new Set<string>();
+  const retryableEmailFailures: unknown[] = [];
+  const resolveEmail = createRecipientEmailResolver(env);
+  const eventKey = alertEmailEventKey({ ...input.traccarEvent, type: eventType });
   const libraryBySite = new Map<string, Array<{ description?: string; availability?: string }>>();
-  for (const { binding, asset } of matches) {
+  for (const { binding, asset, notificationName } of matches) {
     const assetSite = String(asset.site ?? "").trim();
     if (!libraryBySite.has(assetSite)) {
       libraryBySite.set(assetSite, await loadSiteNotificationLibrary(env, tenantId, assetSite));
@@ -333,19 +371,23 @@ export async function dispatchDeviceAlertEmailsForTraccarEvent(
     const html = buildDeviceAlertEmailHtml(emailEvent, emailOptions);
 
     for (const recipient of readBindingEmailRecipients(binding)) {
-      const email = String(recipient.email ?? "").trim().toLowerCase();
+      const email = await resolveEmail(recipient);
       if (!email || emailedRecipients.has(email)) continue;
-      emailedRecipients.add(email);
       try {
-        await sendResendHtmlEmail(env, {
+        const result = await sendAlertEmailOnce(env, {
+          tenantId,
+          eventKey,
           to: email,
           subject,
           text,
           html,
           attachments: mapAttachment ? [mapAttachment] : undefined
         });
-      } catch {
-        // Continue with other recipients.
+        if (result !== "rejected") emailedRecipients.add(email);
+      } catch (error) {
+        // Continue with other recipients; this one is retried on the next poll.
+        retryableEmailFailures.push(error);
+        console.warn("Device alert email failed:", email, error);
       }
     }
 
@@ -372,8 +414,12 @@ export async function dispatchDeviceAlertEmailsForTraccarEvent(
     }
   }
 
+  if (retryableEmailFailures.length) {
+    // Leave the event open so the next poll retries; people already emailed are skipped.
+    throw new AlertEmailRetryableError(`${retryableEmailFailures.length} device alert email(s) failed; will retry`);
+  }
   if ((emailedRecipients.size > 0 || notifiedUsers.size > 0) && Number.isFinite(eventId) && eventId > 0) {
-    await env.ViviTEL.put(alertDedupeKey(tenantId, eventId), "1", { expirationTtl: 60 * 60 * 24 * 14 });
+    await env.ViviTEL.put(deviceAlertDedupeKey(tenantId, eventId), "1", { expirationTtl: 60 * 60 * 24 * 14 });
   }
 
   return {

@@ -125,7 +125,10 @@ export const STREAM_LIVE_POLL_MS = 12_000;
 /** Initial catch-up window — keep short; socket bridge + WS deliver live deltas. */
 export const STREAM_LIVE_INITIAL_LOOKBACK_MS = 24 * 60 * 60 * 1000;
 export const STREAM_LIVE_MAX_NOTIFICATIONS = 400;
-export const STREAM_LIVE_MAX_DEVICES_PER_POLL = 40;
+/** Devices polled per cycle. Grouped requests cover a whole site, not just the first 40. */
+export const STREAM_LIVE_MAX_DEVICES_PER_POLL = 400;
+/** deviceId params per Traccar /reports/events request (keeps the URL short). */
+export const STREAM_LIVE_EVENTS_DEVICES_PER_REQUEST = 40;
 /** Overlap successive polls so boundary events are not skipped between ticks. */
 export const STREAM_LIVE_POLL_OVERLAP_MS = 3_000;
 
@@ -718,9 +721,17 @@ export async function fetchTraccarEventsForDevices(params: {
 }): Promise<TraccarEvent[]> {
   const ids = [...new Set(params.deviceIds.filter((id) => Number.isFinite(id) && id > 0))];
   if (ids.length === 0) return [];
-  const chunks = await mapWithConcurrency(ids, params.concurrency ?? 2, async (deviceId) => {
+  const { isGpsIotServer } = await import("./regionServers");
+  // Traccar takes many deviceId params in one /reports/events call. One request per
+  // device (2 at a time) took longer than the poll interval for a site of any size.
+  const groups: number[][] = [];
+  const groupSize = isGpsIotServer() ? 1 : STREAM_LIVE_EVENTS_DEVICES_PER_REQUEST;
+  for (let index = 0; index < ids.length; index += groupSize) groups.push(ids.slice(index, index + groupSize));
+  const chunks = await mapWithConcurrency(groups, params.concurrency ?? 2, async (group) => {
     try {
-      return await getTraccarEvents({ deviceId, from: params.from, to: params.to });
+      return group.length === 1
+        ? await getTraccarEvents({ deviceId: group[0], from: params.from, to: params.to })
+        : await getTraccarEvents({ deviceIds: group, from: params.from, to: params.to });
     } catch {
       return [];
     }
@@ -800,8 +811,8 @@ export async function pollTraccarLiveEvents(params: {
   const cappedIds = targetIds.slice(0, STREAM_LIVE_MAX_DEVICES_PER_POLL);
   const allowedDeviceIds = new Set(targetIds);
 
-  // Device-scoped only (concurrency 2). Avoid stacking bulk /reports/events on top —
-  // that double-hit is a primary Traccar overload source under load.
+  // Device-scoped only, grouped per request (concurrency 2). Avoid stacking a tenant-wide
+  // bulk /reports/events on top — that double-hit is a primary Traccar overload source.
   const perDeviceEvents = cappedIds.length
     ? await fetchTraccarEventsForDevices({
         deviceIds: cappedIds,
