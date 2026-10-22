@@ -207,6 +207,8 @@ type AssetRow = {
   speed: string;
   /** Live speed in km/h. Status reads this before `speed`, so live updates must set it. */
   speedKph?: number | string;
+  /** GPS fix time of the last live (Traccar) update applied to this row. */
+  liveFixAtMs?: number;
   movement?: string;
   timeInIgnition: string;
   driverIdentified?: string;
@@ -919,7 +921,9 @@ const mergeTraccarLiveSnapshotIntoAssetRow = (
 ): AssetRow => {
   if (!snapshot) return row;
 
-  const currentAtMs = Number(row.telemetryAtMs ?? Number.NaN);
+  // Compare live fix to live fix. A stored record's lastSeen (server time) must not block
+  // newer GPS fixes; that kept rows "stationary" for ~30 s after every asset-list reload.
+  const currentAtMs = Number(row.liveFixAtMs ?? Number.NaN);
   const incomingAtMs = snapshot.atMs;
   const positionChanged =
     typeof row.lat !== "number" ||
@@ -1012,6 +1016,7 @@ const mergeTraccarLiveSnapshotIntoAssetRow = (
     lastActive: applyTimestamp && snapshot.fixTime ? shownAt : row.lastActive,
     lastPosition: applyTimestamp && snapshot.fixTime ? shownAt : row.lastPosition,
     telemetryAtMs: applyTimestamp && Number.isFinite(incomingAtMs) ? incomingAtMs : row.telemetryAtMs,
+    liveFixAtMs: applyTimestamp && Number.isFinite(incomingAtMs) ? incomingAtMs : row.liveFixAtMs,
     lastMoveAtMs,
     status: computeStatus({
       ...row,
@@ -1802,25 +1807,47 @@ const mergeAssetRows = (current: AssetRow[], incoming: AssetRow[]): AssetRow[] =
       mergedRegistration ||
       "Unnamed asset";
 
-    // The row on screen already has newer (or equal) live telemetry: keep its motion
-    // fields. A list reload spreading older stored speed / movement over every row at
-    // once is what flipped the whole fleet's status dots together.
-    const liveFields = keepPreviousDisplay
+    // Live fields (position, speed, movement, status, last position) change only with a
+    // newer *live* fix. The 20 s asset-list reload carries the stored record's older
+    // speed, coordinates and server-time lastSeen; spreading those over every row made the
+    // whole fleet go "stationary" and jump off the map until Traccar's fix caught up.
+    const previousLiveAt = Number(previous.liveFixAtMs);
+    const incomingLiveAt = Number(asset.liveFixAtMs);
+    const keepLive =
+      Number.isFinite(previousLiveAt)
+      && !(Number.isFinite(incomingLiveAt) && incomingLiveAt > previousLiveAt);
+    const liveFields = keepLive
       ? {
+          lat: previous.lat,
+          lng: previous.lng,
+          gps: previous.gps,
           speed: previous.speed,
           speedKph: previous.speedKph,
           movement: previous.movement,
           heading: previous.heading,
           ignition: previous.ignition,
           status: previous.status,
+          lastActive: previous.lastActive,
+          lastPosition: previous.lastPosition,
+          telemetryAtMs: previous.telemetryAtMs,
+          liveFixAtMs: previous.liveFixAtMs,
           lastSeen: (previous as any).lastSeen ?? (asset as any).lastSeen
         }
-      : {};
+      : keepPreviousDisplay
+        ? {
+            speed: previous.speed,
+            speedKph: previous.speedKph,
+            movement: previous.movement,
+            heading: previous.heading,
+            ignition: previous.ignition,
+            status: previous.status,
+            lastSeen: (previous as any).lastSeen ?? (asset as any).lastSeen
+          }
+        : {};
 
     return {
       ...previous,
       ...asset,
-      ...liveFields,
       // Never let Traccar/live refreshes replace plate names with IMEI stubs or Make+Plate.
       assetDescription: displayDescription,
       registration: mergedRegistration || displayDescription,
@@ -1837,7 +1864,8 @@ const mergeAssetRows = (current: AssetRow[], incoming: AssetRow[]): AssetRow[] =
         : String(asset.lastPosition ?? "").trim() || previous.lastPosition,
       telemetryAtMs: Number.isFinite(mergedTelemetryAtMs) ? mergedTelemetryAtMs : previous.telemetryAtMs,
       lastMoveAtMs: previous.lastMoveAtMs ?? asset.lastMoveAtMs,
-      location
+      location,
+      ...liveFields
     };
   });
 };
@@ -4566,8 +4594,15 @@ export default function LiveTracking() {
   const [activeInfoWindow, setActiveInfoWindow] = useState<string | null>(null);
   const [activeInfoWindowPoint, setActiveInfoWindowPoint] = useState<ScreenPoint | null>(null);
 
+  // Only re-check shares when the set of assets changes, not on every live position update
+  // (that re-ran this every few seconds, one storage read per asset each time).
+  const liveShareIdsKey = useMemo(
+    () =>
+      [...new Set(assetRows.map((asset) => String(asset.id ?? "").trim()).filter(Boolean))].sort().join("|"),
+    [assetRows]
+  );
   useEffect(() => {
-    const ids = assetRows.map((asset) => String(asset.id ?? "").trim()).filter(Boolean);
+    const ids = liveShareIdsKey ? liveShareIdsKey.split("|") : [];
     if (!ids.length) {
       setLiveShareByAssetId({});
       return;
@@ -4596,7 +4631,7 @@ export default function LiveTracking() {
       cancelled = true;
       if (timer) window.clearTimeout(timer);
     };
-  }, [assetRows]);
+  }, [liveShareIdsKey]);
 
   const formatShareTimeLeft = (expiresAt: string | undefined) => {
     const raw = String(expiresAt ?? "").trim();

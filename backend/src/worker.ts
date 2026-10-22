@@ -14234,7 +14234,8 @@ async function handleWorkerFetch(request: Request, rawEnv: Env, ctx: ExecutionCo
 
           const entries = await Promise.all(
             assetIds.map(async (id) => {
-              const raw = await env.ViviTEL.get(`share:live:asset:${tenantId}:${id}`);
+              // One failed lookup must not fail the whole list (it returned 500 for every asset).
+              const raw = await env.ViviTEL.get(`share:live:asset:${tenantId}:${id}`).catch(() => null);
               if (!raw) return [id, { active: false }] as const;
               try {
                 const parsed = JSON.parse(raw) as { token?: string; expiresAt?: string };
