@@ -22,3 +22,8 @@ backend/telemetry-archive/
 
 # Third-party Windows vendor tool (exe/dll bundle, ~40 MB)
 camera_ai_intercom/Mitac_Version_VVT/
+
+# Local env files hold credentials; commit only *.example templates
+frontend/.env
+frontend/.env.local
+frontend/.env.*.local
