@@ -1,89 +1,66 @@
-import { useMemo } from "react";
+import { useCallback, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
+import SortableColumnHeader from "../../../components/SortableColumnHeader";
+import { useColumnSort } from "../../../hooks/useColumnSort";
+import {
+  dutyStatusLabel,
+  formatDurationMs,
+  useHosFleet
+} from "../../../utils/hos";
 import "../../../index.css";
-
-type HOSMetric = {
-  label: string;
-  value: string | number;
-  note: string;
-};
-
-type HOSRow = {
-  id: string;
-  driver: string;
-  shift: string;
-  remaining: string;
-  lastBreak: string;
-  status: "compliant" | "warning" | "violation";
-};
-
-const metrics: HOSMetric[] = [
-  { label: "Drivers on duty", value: 42, note: "+4 vs yesterday" },
-  { label: "Near limit", value: 7, note: "Within 60 min" },
-  { label: "Violations", value: 2, note: "Last 24h" },
-  { label: "Avg drive time", value: "6h 10m", note: "per driver" }
-];
-
-const rows: HOSRow[] = [
-  {
-    id: "hos-1",
-    driver: "Tumwine Kevin",
-    shift: "Day",
-    remaining: "1h 45m",
-    lastBreak: "30m ago",
-    status: "warning"
-  },
-  {
-    id: "hos-2",
-    driver: "Musa Okello",
-    shift: "Night",
-    remaining: "4h 10m",
-    lastBreak: "1h ago",
-    status: "compliant"
-  },
-  {
-    id: "hos-3",
-    driver: "Asha Kibanja",
-    shift: "Day",
-    remaining: "0h 15m",
-    lastBreak: "2h ago",
-    status: "violation"
-  }
-];
 
 export default function HosDashboard() {
   const navigate = useNavigate();
-  const summary = useMemo(() => metrics, []);
+  const { snapshot, busy, error, reload } = useHosFleet();
+
+  const drivers = snapshot?.drivers ?? [];
+
+  const nearingBase = useMemo(
+    () => drivers.filter((d) => d.nearLimit || !d.compliant).slice(0, 12),
+    [drivers]
+  );
+
+  type HosDashboardSortKey = "driver" | "asset" | "remaining" | "lastBreak" | "status";
+
+  const getNearingSortValue = useCallback((row: (typeof drivers)[number], key: HosDashboardSortKey) => {
+    if (key === "driver") return row.driverName;
+    if (key === "asset") return row.assetLabel;
+    if (key === "remaining") return row.remainingDriveMs;
+    if (key === "lastBreak") return row.lastBreakMs ?? 0;
+    if (key === "status") return dutyStatusLabel(row.currentStatus);
+    return "";
+  }, []);
+  const nearingSort = useColumnSort<(typeof drivers)[number], HosDashboardSortKey>({
+    rows: nearingBase,
+    getValue: getNearingSortValue,
+    initialSort: { key: "remaining", direction: "asc" }
+  });
 
   return (
     <div className="page hos-page">
       <div className="hos-topbar">
         <div>
           <div className="hos-title">HOS dashboard</div>
-          <div className="hos-path">Monitor / Hours of service / Dashboard</div>
+          <div className="hos-path">Track / Hours of service / Dashboard</div>
         </div>
         <div className="hos-actions">
           <button
             type="button"
             className="hos-btn ghost"
-            onClick={() => navigate("/measure/insights/reports?category=Hours%20Of%20Service%20Reports")}
+            onClick={() => navigate("/Analyze/insights/reports?category=Hours%20Of%20Service%20Reports")}
           >
             View HOS reports
           </button>
-          <button type="button" className="hos-btn ghost">Export</button>
-          <button type="button" className="hos-btn">Refresh</button>
+          <button type="button" className="hos-btn ghost" onClick={() => navigate("/Track/hos/overview")}>
+            Overview
+          </button>
+          <button type="button" className="hos-btn" onClick={() => void reload()} disabled={busy}>
+            {busy ? "Refreshing…" : "Refresh"}
+          </button>
         </div>
       </div>
 
-      <section className="hos-summary">
-        {summary.map((card) => (
-          <div key={card.label} className="hos-summary-card">
-            <div className="hos-summary-label">{card.label}</div>
-            <div className="hos-summary-value">{card.value}</div>
-            <div className="hos-summary-note">{card.note}</div>
-          </div>
-        ))}
-      </section>
+      {error ? <div className="hos-empty" role="alert">{error}</div> : null}
 
       <section className="hos-panel">
         <div className="hos-panel-header">
@@ -91,30 +68,39 @@ export default function HosDashboard() {
             <div className="hos-panel-title">Drivers nearing limits</div>
             <div className="hos-panel-sub">Prioritise breaks and shift swaps.</div>
           </div>
-          <button type="button" className="hos-link">Open full roster</button>
+          <button type="button" className="hos-link" onClick={() => navigate("/Track/hos/overview")}>
+            Open full roster
+          </button>
         </div>
         <div className="hos-table">
           <div className="hos-row hos-row-head">
-            <span>Driver</span>
-            <span>Shift</span>
-            <span>Remaining</span>
-            <span>Last break</span>
-            <span>Status</span>
+            <SortableColumnHeader as="span" label="Driver" {...nearingSort.getHeaderProps("driver")} />
+            <SortableColumnHeader as="span" label="Asset" {...nearingSort.getHeaderProps("asset")} />
+            <SortableColumnHeader as="span" label="Remaining" {...nearingSort.getHeaderProps("remaining")} />
+            <SortableColumnHeader as="span" label="Last break" {...nearingSort.getHeaderProps("lastBreak")} />
+            <SortableColumnHeader as="span" label="Status" {...nearingSort.getHeaderProps("status")} />
             <span>Actions</span>
           </div>
-          {rows.map((row) => (
-            <div key={row.id} className="hos-row">
-              <span className="hos-name">{row.driver}</span>
-              <span>{row.shift}</span>
-              <span>{row.remaining}</span>
-              <span>{row.lastBreak}</span>
-              <span className={`hos-pill ${row.status}`}>{row.status}</span>
-              <span className="hos-actions-col">
-                <button type="button" className="hos-action">Notify</button>
-                <button type="button" className="hos-action ghost">Details</button>
-              </span>
-            </div>
-          ))}
+          {nearingSort.sortedRows.length === 0 ? (
+            <div className="hos-empty">{busy ? "Loading HOS data…" : "No drivers near limits right now."}</div>
+          ) : (
+            nearingSort.sortedRows.map((row) => (
+              <div key={row.driverKey} className="hos-row">
+                <span>{row.driverName}</span>
+                <span>{row.assetLabel}</span>
+                <span>{formatDurationMs(row.remainingDriveMs)} drive</span>
+                <span>{row.lastBreakMs ? new Date(row.lastBreakMs).toLocaleTimeString() : "—"}</span>
+                <span className={`hos-pill ${row.compliant ? "ok" : "bad"}`}>
+                  {dutyStatusLabel(row.currentStatus)}
+                </span>
+                <span>
+                  <button type="button" className="hos-link" onClick={() => navigate("/Track/hos/timeline")}>
+                    Timeline
+                  </button>
+                </span>
+              </div>
+            ))
+          )}
         </div>
       </section>
     </div>

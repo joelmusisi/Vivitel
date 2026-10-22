@@ -1,4 +1,6 @@
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
+import SortableColumnHeader from "../../components/SortableColumnHeader";
+import { useColumnSort } from "../../hooks/useColumnSort";
 import { useNavigate } from "react-router-dom";
 import "../../index.css";
 
@@ -13,54 +15,12 @@ type CustomerRow = {
   lastUpdate: string;
 };
 
-const customers: CustomerRow[] = [
-  {
-    id: "cust-1",
-    name: "EA Transfleet Services",
-    segment: "Logistics",
-    region: "East Africa",
-    contact: "operations@transfleet.co",
-    assets: 124,
-    status: "active",
-    lastUpdate: "2 hrs ago"
-  },
-  {
-    id: "cust-2",
-    name: "CPP Fuels",
-    segment: "Energy",
-    region: "Southern",
-    contact: "fleet@cppfuels.com",
-    assets: 56,
-    status: "onboarding",
-    lastUpdate: "Yesterday"
-  },
-  {
-    id: "cust-3",
-    name: "Kampala Hauliers",
-    segment: "Freight",
-    region: "Central",
-    contact: "dispatch@kampalahq.com",
-    assets: 88,
-    status: "inactive",
-    lastUpdate: "12 Dec 2025"
-  }
-];
-
 export default function Customers() {
   const navigate = useNavigate();
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [regionFilter, setRegionFilter] = useState("all");
-
-  const summary = useMemo(
-    () => [
-      { label: "Active", value: customers.filter((row) => row.status === "active").length },
-      { label: "Onboarding", value: customers.filter((row) => row.status === "onboarding").length },
-      { label: "Inactive", value: customers.filter((row) => row.status === "inactive").length },
-      { label: "Total assets", value: customers.reduce((sum, row) => sum + row.assets, 0) }
-    ],
-    []
-  );
+  const customers: CustomerRow[] = [];
 
   const filtered = useMemo(() => {
     return customers.filter((row) => {
@@ -71,14 +31,37 @@ export default function Customers() {
       const matchesRegion = regionFilter === "all" || row.region === regionFilter;
       return matchesSearch && matchesStatus && matchesRegion;
     });
-  }, [search, statusFilter, regionFilter]);
+  }, [customers, search, statusFilter, regionFilter]);
+
+  const hasActiveFilters =
+    search.trim().length > 0 || statusFilter !== "all" || regionFilter !== "all";
+
+  const regionOptions = useMemo(
+    () =>
+      [...new Set(customers.map((row) => row.region).filter(Boolean))].sort((a, b) =>
+        a.localeCompare(b)
+      ),
+    [customers]
+  );
+
+  const getCustomerSortValue = useCallback((row: CustomerRow, key: string) => {
+    if (key === "customer") return row.name;
+    if (key === "segment") return row.segment;
+    if (key === "region") return row.region;
+    if (key === "contact") return row.contact;
+    if (key === "assets") return row.assets;
+    if (key === "status") return row.status;
+    if (key === "lastUpdate") return row.lastUpdate;
+    return "";
+  }, []);
+  const customerSort = useColumnSort({ rows: filtered, getValue: getCustomerSortValue });
 
   return (
     <div className="page customers-page">
       <div className="customers-topbar">
         <div>
           <div className="customers-title">Customers</div>
-          <div className="customers-path">Monitor / Fleet admin / Customers</div>
+          <div className="customers-path">Track / Fleet admin / Customers</div>
         </div>
         <div className="customers-actions">
           <button
@@ -86,7 +69,7 @@ export default function Customers() {
             className="customers-btn ghost"
             onClick={() =>
               navigate(
-                "/measure/insights/reports?category=List%20Reports&report=Asset%20List%20Report"
+                "/Analyze/insights/reports?category=List%20Reports&report=Asset%20List%20Report"
               )
             }
           >
@@ -107,15 +90,6 @@ export default function Customers() {
         </div>
       </div>
 
-      <section className="customers-summary">
-        {summary.map((card) => (
-          <div key={card.label} className="customers-summary-card">
-            <div className="customers-summary-label">{card.label}</div>
-            <div className="customers-summary-value">{card.value}</div>
-          </div>
-        ))}
-      </section>
-
       <section className="customers-panel">
         <div className="customers-panel-header">
           <div>
@@ -135,9 +109,11 @@ export default function Customers() {
               onChange={(event) => setRegionFilter(event.target.value)}
             >
               <option value="all">All regions</option>
-              <option value="East Africa">East Africa</option>
-              <option value="Central">Central</option>
-              <option value="Southern">Southern</option>
+              {regionOptions.map((region) => (
+                <option key={region} value={region}>
+                  {region}
+                </option>
+              ))}
             </select>
             <select
               className="customers-select"
@@ -154,19 +130,21 @@ export default function Customers() {
 
         <div className="customers-table">
           <div className="customers-row customers-row-head">
-            <span>Customer</span>
-            <span>Segment</span>
-            <span>Region</span>
-            <span>Contact</span>
-            <span>Assets</span>
-            <span>Status</span>
-            <span>Last update</span>
+            <SortableColumnHeader as="span" label="Customer" {...customerSort.getHeaderProps("customer")} />
+            <SortableColumnHeader as="span" label="Segment" {...customerSort.getHeaderProps("segment")} />
+            <SortableColumnHeader as="span" label="Region" {...customerSort.getHeaderProps("region")} />
+            <SortableColumnHeader as="span" label="Contact" {...customerSort.getHeaderProps("contact")} />
+            <SortableColumnHeader as="span" label="Assets" {...customerSort.getHeaderProps("assets")} />
+            <SortableColumnHeader as="span" label="Status" {...customerSort.getHeaderProps("status")} />
+            <SortableColumnHeader as="span" label="Last update" {...customerSort.getHeaderProps("lastUpdate")} />
             <span>Actions</span>
           </div>
-          {filtered.length === 0 ? (
-            <div className="customers-empty">No customers match your filters.</div>
+          {customerSort.sortedRows.length === 0 ? (
+            <div className="customers-empty">
+              {hasActiveFilters ? "No customers match your filters." : "No records yet."}
+            </div>
           ) : (
-            filtered.map((row) => (
+            customerSort.sortedRows.map((row) => (
               <div key={row.id} className="customers-row">
                 <span className="customers-name">{row.name}</span>
                 <span>{row.segment}</span>

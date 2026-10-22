@@ -1,4 +1,6 @@
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
+import SortableColumnHeader from "../../../components/SortableColumnHeader";
+import { useColumnSort } from "../../../hooks/useColumnSort";
 import { useNavigate } from "react-router-dom";
 import "../../../index.css";
 
@@ -42,20 +44,10 @@ const hazards: HazardRow[] = [
   }
 ];
 
-export default function ManageRoadHazards() {
+export default function ControlRoadHazards() {
   const navigate = useNavigate();
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
-
-  const summary = useMemo(
-    () => [
-      { label: "Active", value: hazards.filter((row) => row.status === "active").length },
-      { label: "Inactive", value: hazards.filter((row) => row.status === "inactive").length },
-      { label: "Hazards", value: hazards.length },
-      { label: "High severity", value: hazards.filter((row) => row.severity === "high").length }
-    ],
-    []
-  );
 
   const filtered = useMemo(() => {
     return hazards.filter((row) => {
@@ -65,18 +57,29 @@ export default function ManageRoadHazards() {
     });
   }, [search, statusFilter]);
 
+  const getHazardSortValue = useCallback((row: HazardRow, key: string) => {
+    if (key === "hazard") return row.name;
+    if (key === "type") return row.type;
+    if (key === "severity") return row.severity;
+    if (key === "region") return row.region;
+    if (key === "updated") return row.updated;
+    if (key === "status") return row.status;
+    return "";
+  }, []);
+  const hazardSort = useColumnSort({ rows: filtered, getValue: getHazardSortValue });
+
   return (
     <div className="page tracking-page">
       <div className="tracking-topbar">
         <div>
-          <div className="tracking-title">Manage road hazards</div>
-          <div className="tracking-path">Monitor / Tracking / Manage road hazards</div>
+          <div className="tracking-title">Control road hazards</div>
+          <div className="tracking-path">Track / Tracking / Control road hazards</div>
         </div>
         <div className="tracking-actions">
           <button
             type="button"
             className="tracking-btn ghost"
-            onClick={() => navigate("/measure/insights/reports?category=Risk%20Management%20Reports")}
+            onClick={() => navigate("/Analyze/insights/reports?category=Risk%20Controlment%20Reports")}
           >
             View risk reports
           </button>
@@ -92,15 +95,6 @@ export default function ManageRoadHazards() {
           </button>
         </div>
       </div>
-
-      <section className="tracking-summary">
-        {summary.map((card) => (
-          <div key={card.label} className="tracking-summary-card">
-            <div className="tracking-summary-label">{card.label}</div>
-            <div className="tracking-summary-value">{card.value}</div>
-          </div>
-        ))}
-      </section>
 
       <section className="tracking-panel">
         <div className="tracking-panel-header">
@@ -129,18 +123,18 @@ export default function ManageRoadHazards() {
 
         <div className="tracking-table">
           <div className="tracking-row tracking-row-head tracking-row-wide">
-            <span>Hazard</span>
-            <span>Type</span>
-            <span>Severity</span>
-            <span>Region</span>
-            <span>Updated</span>
-            <span>Status</span>
+            <SortableColumnHeader as="span" label="Hazard" {...hazardSort.getHeaderProps("hazard")} />
+            <SortableColumnHeader as="span" label="Type" {...hazardSort.getHeaderProps("type")} />
+            <SortableColumnHeader as="span" label="Severity" {...hazardSort.getHeaderProps("severity")} />
+            <SortableColumnHeader as="span" label="Region" {...hazardSort.getHeaderProps("region")} />
+            <SortableColumnHeader as="span" label="Updated" {...hazardSort.getHeaderProps("updated")} />
+            <SortableColumnHeader as="span" label="Status" {...hazardSort.getHeaderProps("status")} />
             <span>Actions</span>
           </div>
-          {filtered.length === 0 ? (
+          {hazardSort.sortedRows.length === 0 ? (
             <div className="tracking-empty">No hazards match your filters.</div>
           ) : (
-            filtered.map((row) => (
+            hazardSort.sortedRows.map((row) => (
               <div key={row.id} className="tracking-row tracking-row-wide">
                 <span className="tracking-name">{row.name}</span>
                 <span>{row.type}</span>

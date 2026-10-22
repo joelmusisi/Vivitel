@@ -1,0 +1,36 @@
+# systemd template for Vivitel module roles (no Kubernetes required).
+# Install on VPS:
+#   sudo cp vps@.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now vps@track vps@control vps@analyse vps@deliver
+# Put nginx in front using deploy/nginx/modules-gateway.conf (point upstreams to 127.0.0.1 ports).
+#
+# Ports: track=8781 control=8782 analyse=8783 deliver=8784  (gateway still on 8787)
+
+[Unit]
+Description=Vivi Telematics VPS API (%i)
+After=network.target
+
+[Service]
+Type=simple
+User=node
+WorkingDirectory=/opt/Vivitel/backend
+Environment=NODE_ENV=production
+Environment=REQUIRE_PERSISTENT_DB=true
+Environment=DB_PATH=/opt/Vivitel/backend/data/vivi.db
+Environment=VPS_MAX_IN_FLIGHT=400
+Environment=VPS_RATE_LIMIT_ENABLED=true
+Environment=VPS_RATE_LIMIT_MAX=600
+Environment=VPS_RATE_LIMIT_WINDOW_MS=60000
+EnvironmentFile=-/opt/Vivitel/backend/.env.vps
+Environment=VIVI_SERVICE_ROLE=%i
+# Port mapping via drop-ins or Environment override per instance:
+#   systemctl edit vps@control  → Environment=PORT=8782
+ExecStart=/usr/bin/node /opt/Vivitel/backend/build/vps_server.js
+Restart=always
+RestartSec=5
+TimeoutStopSec=45
+KillSignal=SIGTERM
+
+[Install]
+WantedBy=multi-user.target

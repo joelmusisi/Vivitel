@@ -1,0 +1,25 @@
+{
+  "name": "mobile_app",
+  "version": "1.0.0",
+  "description": "Capacitor mobile wrapper for Vivitel Telematics web app.",
+  "private": true,
+  "scripts": {
+    "build:web": "npm --prefix ../frontend run build",
+    "sync:android": "npx cap sync android",
+    "sync:ios": "npx cap sync ios",
+    "build:android": "npm run build:web && npm run sync:android",
+    "build:ios": "npm run build:web && npm run sync:ios",
+    "open:android": "npx cap open android",
+    "open:ios": "npx cap open ios"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@capacitor/android": "^8.0.2",
+    "@capacitor/cli": "^8.0.2",
+    "@capacitor/core": "^8.0.2"
+    ,"@capacitor/ios": "^8.0.2"
+  }
+}

@@ -1,151 +1,141 @@
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
+import SortableColumnHeader from "../../../components/SortableColumnHeader";
+import { useColumnSort } from "../../../hooks/useColumnSort";
 import { useNavigate } from "react-router-dom";
+import {
+  dutyStatusLabel,
+  formatDurationMs,
+  postHosTimeclockPunch,
+  useHosFleet,
+  type DutyStatus,
+  type DriverHosStatus
+} from "../../../utils/hos";
+import { beginSaving, endSavingDone, endSavingError } from "../../../utils/saveFeedback";
 import "../../../index.css";
 
-type TimeclockRow = {
-  id: string;
-  driver: string;
-  shiftStart: string;
-  shiftEnd: string;
-  breakCount: number;
-  status: "on-duty" | "off-duty" | "break";
-};
-
-const timeclockRows: TimeclockRow[] = [
-  {
-    id: "tc-1",
-    driver: "Grace Nanyonga",
-    shiftStart: "06:00",
-    shiftEnd: "18:00",
-    breakCount: 2,
-    status: "on-duty"
-  },
-  {
-    id: "tc-2",
-    driver: "Musa Okello",
-    shiftStart: "18:00",
-    shiftEnd: "06:00",
-    breakCount: 1,
-    status: "break"
-  },
-  {
-    id: "tc-3",
-    driver: "Asha Kibanja",
-    shiftStart: "07:00",
-    shiftEnd: "19:00",
-    breakCount: 3,
-    status: "off-duty"
-  }
-];
+const CLOCK_OPTIONS: DutyStatus[] = ["on_duty", "driving", "break", "off_duty", "sleeper"];
 
 export default function HosTimeclock() {
   const navigate = useNavigate();
+  const { snapshot, busy, error, reload } = useHosFleet();
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
+  const [punchBusy, setPunchBusy] = useState<string | null>(null);
 
-  const summary = useMemo(
-    () => [
-      { label: "On duty", value: timeclockRows.filter((row) => row.status === "on-duty").length },
-      { label: "On break", value: timeclockRows.filter((row) => row.status === "break").length },
-      { label: "Off duty", value: timeclockRows.filter((row) => row.status === "off-duty").length },
-      { label: "Avg breaks", value: "2.1" }
-    ],
-    []
-  );
+  const drivers = snapshot?.drivers ?? [];
 
   const filtered = useMemo(() => {
-    return timeclockRows.filter((row) => {
-      const matchesSearch = row.driver.toLowerCase().includes(search.toLowerCase());
-      const matchesStatus = statusFilter === "all" || row.status === statusFilter;
-      return matchesSearch && matchesStatus;
+    const q = search.trim().toLowerCase();
+    return drivers.filter((row) => {
+      if (q && !`${row.driverName} ${row.assetLabel}`.toLowerCase().includes(q)) return false;
+      if (statusFilter === "all") return true;
+      return row.currentStatus === statusFilter;
     });
-  }, [search, statusFilter]);
+  }, [drivers, search, statusFilter]);
+
+  const getTimeclockSortValue = useCallback((row: DriverHosStatus, key: string) => {
+    if (key === "driver") return row.driverName;
+    if (key === "asset") return row.assetLabel;
+    if (key === "current") return dutyStatusLabel(row.currentStatus);
+    if (key === "driveToday") return row.driveMsToday;
+    return "";
+  }, []);
+  const timeclockSort = useColumnSort({ rows: filtered, getValue: getTimeclockSortValue });
+
+  const clock = async (row: DriverHosStatus, status: DutyStatus) => {
+    setPunchBusy(row.driverKey);
+    beginSaving(`Clock ${dutyStatusLabel(status)}`);
+    try {
+      await postHosTimeclockPunch({
+        driverKey: row.driverKey,
+        driverName: row.driverName,
+        status
+      });
+      endSavingDone(`${dutyStatusLabel(status)} recorded`);
+      await reload();
+    } catch (e: any) {
+      endSavingError(String(e?.message ?? e));
+    } finally {
+      setPunchBusy(null);
+    }
+  };
 
   return (
     <div className="page hos-page">
       <div className="hos-topbar">
         <div>
           <div className="hos-title">Timeclock</div>
-          <div className="hos-path">Monitor / Hours of service / Timeclock</div>
+          <div className="hos-path">Track / Hours of service / Timeclock</div>
         </div>
         <div className="hos-actions">
           <button
             type="button"
             className="hos-btn ghost"
-            onClick={() => navigate("/measure/insights/reports?category=Hours%20Of%20Service%20Reports")}
+            onClick={() => navigate("/Analyze/insights/reports?category=Hours%20Of%20Service%20Reports")}
           >
             View HOS reports
           </button>
-          <button type="button" className="hos-btn ghost">Export</button>
-          <button
-            type="button"
-            className="hos-btn"
-            data-modal="Add shift"
-            data-modal-sub="Assign a driver shift block."
-            data-modal-fields="Driver|Shift start|Shift end"
-          >
-            Add shift
+          <button type="button" className="hos-btn ghost" onClick={() => navigate("/Track/hos/log-viewer")}>
+            View log
+          </button>
+          <button type="button" className="hos-btn" onClick={() => void reload()} disabled={busy}>
+            {busy ? "Refreshing…" : "Refresh"}
           </button>
         </div>
       </div>
 
-      <section className="hos-summary">
-        {summary.map((card) => (
-          <div key={card.label} className="hos-summary-card">
-            <div className="hos-summary-label">{card.label}</div>
-            <div className="hos-summary-value">{card.value}</div>
-          </div>
-        ))}
-      </section>
+      {error ? <div className="hos-empty" role="alert">{error}</div> : null}
 
       <section className="hos-panel">
         <div className="hos-panel-header">
           <div>
-            <div className="hos-panel-title">Shift roster</div>
-            <div className="hos-panel-sub">Break tracking and duty state.</div>
+            <div className="hos-panel-title">Duty roster</div>
+            <div className="hos-panel-sub">Clock status changes for drivers; punches feed the HOS engine.</div>
           </div>
           <div className="hos-filter-row">
             <input
               className="hos-search"
-              placeholder="Search driver"
+              placeholder="Search"
               value={search}
-              onChange={(event) => setSearch(event.target.value)}
+              onChange={(e) => setSearch(e.target.value)}
             />
-            <select
-              className="hos-select"
-              value={statusFilter}
-              onChange={(event) => setStatusFilter(event.target.value)}
-            >
-              <option value="all">All status</option>
-              <option value="on-duty">On duty</option>
-              <option value="break">Break</option>
-              <option value="off-duty">Off duty</option>
+            <select className="hos-select" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
+              <option value="all">All statuses</option>
+              {CLOCK_OPTIONS.map((status) => (
+                <option key={status} value={status}>{dutyStatusLabel(status)}</option>
+              ))}
             </select>
           </div>
         </div>
-
         <div className="hos-table">
-          <div className="hos-row hos-row-head hos-row-wide">
-            <span>Driver</span>
-            <span>Shift start</span>
-            <span>Shift end</span>
-            <span>Breaks</span>
-            <span>Status</span>
-            <span>Actions</span>
+          <div className="hos-row hos-row-head hos-row-5">
+            <SortableColumnHeader as="span" label="Driver" {...timeclockSort.getHeaderProps("driver")} />
+            <SortableColumnHeader as="span" label="Asset" {...timeclockSort.getHeaderProps("asset")} />
+            <SortableColumnHeader as="span" label="Current" {...timeclockSort.getHeaderProps("current")} />
+            <SortableColumnHeader as="span" label="Drive today" {...timeclockSort.getHeaderProps("driveToday")} />
+            <span>Clock</span>
           </div>
-          {filtered.length === 0 ? (
-            <div className="hos-empty">No shifts match your filters.</div>
+          {timeclockSort.sortedRows.length === 0 ? (
+            <div className="hos-empty">{busy ? "Loading…" : "No drivers on the roster yet."}</div>
           ) : (
-            filtered.map((row) => (
-              <div key={row.id} className="hos-row hos-row-wide">
-                <span className="hos-name">{row.driver}</span>
-                <span>{row.shiftStart}</span>
-                <span>{row.shiftEnd}</span>
-                <span>{row.breakCount}</span>
-                <span className={`hos-pill ${row.status}`}>{row.status.replace("-", " ")}</span>
-                <span className="hos-actions-col">
-                  <button type="button" className="hos-action">Adjust</button>
-                  <button type="button" className="hos-action ghost">Details</button>
+            timeclockSort.sortedRows.map((row) => (
+              <div key={row.driverKey} className="hos-row hos-row-5">
+                <span>{row.driverName}</span>
+                <span>{row.assetLabel}</span>
+                <span className="hos-pill ok">{dutyStatusLabel(row.currentStatus)}</span>
+                <span>{formatDurationMs(row.driveMsToday)}</span>
+                <span className="hos-actions-inline">
+                  {CLOCK_OPTIONS.map((status) => (
+                    <button
+                      key={status}
+                      type="button"
+                      className="hos-link"
+                      disabled={punchBusy === row.driverKey || row.currentStatus === status}
+                      onClick={() => void clock(row, status)}
+                    >
+                      {dutyStatusLabel(status)}
+                    </button>
+                  ))}
                 </span>
               </div>
             ))

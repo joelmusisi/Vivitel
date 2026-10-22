@@ -1,19 +1,47 @@
 {
-  "name": "Vivi-telematic-backend",
+  "name": "vivi-telematics-backend",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "wrangler dev",
+    "predeploy": "powershell -NoProfile -ExecutionPolicy Bypass -File ../scripts/Test-DeploymentDataSafety.ps1",
     "deploy": "wrangler deploy",
+    "vps:dev": "ts-node-dev --respawn --transpile-only src/vps_server.ts",
+    "build:vps": "tsc -p tsconfig.vps.json && node -e \"require('fs').mkdirSync('build',{recursive:true}); require('fs').writeFileSync('build/package.json', JSON.stringify({type:'commonjs'}))\"",
+    "vps:start": "node build/vps_server.js",
+    "test:modules": "powershell -NoProfile -ExecutionPolicy Bypass -File ../deploy/test-modules.ps1",
+    "db:pg:indexes": "node scripts/run_pg_indexes.mjs",
+    "verify:stack": "node scripts/check_stack_health.mjs",
+    "observability:up": "docker compose -f observability/docker-compose.observability.yml up -d",
+    "observability:production": "docker compose -f observability/docker-compose.production.yml --env-file observability/.env.production up -d",
+    "replay:protocols": "node scripts/replay_protocols.mjs",
+    "build": "npm run build:vps",
     "typecheck": "tsc --noEmit",
     "format": "prettier --write ."
   },
-  "dependencies": {},
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.749.0",
+    "better-sqlite3": "^12.6.2",
+    "cors": "^2.8.5",
+    "express": "^4.18.4",
+    "fast-png": "^8.0.0",
+    "iovalkey": "^0.3.3",
+    "morgan": "^1.10.0",
+    "pg": "^8.20.0",
+    "prom-client": "^15.1.3",
+    "ws": "^8.22.0"
+  },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20241230.0",
+    "@types/cors": "^2.8.12",
+    "@types/express": "^4.17.21",
+    "@types/node": "^20.4.2",
+    "@types/pg": "^8.20.0",
+    "@types/ws": "^8.18.2",
     "prettier": "^3.3.3",
+    "ts-node-dev": "^2.0.0",
     "typescript": "^5.6.3",
-    "wrangler": "^3.84.0"
+    "wrangler": "^4.81.0"
   }
 }

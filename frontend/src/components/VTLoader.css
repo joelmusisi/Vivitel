@@ -1,0 +1,93 @@
+.vt-loader {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-height: 320px;
+  flex: 1 1 auto;
+  box-sizing: border-box;
+}
+
+.vt-loader--compact {
+  min-height: 140px;
+  padding: 24px 0;
+}
+
+.vt-loader--full {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  min-height: 100vh;
+  background: rgba(247, 249, 251, 0.96);
+  backdrop-filter: blur(2px);
+}
+
+.vt-spinner {
+  --vt-size: 40px;
+  position: relative;
+  width: var(--vt-size);
+  height: var(--vt-size);
+  flex: 0 0 auto;
+}
+
+.vt-loader--compact .vt-spinner {
+  --vt-size: 32px;
+}
+
+.vt-spinner--inline {
+  --vt-size: 16px;
+  display: inline-block;
+  vertical-align: middle;
+  margin-right: 8px;
+}
+
+.vt-spinner--inline i {
+  background: currentColor;
+}
+
+.vt-spinner i {
+  position: absolute;
+  left: 50%;
+  top: 0;
+  width: 12%;
+  height: 28%;
+  margin-left: -6%;
+  border-radius: 999px;
+  background: #1f2937;
+  transform-origin: 50% calc(var(--vt-size) / 2);
+  transform: rotate(calc(var(--i) * 30deg));
+  opacity: 0.12;
+  animation: vt-tick 1.2s linear infinite;
+  animation-delay: calc(var(--i) * -0.1s);
+}
+
+.vt-loader-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(248, 250, 252, 0.72);
+  backdrop-filter: blur(1.5px);
+}
+
+.vt-loader-overlay .vt-loader {
+  min-height: 0;
+  width: auto;
+}
+
+@keyframes vt-tick {
+  0% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0.12;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .vt-spinner i {
+    animation-duration: 2.4s;
+  }
+}

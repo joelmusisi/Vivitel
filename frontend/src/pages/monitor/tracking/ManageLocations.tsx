@@ -1,9 +1,27 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import VTLoader from "../../../components/VTLoader";
+import "../../../mapStyles";
 import { Circle, MapContainer, Marker, Polygon, Polyline, Rectangle, TileLayer, useMapEvents } from "react-leaflet";
 import L from "leaflet";
+import {
+  loadLocationGeofences,
+  parseTraccarAreaToShape,
+  removeLocationGeofence,
+  saveLocationGeofence,
+  type LocationGeofence,
+  type LocationShape
+} from "../../../utils/locationGeofences";
+import { showToast } from "../../../utils/toast";
+import {
+  beginSaving,
+  endSavingDone,
+  endSavingError,
+  REQUIRED_MISSING_CLASS
+} from "../../../utils/saveFeedback";
+import { readActiveSiteName } from "../../../utils/tenantContext";
 import "../../../index.css";
 
-type LocationRow = {
+type LocationRow = LocationGeofence & {
   id: string;
   locationId: string;
   name: string;
@@ -16,6 +34,7 @@ type LocationRow = {
   home: string;
   work: string;
   category: string;
+  speed: string;
 };
 
 type LatLng = { lat: number; lng: number };
@@ -49,24 +68,9 @@ const categoryItems = [
   "Speed zone"
 ];
 
-const initialLocations: LocationRow[] = [
-  {
-    id: "loc-1",
-    locationId: "LOC-0001",
-    name: "Dar es salaam",
-    type: "Speed zone",
-    address: "Kibaha, Pwani, Tanzania",
-    site: "All sites",
-    contact: "",
-    email: "",
-    mobile: "",
-    home: "",
-    work: "",
-    category: "Speed zone"
-  }
-];
+const initialLocations: LocationRow[] = [];
 
-export default function ManageLocations() {
+export default function ControlLocations() {
   const [activeCategory, setActiveCategory] = useState("All");
   const [search, setSearch] = useState("");
   const [rows, setRows] = useState<LocationRow[]>(initialLocations);
@@ -88,6 +92,7 @@ export default function ManageLocations() {
   const [showColumnChooser, setShowColumnChooser] = useState(false);
   const importInputRef = useRef<HTMLInputElement | null>(null);
   const [mapLayer, setMapLayer] = useState("google-street");
+  const googleMapsKey = (import.meta as any).env?.VITE_GOOGLE_MAPS_API_KEY as string | undefined;
   const [geofenceCenter, setGeofenceCenter] = useState<LatLng | null>(null);
   const [geofenceRadius, setGeofenceRadius] = useState(26000);
   const [editGeofence, setEditGeofence] = useState(false);
@@ -98,34 +103,38 @@ export default function ManageLocations() {
   const [polylinePoints, setPolylinePoints] = useState<LatLng[]>([]);
   const [shapeType, setShapeType] = useState<"circle" | "rectangle" | "polygon" | "polyline" | null>(null);
   const [mapInstance, setMapInstance] = useState<any>(null);
+  const [locationsLoading, setLocationsLoading] = useState(false);
+  const [locationsSaving, setLocationsSaving] = useState(false);
+  const [missingRequiredKeys, setMissingRequiredKeys] = useState<Set<string>>(new Set());
+  const fieldMissingClass = (key: string) =>
+    missingRequiredKeys.has(key) ? REQUIRED_MISSING_CLASS : undefined;
   const [formPosition, setFormPosition] = useState({ x: 16, y: 40 });
   const [draggingForm, setDraggingForm] = useState(false);
   const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
   const editorCardRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<L.Map | null>(null);
 
+  const buildGoogleTileUrl = (lyrs: string) => {
+    const keyPart = googleMapsKey ? `&key=${encodeURIComponent(googleMapsKey)}` : "";
+    return `https://mt{s}.google.com/vt/lyrs=${lyrs}&x={x}&y={y}&z={z}${keyPart}`;
+  };
+
   const baseLayers: Record<string, { url: string; attribution: string }> = {
     "google-street": {
-      url: "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
-      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+      url: buildGoogleTileUrl("m"),
+      attribution: "&copy; Google Maps"
     },
     "google-terrain": {
-      url: "https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png",
-      attribution: 'Map data: &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors, SRTM | Map style: &copy; <a href="https://opentopomap.org">OpenTopoMap</a>'
+      url: buildGoogleTileUrl("p"),
+      attribution: "&copy; Google Maps"
     },
     "google-satellite": {
-      url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
-      attribution: "Tiles &copy; Esri"
+      url: buildGoogleTileUrl("s"),
+      attribution: "&copy; Google Maps"
     },
     "google-hybrid": {
-      url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
-      attribution: "Tiles &copy; Esri"
-    }
-  };
-  const overlayLayers: Record<string, { url: string; attribution: string }> = {
-    "google-hybrid": {
-      url: "https://services.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}",
-      attribution: "Tiles &copy; Esri"
+      url: buildGoogleTileUrl("y"),
+      attribution: "&copy; Google Maps"
     }
   };
   const defaultCenter: [number, number] = [-6.7924, 39.2083];
@@ -134,6 +143,49 @@ export default function ManageLocations() {
     : defaultCenter;
 
   const showHandles = !!activeTool || editGeofence;
+
+  const loadLocations = async () => {
+    setLocationsLoading(true);
+    try {
+      const locations = await loadLocationGeofences();
+      setRows(locations.map((location) => ({
+        ...location,
+        id: String(location.id),
+        locationId: String(location.gpsIotGeoId ?? location.traccarId ?? location.id),
+        address: String(location.address ?? ""),
+        site: String(location.site ?? ""),
+        contact: String(location.contact ?? ""),
+        email: "",
+        mobile: String(location.contactTel ?? ""),
+        home: "",
+        work: "",
+        category: String(location.type ?? "Other"),
+        speed: String(location.speed ?? "")
+      })));
+    } catch (error: any) {
+      showToast(String(error?.message ?? error ?? "Unable to load locations."), "error");
+    } finally {
+      setLocationsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void loadLocations();
+    const handleLocationsChange = () => void loadLocations();
+    const handleOrganisationChange = () => {
+      setShowEditModal(false);
+      setEditRowId(null);
+      setEditDraft(null);
+      setSelectedIds([]);
+      void loadLocations();
+    };
+    window.addEventListener("vivi:locationschange", handleLocationsChange);
+    window.addEventListener("vivi:orgchange", handleOrganisationChange);
+    return () => {
+      window.removeEventListener("vivi:locationschange", handleLocationsChange);
+      window.removeEventListener("vivi:orgchange", handleOrganisationChange);
+    };
+  }, []);
 
   const distanceMeters = (a: LatLng, b: LatLng) => {
     const R = 6371000;
@@ -232,7 +284,8 @@ export default function ManageLocations() {
     "Rest stop"
   ];
 
-  const siteOptions = ["All sites", "Dar es Salaam", "Kampala", "Mombasa"];
+  const activeSite = readActiveSiteName();
+  const siteOptions = activeSite ? [activeSite] : [];
 
   const colorOptions = [
     "#000000",
@@ -388,7 +441,8 @@ export default function ManageLocations() {
         mobile,
         home,
         work,
-        category
+        category,
+        speed: ""
       };
     });
   };
@@ -398,7 +452,12 @@ export default function ManageLocations() {
     const reader = new FileReader();
     reader.onload = () => {
       const text = String(reader.result ?? "");
-      const imported = parseCsv(text);
+      const activeSite = readActiveSiteName();
+      if (!activeSite) {
+        showToast("Select a site in the organisation ribbon before importing locations.", "error");
+        return;
+      }
+      const imported = parseCsv(text).map((row) => ({ ...row, site: activeSite }));
       if (imported.length > 0) {
         setRows((prev) => [...imported, ...prev]);
       }
@@ -406,26 +465,39 @@ export default function ManageLocations() {
     reader.readAsText(file);
   };
 
-  const handleDelete = () => {
+  const handleDelete = async () => {
     if (selectedIds.length === 0) return;
-    setRows((prev) => prev.filter((row) => !selectedIds.includes(row.id)));
-    setSelectedIds([]);
+    const targets = rows.filter((row) => selectedIds.includes(row.id));
+    try {
+      for (const row of targets) await removeLocationGeofence(row);
+      setRows((prev) => prev.filter((row) => !selectedIds.includes(row.id)));
+      setSelectedIds([]);
+      showToast(`${targets.length} location(s) deleted from VIVI.`, "success");
+    } catch (error: any) {
+      showToast(String(error?.message ?? error ?? "Unable to delete location."), "error");
+    }
   };
 
   const handleAdd = () => {
+    const selectedSite = readActiveSiteName();
+    if (!selectedSite) {
+      showToast("Select a site in the organisation ribbon before adding a location.", "error");
+      return;
+    }
     const newRow: LocationRow = {
       id: `loc-new-${Date.now()}`,
       locationId: "",
       name: "",
       type: "",
       address: "",
-      site: "",
+      site: selectedSite,
       contact: "",
       email: "",
       mobile: "",
       home: "",
       work: "",
-      category: "Other"
+      category: "Other",
+      speed: ""
     };
     setEditRowId(newRow.id);
     setEditDraft(newRow);
@@ -460,41 +532,118 @@ export default function ManageLocations() {
   };
 
   const startEdit = (row: LocationRow) => {
+    const shape = row.shape ?? (row.area ? parseTraccarAreaToShape(row.area) : null);
     setEditRowId(row.id);
-    setEditDraft({ ...row });
+    setEditDraft({ ...row, shape: shape ?? undefined });
     setIsCreatingNew(false);
-    setLocationColor("#0ea5e9");
-    setLocationOpacity(0.5);
-    setExternalReference("");
-    setLocationDetails("");
-    setLocationBy("");
+    setLocationColor(String(row.color ?? row.attributes?.color ?? "#0ea5e9"));
+    setLocationOpacity(typeof row.opacity === "number" ? row.opacity : 0.5);
+    setExternalReference(String(row.externalReference ?? ""));
+    setLocationDetails(String(row.description ?? ""));
+    setLocationBy(shape ? "latlng" : "");
     setAddressQuery("");
-    setCoordInput("");
+    setCoordInput(
+      shape?.type === "circle"
+        ? `${shape.center.lat}, ${shape.center.lng}`
+        : ""
+    );
     setGeoError(null);
-    setGeofenceCenter(null);
-    setGeofenceRadius(26000);
-    setEditGeofence(false);
+    setGeofenceCenter(shape?.type === "circle" ? shape.center : null);
+    setGeofenceRadius(shape?.type === "circle" ? shape.radius : 26000);
+    setEditGeofence(Boolean(shape));
     setActiveTool(null);
     setRectangleAnchor(null);
-    setRectangleBounds(null);
-    setPolygonPoints([]);
-    setPolylinePoints([]);
-    setShapeType(null);
+    setRectangleBounds(shape?.type === "rectangle" ? shape.points : null);
+    setPolygonPoints(shape?.type === "polygon" ? shape.points : []);
+    setPolylinePoints(shape?.type === "polyline" ? shape.points : []);
+    setShapeType(shape?.type ?? null);
     setShowEditModal(true);
     setOpenMenuId(null);
+    if (shape?.type === "circle" && mapRef.current) {
+      mapRef.current.setView([shape.center.lat, shape.center.lng], 12);
+    } else if (shape?.type === "rectangle" && shape.points?.length === 2 && mapRef.current) {
+      mapRef.current.fitBounds([
+        [shape.points[0].lat, shape.points[0].lng],
+        [shape.points[1].lat, shape.points[1].lng]
+      ]);
+    } else if ((shape?.type === "polygon" || shape?.type === "polyline") && shape.points.length > 0 && mapRef.current) {
+      const bounds = shape.points.map((point) => [point.lat, point.lng] as [number, number]);
+      mapRef.current.fitBounds(bounds);
+    }
   };
 
-  const saveEdit = () => {
+  const saveEdit = async () => {
     if (!editDraft || !editRowId) return;
-    if (isCreatingNew) {
-      setRows((prev) => [editDraft, ...prev]);
-    } else {
-      setRows((prev) => prev.map((row) => (row.id === editRowId ? editDraft : row)));
+    const selectedSite = readActiveSiteName();
+    if (!selectedSite) {
+      showToast("Select a site in the organisation ribbon before saving.", "error");
+      return;
     }
-    setEditRowId(null);
-    setEditDraft(null);
-    setIsCreatingNew(false);
-    setShowEditModal(false);
+    const missing = new Set<string>();
+    if (!editDraft.name.trim()) missing.add("name");
+    if (!editDraft.type.trim()) missing.add("type");
+    if (missing.size) {
+      setMissingRequiredKeys(missing);
+      showToast("Fill in the required fields marked in red.", "error");
+      return;
+    }
+    setMissingRequiredKeys(new Set());
+    let shape: LocationShape | undefined;
+    if (shapeType === "circle" && geofenceCenter) {
+      shape = { type: "circle", center: geofenceCenter, radius: geofenceRadius };
+    } else if (shapeType === "rectangle" && rectangleBounds) {
+      shape = { type: "rectangle", points: rectangleBounds };
+    } else if (shapeType === "polygon" && polygonPoints.length >= 3) {
+      shape = { type: "polygon", points: polygonPoints };
+    } else if (shapeType === "polyline" && polylinePoints.length >= 2) {
+      shape = { type: "polyline", points: polylinePoints };
+    }
+    if (!shape && !editDraft.area) {
+      showToast("Draw the geofence before saving.", "error");
+      return;
+    }
+
+    setLocationsSaving(true);
+    beginSaving();
+    try {
+      const saved = await saveLocationGeofence({
+        ...editDraft,
+        site: selectedSite,
+        traccarId: editDraft.traccarId,
+        gpsIotGeoId: editDraft.gpsIotGeoId,
+        contact: editDraft.contact,
+        contactTel: editDraft.mobile || editDraft.contactTel,
+        speed: editDraft.speed,
+        shape,
+        color: locationColor,
+        opacity: locationOpacity,
+        description: locationDetails,
+        externalReference
+      });
+      const savedRow: LocationRow = {
+        ...editDraft,
+        ...saved,
+        id: String(saved.id),
+        locationId: String(saved.gpsIotGeoId ?? saved.traccarId ?? saved.id),
+        contact: String(saved.contact ?? editDraft.contact ?? ""),
+        mobile: String(saved.contactTel ?? editDraft.mobile ?? ""),
+        speed: String(saved.speed ?? editDraft.speed ?? "")
+      };
+      if (isCreatingNew) {
+        setRows((prev) => [savedRow, ...prev.filter((row) => row.id !== savedRow.id)]);
+      } else {
+        setRows((prev) => prev.map((row) => (row.id === editRowId ? savedRow : row)));
+      }
+      setEditRowId(null);
+      setEditDraft(null);
+      setIsCreatingNew(false);
+      setShowEditModal(false);
+      endSavingDone();
+    } catch (error: any) {
+      endSavingError(String(error?.message ?? error ?? "Unable to save location."));
+    } finally {
+      setLocationsSaving(false);
+    }
   };
 
   const cancelEdit = () => {
@@ -528,14 +677,34 @@ export default function ManageLocations() {
     setGeoError(null);
     setGeoLoading(true);
     try {
-      const response = await fetch(
-        `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(addressQuery.trim())}`
-      );
-      const results: Array<{ lat: string; lon: string }> = await response.json();
-      if (!results.length) {
-        setGeoError("No results found for that address.");
+      if (googleMapsKey) {
+        const response = await fetch(
+          `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(addressQuery.trim())}&key=${encodeURIComponent(googleMapsKey)}`
+        );
+        const body = (await response.json()) as {
+          status?: string;
+          results?: Array<{ geometry?: { location?: { lat?: number; lng?: number } } }>;
+        };
+        const location = body.results?.[0]?.geometry?.location;
+        if (body.status !== "OK" || !location || typeof location.lat !== "number" || typeof location.lng !== "number") {
+          setGeoError("No results found for that address.");
+        } else {
+          setGeofenceCenter({ lat: location.lat, lng: location.lng });
+          mapRef.current?.setView([location.lat, location.lng], Math.max(mapRef.current.getZoom(), 12));
+        }
       } else {
-        setGeofenceCenter({ lat: Number(results[0].lat), lng: Number(results[0].lon) });
+        const response = await fetch(
+          `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(addressQuery.trim())}`
+        );
+        const results: Array<{ lat: string; lon: string }> = await response.json();
+        if (!results.length) {
+          setGeoError("No results found for that address.");
+        } else {
+          const lat = Number(results[0].lat);
+          const lng = Number(results[0].lon);
+          setGeofenceCenter({ lat, lng });
+          mapRef.current?.setView([lat, lng], Math.max(mapRef.current?.getZoom() ?? 9, 12));
+        }
       }
     } catch {
       setGeoError("Address lookup failed. Try again.");
@@ -686,7 +855,9 @@ export default function ManageLocations() {
                 )}
               </span>
             </div>
-            {filtered.length === 0 ? (
+            {locationsLoading ? (
+              <VTLoader compact label="Loading locations" />
+            ) : filtered.length === 0 ? (
               <div className="locations-admin-empty">No locations match your filters.</div>
             ) : (
               filtered.map((row) => (
@@ -747,7 +918,9 @@ export default function ManageLocations() {
 
           <div className="locations-admin-footer">
             <span>Last refresh: a few seconds ago</span>
-            <button type="button" className="locations-admin-refresh">Refresh</button>
+            <button type="button" className="locations-admin-refresh" onClick={() => void loadLocations()}>
+              Refresh
+            </button>
           </div>
         </section>
       </div>
@@ -820,22 +993,34 @@ export default function ManageLocations() {
 
                 {locationBy ? (
                   <>
-                <label className="location-editor-label">
+                <label className={`location-editor-label ${fieldMissingClass("name") ?? ""}`.trim()}>
                   Location name <span>*</span>
                   <input
                     value={editDraft.name}
-                    onChange={(event) =>
-                      setEditDraft((prev) => (prev ? { ...prev, name: event.target.value } : prev))
-                    }
+                    onChange={(event) => {
+                      setMissingRequiredKeys((current) => {
+                        if (!current.has("name")) return current;
+                        const next = new Set(current);
+                        next.delete("name");
+                        return next;
+                      });
+                      setEditDraft((prev) => (prev ? { ...prev, name: event.target.value } : prev));
+                    }}
                   />
                 </label>
-                <label className="location-editor-label">
+                <label className={`location-editor-label ${fieldMissingClass("type") ?? ""}`.trim()}>
                   Location type <span>*</span>
                   <select
                     value={editDraft.type}
-                    onChange={(event) =>
-                      setEditDraft((prev) => (prev ? { ...prev, type: event.target.value } : prev))
-                    }
+                    onChange={(event) => {
+                      setMissingRequiredKeys((current) => {
+                        if (!current.has("type")) return current;
+                        const next = new Set(current);
+                        next.delete("type");
+                        return next;
+                      });
+                      setEditDraft((prev) => (prev ? { ...prev, type: event.target.value } : prev));
+                    }}
                   >
                     <option value="">Select location type</option>
                     {locationTypeOptions.map((option) => (
@@ -846,14 +1031,42 @@ export default function ManageLocations() {
                   </select>
                 </label>
                 <label className="location-editor-label">
+                  Speed limit (km/h)
+                  <input
+                    type="number"
+                    min={0}
+                    value={editDraft.speed ?? ""}
+                    onChange={(event) =>
+                      setEditDraft((prev) => (prev ? { ...prev, speed: event.target.value } : prev))
+                    }
+                    placeholder="Used by Location Binding overspeed"
+                  />
+                </label>
+                <label className="location-editor-label">
+                  Contact name
+                  <input
+                    value={editDraft.contact ?? ""}
+                    onChange={(event) =>
+                      setEditDraft((prev) => (prev ? { ...prev, contact: event.target.value } : prev))
+                    }
+                  />
+                </label>
+                <label className="location-editor-label">
+                  Contact telephone
+                  <input
+                    value={editDraft.mobile ?? ""}
+                    onChange={(event) =>
+                      setEditDraft((prev) => (prev ? { ...prev, mobile: event.target.value } : prev))
+                    }
+                  />
+                </label>
+                <label className="location-editor-label">
                   Site <span>*</span>
                   <select
                     value={editDraft.site}
-                    onChange={(event) =>
-                      setEditDraft((prev) => (prev ? { ...prev, site: event.target.value } : prev))
-                    }
+                    disabled
                   >
-                    <option value="">Select site</option>
+                    {!activeSite && <option value="">Select a site in the organisation ribbon</option>}
                     {siteOptions.map((option) => (
                       <option key={option} value={option}>
                         {option}
@@ -918,8 +1131,13 @@ export default function ManageLocations() {
                   <button type="button" className="location-editor-btn ghost" onClick={cancelEdit}>
                     Close
                   </button>
-                  <button type="button" className="location-editor-btn" onClick={saveEdit}>
-                    Save
+                  <button
+                    type="button"
+                    className="location-editor-btn"
+                    disabled={locationsSaving}
+                    onClick={() => void saveEdit()}
+                  >
+                    {locationsSaving ? "Saving..." : "Save"}
                   </button>
                 </div>
                   </>
@@ -938,15 +1156,10 @@ export default function ManageLocations() {
                     <MapClickHandler enabled={!!activeTool} onSelect={handleMapClick} />
                     <TileLayer
                       key={mapLayer}
+                      subdomains="0123"
                       attribution={baseLayers[mapLayer].attribution}
                       url={baseLayers[mapLayer].url}
                     />
-                    {mapLayer === "google-hybrid" && (
-                      <TileLayer
-                        attribution={overlayLayers[mapLayer].attribution}
-                        url={overlayLayers[mapLayer].url}
-                      />
-                    )}
                     {shapeType === "circle" && geofenceCenter && (
                       <>
                         <Circle
@@ -1186,10 +1399,10 @@ export default function ManageLocations() {
                     ⟲
                   </button>
                   <select value={mapLayer} onChange={(event) => setMapLayer(event.target.value)}>
-                    <option value="google-street">Google (street)</option>
-                    <option value="google-terrain">Terrain</option>
-                    <option value="google-satellite">Google (satellite)</option>
-                    <option value="google-hybrid">Google (hybrid)</option>
+                    <option value="google-street">Google Maps (street)</option>
+                    <option value="google-terrain">Google Maps (terrain)</option>
+                    <option value="google-satellite">Google Maps (satellite)</option>
+                    <option value="google-hybrid">Google Maps (hybrid)</option>
                   </select>
                 </div>
               </section>

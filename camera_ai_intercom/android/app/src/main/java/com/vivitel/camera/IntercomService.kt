@@ -9,12 +9,18 @@ import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 
 class IntercomService : Service() {
   private var recorder: AudioRecord? = null
   private var captureThread: Thread? = null
-  private val transport = IntercomTransport()
+  private var activeConfig: AppConfig = AppConfig()
+  private var transport: IntercomTransport? = null
+  private var activeConfigPath: String = AppConfigLoader.DEFAULT_CONFIG_PATH
+  private val mainHandler = Handler(Looper.getMainLooper())
+  @Volatile private var reloadQueued = false
 
   override fun onCreate() {
     super.onCreate()
@@ -22,6 +28,9 @@ class IntercomService : Service() {
   }
 
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+    activeConfigPath = intent?.getStringExtra(AppConfigLoader.EXTRA_CONFIG_PATH) ?: AppConfigLoader.DEFAULT_CONFIG_PATH
+    activeConfig = AppConfigLoader.load(this, activeConfigPath)
+    transport = IntercomTransport(this, activeConfig, ::scheduleConfigReload)
     startCapture()
     return START_STICKY
   }
@@ -35,12 +44,16 @@ class IntercomService : Service() {
 
   private fun startCapture() {
     if (captureThread != null) return
-    val sampleRate = 16000
-    val bufferSize = AudioRecord.getMinBufferSize(sampleRate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
+    val sampleRate = activeConfig.intercom.sampleRate
+    val channels = if (activeConfig.intercom.channels > 1) AudioFormat.CHANNEL_IN_STEREO else AudioFormat.CHANNEL_IN_MONO
+    val frameBytes = (sampleRate * 2 * activeConfig.intercom.frameMs / 1000).coerceAtLeast(320)
+    val minBuffer = AudioRecord.getMinBufferSize(sampleRate, channels, AudioFormat.ENCODING_PCM_16BIT)
+    val bufferSize = maxOf(minBuffer, frameBytes)
+
     recorder = AudioRecord(
       MediaRecorder.AudioSource.MIC,
       sampleRate,
-      AudioFormat.CHANNEL_IN_MONO,
+      channels,
       AudioFormat.ENCODING_PCM_16BIT,
       bufferSize
     )
@@ -50,7 +63,7 @@ class IntercomService : Service() {
       while (!Thread.currentThread().isInterrupted) {
         val read = recorder?.read(buffer, 0, buffer.size) ?: 0
         if (read > 0) {
-          transport.sendAudio(buffer.copyOf(read))
+          transport?.sendAudio(buffer.copyOf(read))
         }
       }
     }.apply { start() }
@@ -62,6 +75,36 @@ class IntercomService : Service() {
     recorder?.stop()
     recorder?.release()
     recorder = null
+    transport?.close()
+    transport = null
+  }
+
+  private fun scheduleConfigReload() {
+    if (reloadQueued) return
+    reloadQueued = true
+    mainHandler.post {
+      reloadQueued = false
+      stopCapture()
+      activeConfig = AppConfigLoader.load(this, activeConfigPath)
+      transport = IntercomTransport(this, activeConfig, ::scheduleConfigReload)
+      if (activeConfig.camera.autoStartNetworkStatus) {
+        startForegroundService(
+          Intent(this, NetworkStatusService::class.java)
+            .putExtra(AppConfigLoader.EXTRA_CONFIG_PATH, activeConfigPath)
+        )
+      } else {
+        stopService(Intent(this, NetworkStatusService::class.java))
+      }
+      if (activeConfig.camera.autoStartTalkback) {
+        startForegroundService(
+          Intent(this, TalkbackService::class.java)
+            .putExtra(AppConfigLoader.EXTRA_CONFIG_PATH, activeConfigPath)
+        )
+      } else {
+        stopService(Intent(this, TalkbackService::class.java))
+      }
+      startCapture()
+    }
   }
 
   private fun buildNotification(): Notification {

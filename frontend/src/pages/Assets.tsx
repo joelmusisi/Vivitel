@@ -1,33 +1,103 @@
-﻿import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import SortableColumnHeader from "../components/SortableColumnHeader";
+import { useColumnSort } from "../hooks/useColumnSort";
 import { useNavigate } from "react-router-dom";
-import { CompassIcon, DownloadIcon, EditIcon, PinsIcon, QueryIcon, ReportIcon, SettingsIcon, TimelineIcon } from "../components/Icons";
+import { CompassIcon, DownloadIcon, EditIcon, PinsIcon, QueryIcon, ReportIcon, SettingsIcon, TimelineIcon, TrashIcon } from "../components/Icons";
 import {
   buildApiUrl,
   canForPath,
+  getCachedPrincipal,
   commissionDeviceDetailed,
+  decommissionDeviceDetailed,
   confirmTelemetryForImei,
   getAssetsFromApi,
   getAssetsFromApiForTenant,
-  getBindings,
-  getCamerasFromApi,
+  clearCachedAssets,
+  importAssetsFromTraccarApi,
   getConfigurationGroups,
   getSiteTimeZoneSettings,
+  SITE_TIME_ZONE_SETTINGS_UPDATED_EVENT,
   getApiBaseUrl,
   getTenantId,
   getApiKey,
+  isPersonalDemoTenant,
+  tenantSkipsAutomaticFleetImport,
+  getTraccarDevices,
+  getTraccarGroups,
+  getTraccarEvents,
   kickAvlSocket,
   pushDeviceSettings,
-  resolveTimeZoneForSite,
-  saveBinding,
+  formatTimestampForSite,
   saveConfigurationGroup,
-  saveToApi,
   SiteTimeZoneSettings,
   telemetryLookupByImeiDetailed,
   upsertAssetDetailed,
-  upsertAssetDetailedForTenant
+  upsertAssetDetailedForTenant,
+  getDriversFromApi,
+  ensureNamedDriverOnServer,
+  getGpsIotAssetInputStatus
 } from "../utils/api";
+import { resolveRoleScopeRulesFromPrincipal } from "../utils/roleScopeRules";
+import { isGpsIotServer } from "../utils/regionServers";
+import AssetIoListModal from "../components/AssetIoListModal";
+import { resolveGpsIotFuelAssetId } from "../utils/gpsiotFuel";
+import {
+  formatGpsIotInputStatusLabel,
+  sortGpsIotInputs,
+  type GpsIotAssetInput
+} from "../utils/gpsiotInputStatus";
+import { readActiveTenantId, subscribeScopeChange } from "../utils/tenantContext";
+import {
+  clearUserPref,
+  readUserPrefJson,
+  USER_PREF_KEYS,
+  writeActiveAssetPrefs,
+  writeUserPrefJson
+} from "../utils/userAppPrefs";
+import { readActiveSiteName } from "../utils/notificationLibraryStore";
+import {
+  cms808DisplayTime,
+  cms808HierarchyActive,
+  cms808VehicleToAssetRecord,
+  findCms808LiveMatch,
+  isCms808LiveAsset,
+  loadCms808Position,
+  loadCms808VehiclesForActiveHierarchy,
+  overlayCms808LiveFields
+} from "../utils/cms808";
+import { isCms808Server } from "../utils/regionServers";
+import { buildAssetDriverFields, readAssetDefaultDriverFormState } from "../utils/assetDriver";
+import { configGroupsCacheKey, filterForSiteScope, filterRecordsForActiveSelection, siteScopesMatch } from "../utils/scopeStorage";
+import {
+  filterOutMockConfigurationGroups,
+  purgeMockConfigurationGroupsFromLocalStorage
+} from "../utils/configGroupMocks";
+import { syncConfigurationGroupToTraccar } from "../utils/traccarBindingSync";
+import { mapPool } from "../utils/traccarNotificationLibrarySync";
+import {
+  buildDeviceModelMap,
+  loadFirmwareLibraryOptions,
+  loadMobileDeviceLibraryOptions,
+  mergeCatalogOption
+} from "../utils/libraryCatalog";
 import { showToast } from "../utils/toast";
-import { computeAssetDotStatus } from "../utils/assetStatus";
+import {
+  beginSaving,
+  endSavingDone,
+  endSavingError,
+  showSaveDone,
+  REQUIRED_MISSING_CLASS
+} from "../utils/saveFeedback";
+import { resolveAssetDotStatus, resolveLastMoveAtMs, shouldShowAssetStatusDot } from "../utils/assetStatus";
+import { AssetStatusDot } from "../components/AssetStatusDot";
+import { applyTraccarLiveSnapshotsToAssets, parseTimestampMs } from "../utils/traccarLive";
+import { overlayLivePositions, rememberLivePositions } from "../utils/assetLiveCache";
+import { extractAssetMovement, extractAssetSpeedKph, movementFromSpeedKph } from "../utils/assetTelemetryFields";
+import { imeisForSiteGroup, matchesStoredSiteSelection, missingDevicesForSite, normalizeSelectionText, readStoredSelectionScope, resolveAssetSiteName, type StoredSelectionScope } from "../utils/selectionScope";
+import { hierarchyLabelsFromSelectedPath } from "../utils/traccarViviNaming";
+import { isSharedDemoDatabaseTenant } from "../utils/regionHierarchy";
+import { formatAssetDescription } from "../utils/hierarchyDisplay";
+import { getSharedRealtimeClient } from "../utils/realtimeWs";
 import { countryOptions } from "../data/countryOptions";
 import "../index.css";
 
@@ -49,6 +119,7 @@ type Asset = {
   make?: string;
   year?: string;
   vin?: string;
+  engineNumber?: string;
   mobileDevice?: string;
   mobileModel?: string;
   odometer?: string;
@@ -56,6 +127,9 @@ type Asset = {
   lastLocation?: string;
   configUploadDate?: string;
   configGroup?: string;
+  database?: string;
+  dealer?: string;
+  organisation?: string;
   imsi?: string;
   msisdn?: string;
   device?: string;
@@ -76,13 +150,89 @@ type Asset = {
   cameraStatus?: string;
   cameraFirmware?: string;
   faults?: string;
+  hasDefaultDriver?: boolean;
+  defaultDriver?: string;
+  driver?: string;
+  driverName?: string;
+  assetStatus?: string;
+  expiryMode?: string;
+  expiryDate?: string;
+  statusNotes?: string;
+  speed?: number;
+  gps?: string;
+  movement?: string;
+  lat?: number;
+  lng?: number;
+  lastMoveAtMs?: number;
+  telemetryAtMs?: number;
+  telemetryLatest?: Record<string, unknown>;
+  hierarchyNamingVersion?: string;
+  serviceHistory?: Array<Record<string, string>>;
+  reminders?: Array<Record<string, string>>;
+  fuelData?: Array<Record<string, string>>;
+  otherCosts?: Array<Record<string, string>>;
+  requiredCertificates?: Array<Record<string, string>>;
+  requiredLicences?: Array<Record<string, string>>;
+};
+
+type AssetSectionField =
+  | "serviceHistory"
+  | "reminders"
+  | "fuelData"
+  | "otherCosts"
+  | "requiredCertificates"
+  | "requiredLicences";
+
+const assetSectionField = (section: string): AssetSectionField | null => {
+  switch (section) {
+    case "Service history":
+      return "serviceHistory";
+    case "Reminders":
+      return "reminders";
+    case "Fuel data":
+      return "fuelData";
+    case "Other cost data":
+      return "otherCosts";
+    case "Required driver certificates":
+      return "requiredCertificates";
+    case "Required driver licences":
+      return "requiredLicences";
+    default:
+      return null;
+  }
+};
+
+const readAssetSectionRows = (asset: Asset | null | undefined, field: AssetSectionField) => {
+  const raw = asset?.[field];
+  return Array.isArray(raw) ? raw.map((row) => ({ ...row })) : [];
+};
+
+type DecommissionConfirmContext = {
+  assetId: string;
+  imei: string;
+  deviceId?: string;
+  assetLabel: string;
+  registration: string;
+  site: string;
+  device: string;
+  model: string;
+};
+
+type DeleteAssetConfirmContext = {
+  id: string;
+  imei: string;
+  registration: string;
+  assetLabel: string;
+  site: string;
+  model: string;
+  assetId: number | string;
 };
 
 type MobileDeviceRow = {
   device: string;
   model: string;
   imei: string;
-  installed: string;
+  odometer: string;
   status: string;
   firmware: string;
   standaloneMode: string;
@@ -96,58 +246,21 @@ type MobileDeviceRow = {
   cameraFirmware: string;
 };
 
-type CameraAssetBinding = {
-  cameraId: string;
-  assetId: string;
-  assetDescription?: string;
-  registration?: string;
-};
-
-type DeviceBindingRecord = {
-  id?: string;
-  name?: string;
-  mappings?: CameraAssetBinding[];
-};
-
-type AssetBindingOption = {
-  id: string;
-  description: string;
-  registration: string;
-};
-
-const CAMERA_BINDINGS_ID = "camera-asset-bindings";
-
-const extractCameraIdFromRecord = (record: Record<string, unknown>) => {
-  return String(record.cameraId ?? record.id ?? "").trim();
-};
-
-const parseCameraAssetBindings = (bindings: DeviceBindingRecord[]) => {
-  const record = bindings.find((row) => String(row?.id ?? "").trim() === CAMERA_BINDINGS_ID);
-  if (!record || !Array.isArray(record.mappings)) return [] as CameraAssetBinding[];
-
-  return record.mappings
-    .map((row) => ({
-      cameraId: String(row?.cameraId ?? "").trim(),
-      assetId: String(row?.assetId ?? "").trim(),
-      assetDescription: String(row?.assetDescription ?? "").trim(),
-      registration: String(row?.registration ?? "").trim()
-    }))
-    .filter((row) => row.cameraId && row.assetId);
-};
-
-const saveCameraAssetBindings = async (mappings: CameraAssetBinding[]) => {
-  return saveBinding("devices", {
-    id: CAMERA_BINDINGS_ID,
-    name: "Camera Asset Bindings",
-    mappings
-  });
-};
+type InlineAddKind =
+  | "tracking-device"
+  | "tracking-model"
+  | "tracking-status"
+  | "tracking-firmware"
+  | "camera-device"
+  | "camera-model"
+  | "camera-status"
+  | "camera-firmware";
 
 const createEmptyMobileDeviceRow = (): MobileDeviceRow => ({
   device: "",
   model: "",
   imei: "",
-  installed: "",
+  odometer: "",
   status: "",
   firmware: "",
   standaloneMode: "no",
@@ -160,6 +273,110 @@ const createEmptyMobileDeviceRow = (): MobileDeviceRow => ({
   cameraStatus: "",
   cameraFirmware: ""
 });
+
+const INLINE_ADD_META: Record<InlineAddKind, { title: string; subtitle: string; placeholder: string; actionLabel: string }> = {
+  "tracking-device": {
+    title: "Add tracking device",
+    subtitle: "Create a new tracking device brand for this asset setup.",
+    placeholder: "e.g. MiTAC",
+    actionLabel: "Add device"
+  },
+  "tracking-model": {
+    title: "Add tracking model",
+    subtitle: "Add a model under the selected tracking device.",
+    placeholder: "e.g. VC-400",
+    actionLabel: "Add model"
+  },
+  "tracking-status": {
+    title: "Add tracking status",
+    subtitle: "Create a new device status option.",
+    placeholder: "e.g. Installed",
+    actionLabel: "Add status"
+  },
+  "tracking-firmware": {
+    title: "Add tracking firmware",
+    subtitle: "Register a firmware version for tracking devices.",
+    placeholder: "e.g. v3.3.0",
+    actionLabel: "Add firmware"
+  },
+  "camera-device": {
+    title: "Add camera",
+    subtitle: "Create a new camera family for this fleet.",
+    placeholder: "e.g. MiTAC",
+    actionLabel: "Add camera"
+  },
+  "camera-model": {
+    title: "Add camera model",
+    subtitle: "Add a model under the selected camera family.",
+    placeholder: "e.g. VC-400",
+    actionLabel: "Add model"
+  },
+  "camera-status": {
+    title: "Add camera status",
+    subtitle: "Create a new status option for camera health.",
+    placeholder: "e.g. Commissioned",
+    actionLabel: "Add status"
+  },
+  "camera-firmware": {
+    title: "Add camera firmware",
+    subtitle: "Register a firmware version for camera devices.",
+    placeholder: "e.g. v1.2.0",
+    actionLabel: "Add firmware"
+  }
+};
+
+type DriverPick = {
+  id: string;
+  name: string;
+  site: string;
+};
+
+const ASSET_TAB_META: Record<string, { title: string; description: string }> = {
+  "Asset details": {
+    title: "Asset details",
+    description: "Core identity, site assignment, configuration group, and vehicle specifications."
+  },
+  "Asset status": {
+    title: "Asset status",
+    description: "Set availability, expiry rules, and operational notes for this asset."
+  },
+  "Access control": {
+    title: "Access control",
+    description: "Assign a default driver from your Drivers list for access and trip attribution."
+  },
+  "Custom groups": {
+    title: "Custom groups",
+    description: "Organise this asset into shared custom groups for filtering and reporting."
+  },
+  "Service history": {
+    title: "Service history",
+    description: "Track scheduled and unscheduled maintenance with cost and odometer history."
+  },
+  Reminders: {
+    title: "Reminders",
+    description: "Manage renewal and service reminders with due dates and costs."
+  },
+  "Fuel data": {
+    title: "Fuel data",
+    description: "Record fuel purchases, suppliers, and consumption against odometer readings."
+  },
+  "Other cost data": {
+    title: "Other cost data",
+    description: "Capture additional operating costs such as tolls, repairs, and fees."
+  },
+  "Mobile device settings": {
+    title: "Mobile device settings",
+    description: "Configure tracking devices, cameras, firmware, and commissioning details."
+  },
+  "Required driver certificates": {
+    title: "Required driver certificates",
+    description: "Track mandatory certificates held by drivers assigned to this asset."
+  },
+  "Required driver licences": {
+    title: "Required driver licences",
+    description: "Track licence types, holders, and expiry dates for compliance."
+  }
+};
 
 type ColumnKey =
   | "assetDescription"
@@ -221,6 +438,7 @@ const vehicleMakes = [
   "Peugeot",
   "Renault",
   "Scania",
+  "Shackman",
   "Subaru",
   "Suzuki",
   "Tata",
@@ -272,45 +490,152 @@ const fuelTypes = [
   "Hydrogen"
 ];
 
-const initialAssets: Asset[] = [];
-
-const writeAssetsCache = (assets: Asset[]) => {
-  if (typeof window === "undefined") return;
-  const serialized = JSON.stringify(Array.isArray(assets) ? assets : []);
-  window.localStorage.setItem("vivi.assets", serialized);
+const readAssetsCache = (): Asset[] => {
+  if (typeof window === "undefined") return [];
   const tenantId = String(getTenantId() ?? "").trim();
-  if (tenantId) {
-    window.localStorage.setItem(`vivi.assets:${tenantId}`, serialized);
+  if (!tenantId) return [];
+  try {
+    const raw = window.localStorage.getItem(`vivi.assets:${tenantId}`);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? overlayLivePositions(tenantId, parsed as Asset[]) : [];
+  } catch {
+    return [];
   }
 };
 
+const writeAssetsCache = (assets: Asset[], options?: { allowEmpty?: boolean }) => {
+  if (typeof window === "undefined") return;
+  const tenantId = String(getTenantId() ?? "").trim();
+  if (!tenantId) return;
+  const rows = Array.isArray(assets) ? assets : [];
+  if (!rows.length && !options?.allowEmpty) {
+    const existing = readAssetsCache();
+    if (existing.length) return;
+  }
+  const withLive = overlayLivePositions(tenantId, rows);
+  rememberLivePositions(tenantId, withLive as unknown as Array<Record<string, unknown>>);
+  window.localStorage.setItem(`vivi.assets:${tenantId}`, JSON.stringify(withLive));
+};
+
 const columns: { key: ColumnKey; label: string }[] = [
-  { key: "assetDescription", label: "Asset description" },
-  { key: "fleetNumber", label: "Fleet number" },
-  { key: "infoIssued", label: "Info issued" },
+  { key: "assetDescription", label: "Asset Description" },
+  { key: "fleetNumber", label: "ISP Serial Number" },
+  { key: "infoIssued", label: "Info Issued" },
   { key: "imei", label: "IMEI" },
   { key: "site", label: "Site" },
   { key: "model", label: "Model" },
-  { key: "lastPosition", label: "Last position" },
-  { key: "lastTrip", label: "Last trip" },
-  { key: "registration", label: "Registration number" },
+  { key: "lastPosition", label: "Last Position" },
+  { key: "lastTrip", label: "Last Trip" },
+  { key: "registration", label: "Registration Number" },
   { key: "assetId", label: "Asset ID" },
   { key: "country", label: "Country" },
-  { key: "assetType", label: "Asset type" },
+  { key: "assetType", label: "Asset Type" },
   { key: "make", label: "Make" },
   { key: "year", label: "Year" },
-  { key: "vin", label: "VIN number" },
-  { key: "mobileDevice", label: "Mobile device" },
+  { key: "vin", label: "VIN Number" },
+  { key: "mobileDevice", label: "Mobile Device" },
   { key: "odometer", label: "Odometer" },
-  { key: "engineHours", label: "Engine hours" },
+  { key: "engineHours", label: "Engine Hours" },
   { key: "status", label: "Status" },
-  { key: "lastLocation", label: "Last location" },
-  { key: "configUploadDate", label: "Config upload date" },
-  { key: "configGroup", label: "Configuration group" },
+  { key: "lastLocation", label: "Last Location" },
+  { key: "configUploadDate", label: "Config Upload Date" },
+  { key: "configGroup", label: "Configuration Group" },
   { key: "imsi", label: "IMSI" },
   { key: "msisdn", label: "MSISDN" },
   { key: "faults", label: "Faults" }
 ];
+
+/** Sidebar identity filters — paste one or many values (VIN / ISP / REG / IMEI / engine). */
+type BulkIdentityFilter = "VIN" | "ISP" | "REG NUMBER" | "IMEIs" | "ENGINE NUMBER";
+
+const BULK_IDENTITY_FILTERS: Array<{
+  label: BulkIdentityFilter;
+  field: "vin" | "fleetNumber" | "registration" | "imei" | "engineNumber";
+  title: string;
+  hint: string;
+  placeholder: string;
+}> = [
+  {
+    label: "VIN",
+    field: "vin",
+    title: "Bulk search by VIN",
+    hint: "Paste one or more VIN numbers. Separate with new lines, commas, or semicolons.",
+    placeholder: "e.g.\nWVWZZZ1JZ3W386752\n1HGCM82633A004352"
+  },
+  {
+    label: "ISP",
+    field: "fleetNumber",
+    title: "Bulk search by ISP serial",
+    hint: "Paste one or more ISP / SIM serial numbers (SimSerial).",
+    placeholder: "e.g.\n8944111122223333444\n8944111122223333555"
+  },
+  {
+    label: "REG NUMBER",
+    field: "registration",
+    title: "Bulk search by registration",
+    hint: "Paste one or more registration / plate numbers.",
+    placeholder: "e.g.\nAB12 CDE\nXY99 ZZZ"
+  },
+  {
+    label: "IMEIs",
+    field: "imei",
+    title: "Bulk search by IMEI",
+    hint: "Paste one or more device IMEIs.",
+    placeholder: "e.g.\n866907050769800\n866907050769801"
+  },
+  {
+    label: "ENGINE NUMBER",
+    field: "engineNumber",
+    title: "Bulk search by engine number",
+    hint: "Paste one or more engine numbers.",
+    placeholder: "e.g.\nENG-1001\nENG-1002"
+  }
+];
+
+const STATUS_FILTERS = [
+  "Available",
+  "Not available",
+  "No Mobile device",
+  "No trips and positions ≥ 5 days",
+  "No trips ≥ 5 days",
+  "No positions ≥ 5 days",
+  "Decommissioned",
+  "Reminders due soon",
+  "Reminders overdue"
+] as const;
+
+const parseBulkSearchTokens = (raw: string) =>
+  String(raw ?? "")
+    .split(/[\n,;]+/)
+    .map((token) => token.trim())
+    .filter(Boolean);
+
+const normalizeIdentityToken = (value: unknown) =>
+  String(value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ");
+
+const identityFieldMatches = (fieldValue: unknown, tokens: string[]) => {
+  const field = normalizeIdentityToken(fieldValue);
+  if (!field || !tokens.length) return false;
+  const compactField = field.replace(/\s+/g, "");
+  return tokens.some((token) => {
+    const normalized = normalizeIdentityToken(token);
+    if (!normalized) return false;
+    const compactToken = normalized.replace(/\s+/g, "");
+    return (
+      field === normalized
+      || compactField === compactToken
+      || field.includes(normalized)
+      || compactField.includes(compactToken)
+    );
+  });
+};
+
+const isBulkIdentityFilter = (value: string): value is BulkIdentityFilter =>
+  BULK_IDENTITY_FILTERS.some((row) => row.label === value);
 
 const columnWidths: Record<ColumnKey, number> = {
   assetDescription: 200,
@@ -350,15 +675,21 @@ const POSITIONING_PROTOCOL_OPTIONS = ["N9M", VC400_POSITIONING_PROTOCOL];
 const VIDEO_PROTOCOL_OPTIONS = ["N9M", VC400_VIDEO_PROTOCOL];
 
 const isVc400Model = (value: unknown) => String(value ?? "").trim().toUpperCase() === VC400_CAMERA_MODEL;
+const isCms808Camera = (camera: unknown, model: unknown) => {
+  const family = String(camera ?? "").trim().toUpperCase();
+  const mdl = String(model ?? "").trim().toUpperCase();
+  return family === "CMS 808" || mdl.startsWith("MDVR") || mdl.startsWith("AHD-") || mdl === "AI-MDVR";
+};
 
 const normalizeVc400Protocols = (
   cameraModel: unknown,
   positioningProtocol: unknown,
-  videoProtocol: unknown
+  videoProtocol: unknown,
+  cameraFamily?: unknown
 ) => {
   const positioning = String(positioningProtocol ?? "").trim();
   const video = String(videoProtocol ?? "").trim();
-  if (!isVc400Model(cameraModel)) {
+  if (!isVc400Model(cameraModel) && !isCms808Camera(cameraFamily, cameraModel)) {
     return {
       cameraPositioningProtocol: positioning,
       cameraVideoProtocol: video
@@ -372,20 +703,38 @@ const normalizeVc400Protocols = (
 
 export default function Assets() {
   const navigate = useNavigate();
-  const canEditAssets = canForPath("/Track/fleet/assets", "edit");
-  const canDeleteAssets = canForPath("/Track/fleet/assets", "delete");
+  const assetPrincipal = getCachedPrincipal()?.principal as any;
+  const assetRoleKey = resolveRoleScopeRulesFromPrincipal(assetPrincipal).key;
+  const isPlatformAdminPrincipal = String(assetPrincipal?.kind ?? "").trim().toLowerCase() === "admin";
+  const isFullAccessRole = isPlatformAdminPrincipal || assetRoleKey === "admin" || assetRoleKey === "own-support";
+  const isBasicAssetUser = !isFullAccessRole && assetRoleKey === "basic-user";
+  const isSupportLimitedRole = !isFullAccessRole && (assetRoleKey === "dealer-support" || assetRoleKey === "database-support");
+  const canEditAssets = !isBasicAssetUser && canForPath("/Track/fleet/assets", "edit");
+  const canDeleteAssets = isFullAccessRole && canForPath("/Track/fleet/assets", "delete");
   const DASH = "—";
-  const readActiveOrganisationLabel = () => {
-    if (typeof window === "undefined") return "";
-    const selectedPath = String(window.localStorage.getItem("vivi.selectedPath") ?? "").trim();
-    if (!selectedPath) return "";
-    const parts = selectedPath
-      .split("/")
-      .map((part) => String(part ?? "").trim())
-      .filter(Boolean);
-    return parts[1] ?? parts[0] ?? "";
+  const normalizeKeyText = normalizeSelectionText;
+  const readHierarchyLabelsFromRibbon = () => {
+    if (typeof window === "undefined") {
+      return hierarchyLabelsFromSelectedPath("");
+    }
+    return hierarchyLabelsFromSelectedPath(
+      String(window.localStorage.getItem("vivi.selectedPath") ?? "").trim()
+    );
   };
-  const [activeOrganisationLabel, setActiveOrganisationLabel] = useState<string>(() => readActiveOrganisationLabel());
+  const initialHierarchyLabels = readHierarchyLabelsFromRibbon();
+  const [activeOrganisationLabel, setActiveOrganisationLabel] = useState<string>(
+    () => initialHierarchyLabels.organisation
+  );
+  const [activeDealerLabel, setActiveDealerLabel] = useState<string>(() => initialHierarchyLabels.dealer);
+  const [activeDatabaseLabel, setActiveDatabaseLabel] = useState<string>(() => initialHierarchyLabels.database);
+  const readActiveSiteFilter = () => {
+    if (typeof window === "undefined") return "";
+    const directSite = String(window.localStorage.getItem("vivi.activeSite") ?? "").trim();
+    if (directSite) return directSite;
+    return readHierarchyLabelsFromRibbon().site;
+  };
+  const [activeSiteFilter, setActiveSiteFilter] = useState<string>(() => readActiveSiteFilter());
+  const [selectionScope, setSelectionScope] = useState<StoredSelectionScope>(() => readStoredSelectionScope());
   const normalizeUiText = (value: unknown) =>
     String(value ?? "")
       .replaceAll("ΓÇö", DASH)
@@ -393,7 +742,12 @@ export default function Assets() {
       .trim();
 
   useEffect(() => {
-    const syncOrganisation = () => setActiveOrganisationLabel(readActiveOrganisationLabel());
+    const syncOrganisation = () => {
+      const labels = readHierarchyLabelsFromRibbon();
+      setActiveOrganisationLabel(labels.organisation);
+      setActiveDealerLabel(labels.dealer);
+      setActiveDatabaseLabel(labels.database);
+    };
     syncOrganisation();
     window.addEventListener("vivi:orgchange", syncOrganisation);
     window.addEventListener("storage", syncOrganisation);
@@ -403,43 +757,34 @@ export default function Assets() {
     };
   }, []);
 
-  const formatTimestampWithZone = (iso: unknown, timeZone: string) => {
-    const raw = String(iso ?? "").trim();
-    if (!raw || raw === DASH) return "";
-    const parsed = Date.parse(raw);
-    if (Number.isNaN(parsed)) return raw;
-    try {
-      const dt = new Intl.DateTimeFormat("en-GB", {
-        timeZone,
-        year: "numeric",
-        month: "2-digit",
-        day: "2-digit",
-        hour: "2-digit",
-        minute: "2-digit",
-        second: "2-digit",
-        hour12: false,
-        timeZoneName: "short"
-      }).format(new Date(parsed));
-      return dt.replace(",", "");
-    } catch {
-      const dt = new Date(parsed)
-        .toLocaleString("en-GB", {
-          year: "numeric",
-          month: "2-digit",
-          day: "2-digit",
-          hour: "2-digit",
-          minute: "2-digit",
-          second: "2-digit",
-          hour12: false
-        })
-        .replace(",", "");
-      return `${dt} (${timeZone})`;
-    }
-  };
+  useEffect(() => {
+    const syncActiveSite = () => {
+      setActiveSiteFilter(readActiveSiteFilter());
+      setSelectionScope(readStoredSelectionScope());
+    };
+    syncActiveSite();
+    window.addEventListener("vivi:orgchange", syncActiveSite);
+    window.addEventListener("vivi:contextchange", syncActiveSite);
+    window.addEventListener("storage", syncActiveSite);
+    return () => {
+      window.removeEventListener("vivi:orgchange", syncActiveSite);
+      window.removeEventListener("vivi:contextchange", syncActiveSite);
+      window.removeEventListener("storage", syncActiveSite);
+    };
+  }, []);
 
   const displayValue = (value: unknown) => {
     const normalized = normalizeUiText(value);
     return normalized ? normalized : "";
+  };
+  const toIgnitionLabel = (value: unknown) => {
+    if (typeof value === "boolean") return value ? "On" : "Off";
+    const raw = String(value ?? "").trim();
+    if (!raw) return "";
+    const normalized = raw.toLowerCase();
+    if (["1", "true", "yes", "on"].includes(normalized)) return "On";
+    if (["0", "false", "no", "off"].includes(normalized)) return "Off";
+    return raw;
   };
   const isDashPlaceholder = (value: unknown) => {
     const normalized = normalizeUiText(value);
@@ -508,10 +853,11 @@ export default function Assets() {
     if (rawId) return rawId;
     const numericId = Number((asset as any)?.assetId ?? 0) || 0;
     if (numericId > 0) return `asset-${numericId}`;
-    const reg = String((asset as any)?.registration ?? "").trim();
-    if (reg && !isDashPlaceholder(reg)) return `asset-${slug(reg)}`;
+    // Prefer IMEI so manual creates match Traccar import ids (`asset-{imei}`) and avoid duplicates.
     const imei = String((asset as any)?.imei ?? "").trim();
     if (imei && !isDashPlaceholder(imei)) return `asset-${slug(imei)}`;
+    const reg = String((asset as any)?.registration ?? "").trim();
+    if (reg && !isDashPlaceholder(reg)) return `asset-${slug(reg)}`;
     const cameraSerial = String((asset as any)?.cameraSerial ?? "").trim();
     if (cameraSerial && !isDashPlaceholder(cameraSerial)) return `asset-cam-${slug(cameraSerial)}`;
     return "";
@@ -519,29 +865,25 @@ export default function Assets() {
 
   const normalizeAndDedupeAssets = (items: any[]) => {
     const tryIso = (value: unknown): string => {
-      const raw = String(value ?? "").trim();
-      if (!raw) return "";
-      const ms = Date.parse(raw);
-      if (Number.isNaN(ms)) return "";
+      const ms = parseTimestampMs(value);
+      if (!Number.isFinite(ms)) return "";
       return new Date(ms).toISOString();
     };
 
     const getFreshestServerTimestamp = (asset: any): string => {
       const latest = asset?.telemetryLatest && typeof asset.telemetryLatest === "object" ? asset.telemetryLatest : null;
       const candidates = [
-        // Preferred server-side freshness candidates.
+        // Only real telemetry timestamps should drive freshness.
         asset?.lastSeen,
         asset?.last_seen,
         asset?.lastSeenAt,
         asset?.last_seen_at,
+        asset?.lastPosition,
+        asset?.last_position,
         latest?.at,
         latest?.serverAt,
-        asset?.updatedAt,
-        asset?.updated_at,
-        asset?.modifiedAt,
-        asset?.modified_at,
-        asset?.createdAt,
-        asset?.created_at
+        asset?.lastServerTime,
+        asset?.last_server_time
       ]
         .map((v) => tryIso(v))
         .filter(Boolean)
@@ -551,42 +893,131 @@ export default function Assets() {
       return candidates[0] ?? "";
     };
 
-    const next: Asset[] = [];
-    const seen = new Set<string>();
+    const getLatestIgnitionOnTimestamp = (asset: any): string => {
+      const latest = asset?.telemetryLatest && typeof asset.telemetryLatest === "object" ? asset.telemetryLatest : null;
+      const candidates = [
+        asset?.ignitionOnAt,
+        asset?.ignition_on_at,
+        asset?.lastIgnitionOnAt,
+        asset?.last_ignition_on_at,
+        latest?.ignitionOnAt,
+        latest?.ignition_on_at,
+        latest?.lastIgnitionOnAt,
+        latest?.attributes?.ignitionOnAt,
+        latest?.attributes?.lastIgnitionOnAt,
+        latest?.data?.ignitionOnAt,
+        latest?.data?.lastIgnitionOnAt
+      ]
+        .map((v) => tryIso(v))
+        .filter(Boolean)
+        .sort()
+        .reverse();
+      return candidates[0] ?? "";
+    };
+
+    const richness = (asset: any): number => {
+      let score = 0;
+      if (String(asset?.assetDescription ?? "").trim()) score += 2;
+      if (String(asset?.registration ?? "").trim()) score += 2;
+      if (String(asset?.make ?? "").trim()) score += 1;
+      if (String(asset?.country ?? "").trim()) score += 1;
+      if (String(asset?.fleetNumber ?? "").trim()) score += 1;
+      if (Number(asset?.assetId ?? 0) > 0) score += 3;
+      if (String(asset?.importedFrom ?? "").trim().toLowerCase() !== "traccar") score += 2;
+      return score;
+    };
+
+    const byIdentity = new Map<string, any>();
     for (const a of Array.isArray(items) ? items : []) {
+      const imei = String((a as any)?.imei ?? "").trim();
       const stableId = getStableAssetId(a) || `asset-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-      if (seen.has(stableId)) continue;
-      seen.add(stableId);
+      const key = imei && !isDashPlaceholder(imei) ? `imei:${imei}` : `id:${stableId}`;
+      const prev = byIdentity.get(key);
+      if (!prev || richness(a) >= richness(prev)) {
+        byIdentity.set(key, { ...(a as any), id: String((a as any)?.id ?? "").trim() || stableId });
+      }
+    }
+
+    const next: Asset[] = [];
+    const seenIds = new Set<string>();
+    for (const a of byIdentity.values()) {
+      const stableId = getStableAssetId(a) || String(a.id ?? "").trim();
+      if (!stableId || seenIds.has(stableId)) continue;
+      seenIds.add(stableId);
 
       const anyAsset = a as any;
-  const lastSeenIso = getFreshestServerTimestamp(anyAsset);
+      const lastSeenIso = getFreshestServerTimestamp(anyAsset);
       const rawLastPosition = String(anyAsset.lastPosition ?? "").trim();
       const rawLastTrip = String(anyAsset.lastTrip ?? "").trim();
+      const ignitionOnIso = getLatestIgnitionOnTimestamp(anyAsset);
 
-      const lastPositionRaw = lastSeenIso
-        ? lastSeenIso
-        : rawLastPosition && !looksLikeCoords(rawLastPosition)
-          ? rawLastPosition
-          : "";
+      const lastPositionRaw = rawLastPosition && !looksLikeCoords(rawLastPosition)
+        ? rawLastPosition
+        : "";
 
       const lastTripRaw = rawLastTrip && !looksLikeCoords(rawLastTrip) ? rawLastTrip : "";
+      const newestIso = (...values: string[]) =>
+        values
+          .map((value) => tryIso(value))
+          .filter(Boolean)
+          .sort()
+          .reverse()[0] ?? "";
+      // Live lastSeen must win over a stale stored lastPosition; trip may not lead position.
+      const lastPositionIso = newestIso(lastPositionRaw, lastSeenIso);
+      const lastTripIso = newestIso(ignitionOnIso, lastTripRaw, lastSeenIso);
+      const positionIso = newestIso(lastPositionIso, lastTripIso);
 
       next.push({
         ...(anyAsset as any),
         id: stableId,
-        lastPosition: lastPositionRaw || "",
-        lastTrip: lastTripRaw || "",
-        lastSeen: lastSeenIso || undefined
+        assetDescription: formatAssetDescription(anyAsset) || String(anyAsset.assetDescription ?? "").trim(),
+        lastPosition: positionIso || lastPositionRaw || lastSeenIso || "",
+        lastTrip: lastTripIso || lastTripRaw || "",
+        lastSeen: positionIso || lastSeenIso || undefined
       } as Asset);
     }
     return next;
   };
 
+  /** Keep local rows that a concurrent older fetch would otherwise wipe after create. */
+  const assetDeleteKeys = (asset: { id?: string; imei?: string; registration?: string }) => {
+    const keys: string[] = [];
+    const id = String(asset.id ?? "").trim();
+    const imei = String(asset.imei ?? "").trim();
+    const registration = String(asset.registration ?? "").trim().toLowerCase();
+    if (id) keys.push(`id:${id}`);
+    if (imei && !isDashPlaceholder(imei)) keys.push(`imei:${imei}`);
+    if (registration) keys.push(`reg:${registration}`);
+    return keys;
+  };
+
+  const isDeletedAsset = (asset: { id?: string; imei?: string; registration?: string }) =>
+    assetDeleteKeys(asset).some((key) => deletedAssetKeysRef.current.has(key));
+
+  const withoutDeletedAssets = (rows: Asset[]) => rows.filter((asset) => !isDeletedAsset(asset));
+
+  const mergeAssetListsPreservingLocal = (incoming: Asset[], current: Asset[]) => {
+    const incomingLive = withoutDeletedAssets(incoming);
+    const currentLive = withoutDeletedAssets(current);
+    if (!currentLive.length) return incomingLive;
+    if (!incomingLive.length) return currentLive;
+    const identityKeys = new Set<string>();
+    for (const asset of incomingLive) {
+      const imei = String(asset.imei ?? "").trim();
+      if (imei && !isDashPlaceholder(imei)) identityKeys.add(`imei:${imei}`);
+      identityKeys.add(`id:${asset.id}`);
+    }
+    const extras = currentLive.filter((asset) => {
+      const imei = String(asset.imei ?? "").trim();
+      if (imei && !isDashPlaceholder(imei) && identityKeys.has(`imei:${imei}`)) return false;
+      return !identityKeys.has(`id:${asset.id}`);
+    });
+    return normalizeAndDedupeAssets([...incomingLive, ...extras] as any[]);
+  };
+
   const toIsoOrEmpty = (value: unknown) => {
-    const raw = String(value ?? "").trim();
-    if (!raw) return "";
-    const ms = Date.parse(raw);
-    if (Number.isNaN(ms)) return "";
+    const ms = parseTimestampMs(value);
+    if (!Number.isFinite(ms)) return "";
     return new Date(ms).toISOString();
   };
 
@@ -596,45 +1027,374 @@ export default function Assets() {
     return Date.parse(iso);
   };
 
+  const mergeLiveTelemetryFields = (
+    asset: Asset,
+    incoming: {
+      at?: string;
+      speed?: number;
+      movement?: string;
+      telemetryLatest?: unknown;
+      lat?: number;
+      lng?: number;
+    }
+  ): Asset => {
+    const incomingMs = toMsOrNaN(incoming.at);
+    const currentSeenMs = toMsOrNaN(asset.lastSeen ?? asset.lastPosition);
+    const currentTripMs = toMsOrNaN(asset.lastTrip);
+    const canRefreshSeen = Boolean(incoming.at) && (!Number.isFinite(currentSeenMs) || incomingMs >= currentSeenMs);
+    const canRefreshTrip = Boolean(incoming.at) && (!Number.isFinite(currentTripMs) || incomingMs >= currentTripMs);
+    const latest = incoming.telemetryLatest as Record<string, unknown> | undefined;
+    const lat =
+      typeof incoming.lat === "number"
+        ? incoming.lat
+        : typeof latest?.lat === "number"
+          ? latest.lat
+          : asset.lat;
+    const lng =
+      typeof incoming.lng === "number"
+        ? incoming.lng
+        : typeof latest?.lng === "number"
+          ? latest.lng
+          : asset.lng;
+    const atMs = Number.isFinite(incomingMs) ? incomingMs : Number(asset.telemetryAtMs);
+    const speed = typeof incoming.speed === "number" ? incoming.speed : asset.speed;
+    const movement = movementFromSpeedKph(speed) ?? incoming.movement ?? asset.movement;
+    const lastMoveAtMs = resolveLastMoveAtMs({
+      previousLastMoveAtMs: asset.lastMoveAtMs,
+      atMs,
+      speed,
+      movement,
+      previousLat: asset.lat,
+      previousLng: asset.lng,
+      lat,
+      lng
+    });
+
+    const nextTrip =
+      canRefreshTrip && incoming.at
+        ? incoming.at
+        : asset.lastTrip;
+    const nextTripMs = toMsOrNaN(nextTrip);
+    // A live fix always advances Last Position; it must never lag behind Last Trip.
+    const shouldAdvancePosition =
+      Boolean(incoming.at) &&
+      (!Number.isFinite(currentSeenMs) ||
+        incomingMs >= currentSeenMs ||
+        (Number.isFinite(nextTripMs) && nextTripMs >= currentSeenMs));
+    const nextPosition =
+      shouldAdvancePosition && incoming.at
+        ? Number.isFinite(nextTripMs) && nextTripMs > incomingMs
+          ? nextTrip
+          : incoming.at
+        : Number.isFinite(nextTripMs) && nextTripMs > currentSeenMs
+          ? nextTrip
+          : undefined;
+
+    return {
+      ...asset,
+      ...(nextPosition ? { lastSeen: nextPosition, lastPosition: nextPosition } : {}),
+      ...(canRefreshTrip && incoming.at ? { lastTrip: incoming.at } : {}),
+      ...(typeof incoming.speed === "number" ? { speed: incoming.speed } : {}),
+      ...(movement ? { movement } : {}),
+      ...(typeof lat === "number" ? { lat } : {}),
+      ...(typeof lng === "number" ? { lng } : {}),
+      lastMoveAtMs,
+      ...(nextPosition && Number.isFinite(toMsOrNaN(nextPosition))
+        ? { telemetryAtMs: toMsOrNaN(nextPosition) }
+        : canRefreshSeen && Number.isFinite(incomingMs)
+          ? { telemetryAtMs: incomingMs }
+          : {}),
+      ...(incoming.telemetryLatest
+        ? {
+            telemetryLatest: {
+              ...(asset.telemetryLatest ?? {}),
+              ...(incoming.telemetryLatest as Record<string, unknown>)
+            }
+          }
+        : {})
+    };
+  };
+
   const enrichAssetsWithFreshTelemetry = async (assets: Asset[]): Promise<Asset[]> => {
     const candidates = assets.filter((asset) => {
       const imei = String(asset.imei ?? "").trim();
       if (!imei) return false;
       const lastSeenMs = toMsOrNaN(asset.lastSeen ?? asset.lastPosition);
-      // Only probe rows that are stale or missing to avoid unnecessary API calls.
-      return !Number.isFinite(lastSeenMs) || Date.now() - lastSeenMs > 60 * 60 * 1000;
+      const lastTripMs = toMsOrNaN(asset.lastTrip);
+      // Probe rows that are stale, or rows still missing Last Trip so ignition-on can be backfilled.
+      return !Number.isFinite(lastSeenMs) || Date.now() - lastSeenMs > 60 * 60 * 1000 || !Number.isFinite(lastTripMs);
     });
     if (!candidates.length) return assets;
 
-    const updates = await Promise.all(
-      candidates.map(async (asset) => {
-        const imei = String(asset.imei ?? "").trim();
-        const telemetry = await confirmTelemetryForImei(imei);
-        const telemetryAt = toIsoOrEmpty(telemetry.lastAt);
-        if (!telemetry.ok || !telemetry.received || !telemetryAt) return { id: asset.id, at: "" };
-        return { id: asset.id, at: telemetryAt };
-      })
-    );
+    const traccarDeviceIdByImei = new Map<string, string>();
+    const traccarIgnitionOnByImei = new Map<string, string>();
+    const traccarEventsFrom = new Date(Date.now() - 180 * 24 * 60 * 60 * 1000).toISOString();
+    const traccarEventsTo = new Date().toISOString();
 
-    const byId = new Map(updates.filter((u) => u.at).map((u) => [u.id, u.at]));
+    const loadLatestIgnitionOnFromTraccar = async (imei: string) => {
+      const needle = String(imei ?? "").trim();
+      if (!needle) return "";
+      if (traccarIgnitionOnByImei.has(needle)) {
+        return traccarIgnitionOnByImei.get(needle) ?? "";
+      }
+
+      try {
+        let deviceId = traccarDeviceIdByImei.get(needle) ?? "";
+        if (!deviceId) {
+          const devices = await getTraccarDevices({ uniqueId: needle });
+          const matchedDevice = devices.find((device) => String((device as any)?.uniqueId ?? "").trim() === needle)
+            ?? devices.find((device) => String((device as any)?.identifier ?? "").trim() === needle)
+            ?? null;
+          deviceId = matchedDevice ? String((matchedDevice as any)?.id ?? "").trim() : "";
+          if (deviceId) traccarDeviceIdByImei.set(needle, deviceId);
+        }
+        if (!deviceId) {
+          traccarIgnitionOnByImei.set(needle, "");
+          return "";
+        }
+
+        const events = await getTraccarEvents({
+          deviceId,
+          from: traccarEventsFrom,
+          to: traccarEventsTo,
+          type: ["ignitionOn"]
+        });
+
+        const latestIgnitionOn = events
+          .map((event) => toIsoOrEmpty(
+            (event as any)?.eventTime
+            ?? (event as any)?.timestamp
+            ?? (event as any)?.time
+            ?? (event as any)?.occurredAt
+            ?? (event as any)?.serverTime
+          ))
+          .filter(Boolean)
+          .sort()
+          .reverse()[0] ?? "";
+
+        traccarIgnitionOnByImei.set(needle, latestIgnitionOn);
+        return latestIgnitionOn;
+      } catch {
+        traccarIgnitionOnByImei.set(needle, "");
+        return "";
+      }
+    };
+
+    const updates = await mapPool(candidates, 2, async (asset) => {
+        const imei = String(asset.imei ?? "").trim();
+        // Avoid refreshLive storms — they fan out into Traccar proxy calls and trip Worker 500s.
+        const telemetry = await telemetryLookupByImeiDetailed(imei, { refreshLive: false });
+        const telemetryAt = toIsoOrEmpty(telemetry.body?.latest?.at);
+        const latest = telemetry.body?.latest as any;
+        const ignitionOnAt = toIsoOrEmpty(
+          latest?.ignitionOnAt
+          ?? latest?.ignition_on_at
+          ?? latest?.lastIgnitionOnAt
+          ?? latest?.attributes?.ignitionOnAt
+          ?? latest?.attributes?.lastIgnitionOnAt
+          ?? latest?.data?.ignitionOnAt
+          ?? latest?.data?.lastIgnitionOnAt
+        );
+        // Prefer telemetry snapshot; only hit Traccar events when Last Trip is still empty.
+        const traccarIgnitionOnAt =
+          ignitionOnAt ||
+          (Number.isFinite(toMsOrNaN(asset.lastTrip)) ? "" : await loadLatestIgnitionOnFromTraccar(imei));
+        if (!telemetry.ok) return { id: asset.id, at: "", odometer: "", lastTrip: traccarIgnitionOnAt };
+        
+        // Extract odometer from telemetry (try both field names for compatibility)
+        const odometerValue = telemetry.body?.latest?.odometerKms ?? telemetry.body?.latest?.odometer ?? undefined;
+        const odometerStr = odometerValue !== undefined ? String(Math.round(odometerValue)).trim() : "";
+        const speed =
+          typeof latest?.speed === "number"
+            ? latest.speed
+            : extractAssetSpeedKph((latest ?? {}) as Record<string, unknown>);
+        const movement = String(latest?.movement ?? extractAssetMovement((latest ?? {}) as Record<string, unknown>) ?? "").trim();
+        const lat = typeof latest?.lat === "number" ? latest.lat : undefined;
+        const lng = typeof latest?.lng === "number" ? latest.lng : undefined;
+
+        return {
+          id: asset.id,
+          at: telemetryAt,
+          odometer: odometerStr,
+          lastTrip: traccarIgnitionOnAt,
+          speed,
+          movement,
+          lat,
+          lng,
+          telemetryLatest: latest ?? undefined
+        };
+    });
+
+    const byId = new Map(
+      updates
+        .filter((u) => u.at || (u as any).lastTrip || typeof (u as any).speed === "number" || (u as any).movement)
+        .map((u) => [u.id, u])
+    );
     if (!byId.size) return assets;
 
     return assets.map((asset) => {
-      const incomingAt = byId.get(asset.id);
-      if (!incomingAt) return asset;
+      const incoming = byId.get(asset.id);
+      if (!incoming) return asset;
 
       const currentSeenMs = toMsOrNaN(asset.lastSeen ?? asset.lastPosition);
-      const incomingMs = Date.parse(incomingAt);
-      if (Number.isFinite(currentSeenMs) && currentSeenMs >= incomingMs) return asset;
+      const incomingMs = Date.parse(incoming.at);
+      const canRefreshSeen = Boolean(incoming.at) && (!Number.isFinite(currentSeenMs) || incomingMs > currentSeenMs);
+
+      const incomingOdo = Number(incoming.odometer);
+      const currentOdo = Number(asset.odometer ?? "");
+      const incomingLastTrip = String((incoming as any).lastTrip ?? "").trim();
+      const currentLastTripMs = toMsOrNaN(asset.lastTrip);
+      const incomingLastTripMs = toMsOrNaN(incomingLastTrip);
+      const nextOdometer =
+        Number.isFinite(incomingOdo) && incomingOdo >= 0
+          ? Number.isFinite(currentOdo) && currentOdo >= 0
+            ? String(Math.max(currentOdo, incomingOdo))
+            : String(incomingOdo)
+          : asset.odometer;
+      const nextLastTrip =
+        incomingLastTrip && (!Number.isFinite(currentLastTripMs) || (Number.isFinite(incomingLastTripMs) && incomingLastTripMs > currentLastTripMs))
+          ? incomingLastTrip
+          : asset.lastTrip;
+
+      return mergeLiveTelemetryFields(
+        {
+          ...asset,
+          lastTrip: nextLastTrip,
+          odometer: canRefreshSeen ? nextOdometer : asset.odometer
+        },
+        {
+          at: canRefreshSeen ? incoming.at : asset.lastSeen,
+          speed: (incoming as any).speed,
+          movement: (incoming as any).movement,
+          lat: (incoming as any).lat,
+          lng: (incoming as any).lng,
+          telemetryLatest: (incoming as any).telemetryLatest
+        }
+      );
+    });
+  };
+
+  const refreshAssetsLiveStatus = async (rows: Asset[]): Promise<Asset[]> => {
+    const targets = rows.filter((asset) => String(asset.imei ?? "").trim()).slice(0, 25);
+    if (!targets.length) return rows;
+
+    const updates = await mapPool(targets, 3, async (asset) => {
+        const imei = String(asset.imei ?? "").trim();
+        const lookup = await telemetryLookupByImeiDetailed(imei, { refreshLive: true });
+        const latest = lookup.body?.latest;
+        if (!lookup.ok || !latest) return null;
+
+        const at = toIsoOrEmpty(latest.at);
+        const speed =
+          typeof latest.speed === "number"
+            ? latest.speed
+            : extractAssetSpeedKph(latest as Record<string, unknown>);
+        const movement = String(latest.movement ?? extractAssetMovement(latest as Record<string, unknown>) ?? "").trim();
+        const lat = typeof latest.lat === "number" ? latest.lat : undefined;
+        const lng = typeof latest.lng === "number" ? latest.lng : undefined;
+
+        return {
+          id: asset.id,
+          at,
+          speed,
+          movement,
+          lat,
+          lng,
+          telemetryLatest: latest
+        };
+    });
+
+    const byId = new Map(updates.filter(Boolean).map((entry) => [entry!.id, entry!]));
+    if (!byId.size) return rows;
+
+    return rows.map((asset) => {
+      const incoming = byId.get(asset.id);
+      if (!incoming) return asset;
+
+      return mergeLiveTelemetryFields(asset, {
+        at: incoming.at,
+        speed: incoming.speed,
+        movement: incoming.movement,
+        lat: incoming.lat,
+        lng: incoming.lng,
+        telemetryLatest: incoming.telemetryLatest
+      });
+    });
+  };
+
+  const mergeStickyLastTrip = (incoming: Asset[], current: Asset[]) => {
+    const currentByKey = new Map<string, Asset>();
+    for (const asset of current) {
+      const imei = String(asset.imei ?? "").trim();
+      if (imei) currentByKey.set(`imei:${imei}`, asset);
+      currentByKey.set(`id:${asset.id}`, asset);
+    }
+
+    const newerStamp = (incomingValue: string, existingValue: string) => {
+      const incomingMs = toMsOrNaN(incomingValue);
+      const existingMs = toMsOrNaN(existingValue);
+      if (incomingValue && (!Number.isFinite(existingMs) || (Number.isFinite(incomingMs) && incomingMs >= existingMs))) {
+        return incomingValue;
+      }
+      return existingValue || incomingValue;
+    };
+
+    return incoming.map((asset) => {
+      const imei = String(asset.imei ?? "").trim();
+      const existing = currentByKey.get(imei ? `imei:${imei}` : `id:${asset.id}`) ?? currentByKey.get(`id:${asset.id}`);
+      if (!existing) return asset;
+
+      const nextLastTrip = newerStamp(String(asset.lastTrip ?? "").trim(), String(existing.lastTrip ?? "").trim());
+      const nextLastSeen = newerStamp(
+        newerStamp(
+          String(asset.lastSeen ?? asset.lastPosition ?? "").trim(),
+          String(existing.lastSeen ?? existing.lastPosition ?? "").trim()
+        ),
+        nextLastTrip
+      );
 
       return {
         ...asset,
-        lastSeen: incomingAt,
-        // Keep table freshness aligned to confirmed telemetry receive time.
-        lastPosition: incomingAt
+        ...(nextLastSeen ? { lastSeen: nextLastSeen, lastPosition: nextLastSeen } : {}),
+        lastTrip: nextLastTrip || asset.lastTrip
       };
     });
   };
+
+  const syncAssetsForDisplay = async (rawAssets: Asset[], options?: { enrich?: boolean }) => {
+    const normalized = withoutDeletedAssets(normalizeAndDedupeAssets(rawAssets as any[]));
+    if (!normalized.length && withoutDeletedAssets(assetsDataRef.current).length) {
+      // Keep the last good list — empty fetches were wiping the page after ~30s.
+      return withoutDeletedAssets(assetsDataRef.current);
+    }
+    // Preserve locally created rows that a concurrent older fetch would drop.
+    const preserved = mergeAssetListsPreservingLocal(normalized, assetsDataRef.current);
+    const merged = mergeStickyLastTrip(preserved, assetsDataRef.current);
+    const withLive = withoutDeletedAssets((await applyTraccarLiveSnapshotsToAssets(merged)) as Asset[]);
+    const stickyLive = mergeStickyLastTrip(withLive, assetsDataRef.current);
+    // Paint immediately; optional last-trip enrich runs after so navigation stays snappy.
+    assetsDataRef.current = stickyLive;
+    setAssetsData(stickyLive);
+    writeAssetsCache(stickyLive);
+    if (options?.enrich === false) return stickyLive;
+    try {
+      const enriched = await enrichAssetsWithFreshTelemetry(withLive);
+      const live = await refreshAssetsLiveStatus(enriched);
+      const liveAligned = withoutDeletedAssets((await applyTraccarLiveSnapshotsToAssets(live)) as Asset[]);
+      const stickyAligned = mergeStickyLastTrip(liveAligned, assetsDataRef.current);
+      if (!stickyAligned.length && withoutDeletedAssets(assetsDataRef.current).length) {
+        return withoutDeletedAssets(assetsDataRef.current);
+      }
+      const preservedLive = mergeAssetListsPreservingLocal(stickyAligned, assetsDataRef.current);
+      assetsDataRef.current = preservedLive;
+      setAssetsData(preservedLive);
+      writeAssetsCache(preservedLive);
+      return preservedLive;
+    } catch {
+      return stickyLive;
+    }
+  };
+
   const importInputRef = useRef<HTMLInputElement | null>(null);
   const ASSETS_PER_PAGE = 50;
   const [searchQuery, setSearchQuery] = useState("");
@@ -649,11 +1409,35 @@ export default function Assets() {
   }>({ status: "idle", message: "Telemetry audit not run" });
   const [siteTimeZones, setSiteTimeZones] = useState<SiteTimeZoneSettings | null>(null);
   const ribbonHandlersRef = useRef<{ onAction: (key: string) => void; onSearch: (value: string) => void } | null>(null);
-  const [visibleCols, setVisibleCols] = useState<Set<ColumnKey>>(new Set(columns.map((c) => c.key)));
+  const [visibleCols, setVisibleCols] = useState<Set<ColumnKey>>(() => {
+    const saved = readUserPrefJson<{ visible?: string[]; order?: string[] }>(USER_PREF_KEYS.assetsColumnPrefs);
+    const defaults = columns.map((c) => c.key);
+    const allowed = new Set(defaults);
+    const visible = Array.isArray(saved?.visible)
+      ? saved!.visible.filter((key): key is ColumnKey => allowed.has(key as ColumnKey))
+      : defaults;
+    return new Set(visible.length > 0 ? visible : defaults);
+  });
   const [colMenuOpen, setColMenuOpen] = useState(false);
   const [colMenuPos, setColMenuPos] = useState<{ top: number; left: number } | null>(null);
   const [openRowMenu, setOpenRowMenu] = useState<string | null>(null);
-  const [columnOrder, setColumnOrder] = useState<ColumnKey[]>(columns.map((c) => c.key));
+  const [columnOrder, setColumnOrder] = useState<ColumnKey[]>(() => {
+    const saved = readUserPrefJson<{ visible?: string[]; order?: string[] }>(USER_PREF_KEYS.assetsColumnPrefs);
+    const defaults = columns.map((c) => c.key);
+    const allowed = new Set(defaults);
+    const order = Array.isArray(saved?.order)
+      ? saved!.order.filter((key): key is ColumnKey => allowed.has(key as ColumnKey))
+      : [];
+    const missing = defaults.filter((key) => !order.includes(key));
+    return order.length > 0 ? [...order, ...missing] : defaults;
+  });
+
+  useEffect(() => {
+    writeUserPrefJson(USER_PREF_KEYS.assetsColumnPrefs, {
+      visible: Array.from(visibleCols),
+      order: columnOrder
+    });
+  }, [visibleCols, columnOrder]);
   const [dragCol, setDragCol] = useState<ColumnKey | null>(null);
   const [showAddModal, setShowAddModal] = useState(false);
   const [assetSaved, setAssetSaved] = useState(false);
@@ -661,22 +1445,76 @@ export default function Assets() {
   const [activeAddTab, setActiveAddTab] = useState("Asset details");
   const [dirtyTabs, setDirtyTabs] = useState<Record<string, boolean>>({});
   const [customGroupFilter, setCustomGroupFilter] = useState("");
-  const [showSaveToast, setShowSaveToast] = useState(false);
-  const [lastSaveWasLocal, setLastSaveWasLocal] = useState(false);
+  const [driverList, setDriverList] = useState<DriverPick[]>([]);
+  const [driversLoading, setDriversLoading] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [missingRequiredFields, setMissingRequiredFields] = useState<Set<string>>(new Set());
   const [activeFilter, setActiveFilter] = useState("All");
+  const [bulkFilterTokens, setBulkFilterTokens] = useState<string[]>([]);
+  const [bulkPasteDraft, setBulkPasteDraft] = useState("");
+  const [bulkSearchKind, setBulkSearchKind] = useState<BulkIdentityFilter | null>(null);
+  const [showBulkSearchModal, setShowBulkSearchModal] = useState(false);
   const [showSmsModal, setShowSmsModal] = useState(false);
   const [smsTarget, setSmsTarget] = useState<string | null>(null);
   const [smsTargetImei, setSmsTargetImei] = useState("");
   const [smsMessage, setSmsMessage] = useState("");
   const [sendingSms, setSendingSms] = useState(false);
+  const [decommissionConfirm, setDecommissionConfirm] = useState<DecommissionConfirmContext | null>(null);
+  const [decommissionAcknowledged, setDecommissionAcknowledged] = useState(false);
+  const [decommissionInProgress, setDecommissionInProgress] = useState(false);
+  const [deleteConfirm, setDeleteConfirm] = useState<DeleteAssetConfirmContext | null>(null);
+  const [deleteAcknowledged, setDeleteAcknowledged] = useState(false);
+  const [deleteInProgress, setDeleteInProgress] = useState(false);
   const [showDiagnosticsModal, setShowDiagnosticsModal] = useState(false);
+  const [ioListAsset, setIoListAsset] = useState<Asset | null>(null);
   const [diagnosticsAsset, setDiagnosticsAsset] = useState<Asset | null>(null);
   const [diagnosticsOpen, setDiagnosticsOpen] = useState({
     assetDetails: true,
     mobileDevice: true,
     tripInfo: false,
-    latestPosition: false
+    latestPosition: false,
+    inputStatus: true
   });
+  const [diagnosticsInputStatus, setDiagnosticsInputStatus] = useState<{
+    status: "idle" | "loading" | "ready" | "error";
+    error?: string;
+    inputs: GpsIotAssetInput[];
+  }>({ status: "idle", inputs: [] });
+
+  useEffect(() => {
+    if (!showDiagnosticsModal || !diagnosticsAsset) return;
+    if (!isGpsIotServer()) return;
+    if (!diagnosticsOpen.inputStatus) return;
+    if (diagnosticsInputStatus.status === "ready" || diagnosticsInputStatus.status === "loading") return;
+    let cancelled = false;
+    setDiagnosticsInputStatus((prev) => ({ ...prev, status: "loading", error: undefined }));
+    void getGpsIotAssetInputStatus({
+      assetId: resolveGpsIotFuelAssetId(diagnosticsAsset),
+      imei: String(diagnosticsAsset.imei ?? "").trim(),
+      assetName: String(diagnosticsAsset.assetDescription ?? "").trim(),
+      registration: String(diagnosticsAsset.registration ?? "").trim(),
+      site: String(diagnosticsAsset.site ?? "").trim() || undefined
+    })
+      .then((result) => {
+        if (cancelled) return;
+        setDiagnosticsInputStatus({
+          status: "ready",
+          inputs: sortGpsIotInputs(Array.isArray(result.inputs) ? result.inputs : [])
+        });
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        setDiagnosticsInputStatus({
+          status: "error",
+          error: String(error?.message ?? "Input status unavailable"),
+          inputs: []
+        });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [showDiagnosticsModal, diagnosticsAsset, diagnosticsOpen.inputStatus, diagnosticsInputStatus.status]);
+
   const [formValues, setFormValues] = useState({
     assetDescription: "",
     assetType: "",
@@ -864,10 +1702,10 @@ export default function Assets() {
   };
 
   const activeCols = columnOrder
-    .filter((key) => visibleCols.has(key))
+    .filter((key) => key === "lastPosition" || visibleCols.has(key))
+    .filter((key) => key !== "infoIssued" || isFullAccessRole)
     .map((key) => columns.find((c) => c.key === key)!)
     .filter(Boolean);
-  const grid = `${activeCols.map((col) => `${columnWidths[col.key]}px`).join(" ")} 48px`;
 
   const parseAssetDate = (value?: string) => {
     if (!value) return null;
@@ -916,31 +1754,17 @@ export default function Assets() {
     return diffMs / (1000 * 60 * 60 * 24);
   };
 
-  const hasProvisionedImei = (asset: Asset): boolean => {
-    const imei = String(asset.imei ?? "").trim();
-    return Boolean(imei && !isDashPlaceholder(imei));
-  };
-
-  const hasTelemetryTimestamp = (asset: Asset): boolean => {
-    // Prevent false "issued" status when rows have manual timestamps but no linked device IMEI.
-    if (!hasProvisionedImei(asset)) return false;
-    const lastSeenRaw = String(asset.lastSeen ?? "").trim();
-    if (lastSeenRaw && !Number.isNaN(Date.parse(lastSeenRaw))) return true;
-    return hasUpdatedLastPosition(asset);
-  };
+  const hasTelemetryTimestamp = (asset: Asset): boolean => shouldShowAssetStatusDot(asset as any);
 
   const getInfoIssued = (asset: Asset): boolean => {
     // If telemetry timestamp exists, info is considered issued.
     return hasTelemetryTimestamp(asset);
   };
 
-  const hasUpdatedLastPosition = (asset: Asset): boolean => {
-    const parsed = parseAssetDate(asset.lastPosition);
-    return Boolean(parsed && !Number.isNaN(parsed.getTime()));
-  };
-
+  const [statusTick, setStatusTick] = useState(0);
   const shouldShowStatusDot = (asset: Asset): boolean => {
-    return hasTelemetryTimestamp(asset);
+    void statusTick;
+    return shouldShowAssetStatusDot(asset as any);
   };
 
   const isAssetAvailable = (asset: Asset): boolean => {
@@ -955,18 +1779,26 @@ export default function Assets() {
     return raw === "unavailable" || raw === "not available";
   };
 
-  const getDotStatus = (asset: Asset): "online" | "warning" | "offline" => {
-    return computeAssetDotStatus({
-      availability: (asset as any)?.status,
-      lastSeen: (asset as any)?.lastSeen,
-      lastPosition: (asset as any)?.lastPosition,
-      lastTrip: (asset as any)?.lastTrip,
-      speed: (asset as any)?.speed,
-      staleHours: 2
-    });
+  const getDotStatus = (asset: Asset): "online" | "warning" | "stale" | "offline" => resolveAssetDotStatus(asset as any);
+
+  const readBulkIdentityValue = (asset: Asset, field: (typeof BULK_IDENTITY_FILTERS)[number]["field"]) => {
+    if (field === "engineNumber") {
+      return String((asset as any).engineNumber ?? (asset as any).engine_no ?? "").trim();
+    }
+    return String(asset[field] ?? "").trim();
   };
 
-  const matchesFilter = (asset: Asset, filter: string) => {
+  const matchesBulkIdentityFilter = (asset: Asset, filter: BulkIdentityFilter, tokens: string[]) => {
+    const meta = BULK_IDENTITY_FILTERS.find((row) => row.label === filter);
+    if (!meta) return true;
+    if (!tokens.length) return false;
+    return identityFieldMatches(readBulkIdentityValue(asset, meta.field), tokens);
+  };
+
+  const matchesFilter = (asset: Asset, filter: string, tokens = bulkFilterTokens) => {
+    if (isBulkIdentityFilter(filter)) {
+      return matchesBulkIdentityFilter(asset, filter, tokens);
+    }
     const tripAge = daysSince(asset.lastTrip);
     const positionAge = daysSince(asset.lastPosition);
     switch (filter) {
@@ -995,19 +1827,49 @@ export default function Assets() {
     }
   };
 
+  const openBulkSearchModal = (kind: BulkIdentityFilter) => {
+    setBulkSearchKind(kind);
+    setBulkPasteDraft(bulkFilterTokens.length && activeFilter === kind ? bulkFilterTokens.join("\n") : "");
+    setShowBulkSearchModal(true);
+  };
+
+  const applyBulkSearch = () => {
+    if (!bulkSearchKind) return;
+    const tokens = parseBulkSearchTokens(bulkPasteDraft);
+    if (!tokens.length) {
+      showToast("Paste at least one value to search.", "error");
+      return;
+    }
+    setBulkFilterTokens(tokens);
+    setActiveFilter(bulkSearchKind);
+    setShowBulkSearchModal(false);
+    setCurrentPage(1);
+    showToast(`Filtering ${tokens.length} ${bulkSearchKind} value${tokens.length === 1 ? "" : "s"}`, "info");
+  };
+
+  const clearBulkSearch = () => {
+    setBulkFilterTokens([]);
+    setBulkPasteDraft("");
+    setBulkSearchKind(null);
+    setShowBulkSearchModal(false);
+    setActiveFilter("All");
+  };
+
+  const selectStatusFilter = (label: string) => {
+    setBulkFilterTokens([]);
+    setBulkPasteDraft("");
+    setBulkSearchKind(null);
+    setActiveFilter(label);
+  };
+
   type ConfigGroupLike = {
     id?: string;
     name?: string;
+    site?: string;
     [key: string]: unknown;
   };
 
   type ConfigGroupOption = { value: string; label: string };
-
-  const defaultConfigGroupOptions: ConfigGroupOption[] = [
-    { value: "Fuel haulers", label: "Fuel haulers" },
-    { value: "Line haul", label: "Line haul" },
-    { value: "New onboarding", label: "New onboarding" }
-  ];
 
   const buildConfigGroupOptions = (source: unknown[]): ConfigGroupOption[] => {
     const options: ConfigGroupOption[] = [];
@@ -1028,8 +1890,8 @@ export default function Assets() {
       const group = raw as ConfigGroupLike;
       const name = String(group.name ?? (group as any).groupName ?? (group as any)["Group name"] ?? "").trim();
       const id = String(group.id ?? "").trim();
-
-      const value = name || id;
+      // Prefer id as value so table/storage stay aligned with /d1/assets (stores group id).
+      const value = id || name;
       const label = name || id;
       if (!value) continue;
       if (seen.has(value)) continue;
@@ -1040,34 +1902,99 @@ export default function Assets() {
     return options;
   };
 
-  const [assetsData, setAssetsData] = useState<Asset[]>(initialAssets);
+  const [assetsData, setAssetsData] = useState<Asset[]>(() => readAssetsCache());
+  const [activeSiteGroupImeis, setActiveSiteGroupImeis] = useState<string[]>([]);
+  const [cms808Assets, setCms808Assets] = useState<Asset[]>([]);
+  const assetsDataRef = useRef<Asset[]>(readAssetsCache());
+  const deletedAssetKeysRef = useRef<Set<string>>(new Set());
+  const loadedTenantRef = useRef(String(readActiveTenantId() || getTenantId() || "").trim());
+  const loadedSiteRef = useRef(readActiveSiteName());
+  const [assetsListLoading, setAssetsListLoading] = useState(() => readAssetsCache().length === 0);
   const [configGroupOptions, setConfigGroupOptions] = useState<ConfigGroupOption[]>([]);
   const [siteOptions, setSiteOptions] = useState<string[]>([]);
-  const [availableCameraIds, setAvailableCameraIds] = useState<string[]>([]);
-  const [cameraAssetBindings, setCameraAssetBindings] = useState<CameraAssetBinding[]>([]);
-  const [bindingCameraId, setBindingCameraId] = useState("");
-  const [bindingAssetId, setBindingAssetId] = useState("");
-  const [bindingMessage, setBindingMessage] = useState("");
+
+  const resolveConfigGroupLabel = (raw: unknown) => {
+    const value = String(raw ?? "").trim();
+    if (!value || isDashPlaceholder(value)) return "";
+    const match = configGroupOptions.find(
+      (g) => g.value === value || g.label === value || g.value.toLowerCase() === value.toLowerCase()
+    );
+    return match?.label || value;
+  };
+
+  const resolveMobileDeviceLabel = (asset: Asset) => {
+    const device = String((asset as any).device ?? "").trim();
+    const model = String(asset.mobileModel ?? "").trim();
+    const mobile = String(asset.mobileDevice ?? "").trim();
+    // Prefer real device/model; never show the legacy import placeholder "Traccar".
+    if (device && device.toLowerCase() !== "traccar") return device;
+    if (model && model.toLowerCase() !== "traccar") return model;
+    if (mobile && mobile.toLowerCase() !== "traccar") return mobile;
+    return "";
+  };
+
+  useEffect(() => {
+    assetsDataRef.current = assetsData;
+  }, [assetsData]);
+
+  useEffect(() => {
+    const tenantId = String(getTenantId() ?? "").trim();
+    if (!tenantId || assetsData.length === 0) return;
+    const flush = () => rememberLivePositions(tenantId, assetsData as unknown as Array<Record<string, unknown>>);
+    const timer = window.setTimeout(flush, 400);
+    window.addEventListener("pagehide", flush);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener("pagehide", flush);
+    };
+  }, [assetsData]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      setStatusTick((n) => n + 1);
+    }, 30_000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    let timer: number | null = null;
+
+    const poll = async () => {
+      if (cancelled) return;
+      const current = assetsDataRef.current;
+      if (!current.length) {
+        timer = window.setTimeout(poll, 20_000);
+        return;
+      }
+      const refreshed = await refreshAssetsLiveStatus(current);
+      if (!cancelled) {
+        setAssetsData(refreshed);
+        writeAssetsCache(refreshed);
+      }
+      if (!cancelled) timer = window.setTimeout(poll, 20_000);
+    };
+
+    timer = window.setTimeout(poll, 20_000);
+    return () => {
+      cancelled = true;
+      if (timer) window.clearTimeout(timer);
+    };
+  }, [getTenantId()]);
 
   const computeSiteOptions = () => {
     const sites = new Set<string>();
+    const selection = readStoredSelectionScope();
 
-    const stored = window.localStorage.getItem("vivi.activeDbSites");
-    if (stored) {
-      try {
-        const parsed = JSON.parse(stored);
-        if (Array.isArray(parsed)) {
-          parsed.forEach((s) => {
-            const name = String(s ?? "").trim();
-            if (name) sites.add(name);
-          });
-        }
-      } catch {
-        // ignore
-      }
+    // Only sites that belong to the active database.
+    for (const raw of selection.activeDbSites) {
+      const name = String(raw ?? "").trim();
+      if (name) sites.add(name);
     }
 
     if (sites.size === 0) {
+      const activeDbId = String(selection.activeDbId ?? "").trim().toLowerCase();
+      const activeDbName = String(activeDatabaseLabel ?? "").trim().toLowerCase();
       const dealersRaw = window.localStorage.getItem("vivi.org.dealers");
       if (dealersRaw) {
         try {
@@ -1078,6 +2005,12 @@ export default function Assets() {
               for (const org of orgs) {
                 const dbs = Array.isArray(org?.databases) ? org.databases : [];
                 for (const db of dbs) {
+                  const dbId = String(db?.id ?? "").trim().toLowerCase();
+                  const dbName = String(db?.name ?? "").trim().toLowerCase();
+                  const matchesDb =
+                    (activeDbId && dbId === activeDbId) ||
+                    (activeDbName && dbName === activeDbName);
+                  if (!matchesDb) continue;
                   const s = Array.isArray(db?.sites) ? db.sites : [];
                   for (const site of s) {
                     const name = String(site?.name ?? "").trim();
@@ -1093,95 +2026,232 @@ export default function Assets() {
       }
     }
 
-    // Always include any sites already present on assets.
+    // Include sites already used by assets that belong to this database only.
+    const dbNeedle = String(activeDatabaseLabel ?? "").trim().toLowerCase();
     assetsData.forEach((a) => {
       const name = String(a.site ?? "").trim();
-      if (name) sites.add(name);
+      if (!name) return;
+      if (sites.size > 0) {
+        // Only add if already in the active DB site set, or asset is tagged with this database.
+        const assetDb = String((a as any).database ?? "").trim().toLowerCase();
+        if (sites.has(name) || (dbNeedle && assetDb === dbNeedle)) sites.add(name);
+        return;
+      }
+      if (!dbNeedle || String((a as any).database ?? "").trim().toLowerCase() === dbNeedle) {
+        sites.add(name);
+      }
     });
 
-    return Array.from(sites);
+    const activeSite = String(selection.activeSite ?? "").trim();
+    if (activeSite && (sites.size === 0 || sites.has(activeSite))) sites.add(activeSite);
+
+    return Array.from(sites).sort((a, b) => a.localeCompare(b));
   };
 
-  const ensureDefaultConfigGroup = async (): Promise<void> => {
-    const existing = await getConfigurationGroups<{ id?: string; name?: string }>();
-    if (existing.length) return;
-
-    // Minimal bindings + group so support agents can create assets from the UI without backend access.
-    await saveBinding("notifications", { id: "default-notifications", name: "Default Notifications", monitoredEvents: [] });
-    await saveBinding("locations", { id: "default-locations", name: "Default Locations" });
-    await saveBinding("devices", { id: "default-devices", name: "Default Devices" });
-    await saveConfigurationGroup({
-      id: "default-group",
-      name: "Default Group",
-      notificationBinding: "default-notifications",
-      locationBinding: "default-locations",
-      deviceBinding: "default-devices"
-    });
-  };
-
-  const ensureSelectedConfigGroupExists = async (groupValue: string): Promise<boolean> => {
+  const configGroupExists = async (groupValue: string): Promise<boolean> => {
     const selected = String(groupValue ?? "").trim();
     if (!selected) return false;
 
     const existing = await getConfigurationGroups<{ id?: string; name?: string }>();
-    const hasMatch = existing.some((group) => {
+    return existing.some((group) => {
       const id = String(group?.id ?? "").trim().toLowerCase();
       const name = String(group?.name ?? "").trim().toLowerCase();
       const needle = selected.toLowerCase();
       return (id && id === needle) || (name && name === needle);
     });
-    if (hasMatch) return true;
-
-    await saveBinding("notifications", { id: "default-notifications", name: "Default Notifications", monitoredEvents: [] });
-    await saveBinding("locations", { id: "default-locations", name: "Default Locations" });
-    await saveBinding("devices", { id: "default-devices", name: "Default Devices" });
-
-    const generatedId = selected
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-+|-+$/g, "");
-    const groupId = generatedId || `group-${Date.now()}`;
-    const created = await saveConfigurationGroup({
-      id: groupId,
-      name: selected,
-      notificationBinding: "default-notifications",
-      locationBinding: "default-locations",
-      deviceBinding: "default-devices"
-    });
-
-    if (!created) return false;
-
-    const refreshed = await getConfigurationGroups<ConfigGroupLike>();
-    const options = buildConfigGroupOptions(refreshed);
-    const finalOptions = options.length ? options : defaultConfigGroupOptions;
-    setConfigGroupOptions(finalOptions);
-    return true;
   };
 
   useEffect(() => {
     let mounted = true;
-    const loadAssets = async () => {
-      const tz = await getSiteTimeZoneSettings();
-      if (mounted) setSiteTimeZones(tz);
-      const apiAssets = await getAssetsFromApi<Asset>();
-      if (!mounted) return;
+    let loadGen = 0;
+    const loadAssets = async (options?: { force?: boolean }) => {
+      const my = ++loadGen;
+      if (assetsDataRef.current.length === 0) {
+        const cached = readAssetsCache();
+        if (cached.length) {
+          assetsDataRef.current = cached;
+          setAssetsData(cached);
+        } else {
+          setAssetsListLoading(true);
+        }
+      }
+      try {
+      const [tz, apiAssets] = await Promise.all([
+        getSiteTimeZoneSettings(),
+        getAssetsFromApi<Asset>({ force: options?.force !== false })
+      ]);
+      if (!mounted || my !== loadGen) return;
+      setSiteTimeZones(tz);
+
+      const tenantId = String(readActiveTenantId() || getTenantId() || "").trim();
+      const syncFromTraccarIfNeeded = async (afterRows: Asset[]) => {
+        // Only auto-import when the fleet is empty — never re-import over user-created
+        // assets (that race made rows disappear, then reappear as duplicates).
+        if (afterRows.length > 0) return afterRows;
+        if (isCms808Server()) return afterRows;
+        if (tenantSkipsAutomaticFleetImport(tenantId)) return afterRows;
+        const importKey = tenantId ? `vivi.assets.importedFromTraccar.v5:${tenantId}` : "";
+        const attemptKey = tenantId ? `vivi.assets.importTraccarAttempted.v1:${tenantId}` : "";
+        const alreadyImported = importKey
+          ? String(window.localStorage.getItem(importKey) ?? "").trim().toLowerCase() === "true"
+          : false;
+        const lastAttemptMs = attemptKey ? Number(window.localStorage.getItem(attemptKey) ?? 0) || 0 : 0;
+        const attemptedRecently = lastAttemptMs > 0 && Date.now() - lastAttemptMs < 15 * 60 * 1000;
+        if (!tenantId || alreadyImported || attemptedRecently || !getApiKey()) return afterRows;
+        const targetSite = String(window.localStorage.getItem("vivi.activeSite") ?? "").trim() || "Default";
+        try {
+          if (attemptKey) window.localStorage.setItem(attemptKey, String(Date.now()));
+        } catch {
+          // ignore
+        }
+        showToast("Syncing devices from VIVI…", "info");
+        const imported = await importAssetsFromTraccarApi({ site: targetSite, tenantId });
+        if (!mounted || my !== loadGen) return afterRows;
+        if (imported.imported > 0 || imported.updated > 0 || imported.assets.length > 0) {
+          try {
+            if (importKey) window.localStorage.setItem(importKey, "true");
+          } catch {
+            // ignore
+          }
+          const rows = imported.assets.length
+            ? (imported.assets as Asset[])
+            : await getAssetsFromApi<Asset>({ force: true });
+          if (!mounted || my !== loadGen) return afterRows;
+          const parts = [
+            imported.imported > 0 ? `${imported.imported} imported` : "",
+            imported.updated > 0 ? `${imported.updated} updated` : ""
+          ].filter(Boolean);
+          showToast(
+            parts.length
+              ? `VIVI sync: ${parts.join(", ")}.`
+              : `Synced ${rows.length} devices from VIVI.`,
+            "success"
+          );
+          return rows;
+        }
+        if (imported.error) {
+          showToast(`VIVI import: ${imported.error}`, "error");
+        }
+        return afterRows;
+      };
+
+      const attachMissingSiteDevices = async (rows: Asset[]) => {
+        if (isPersonalDemoTenant(tenantId)) return rows;
+        const siteName = readActiveSiteName();
+        if (!siteName) {
+          if (mounted && my === loadGen) setActiveSiteGroupImeis([]);
+          return rows;
+        }
+        try {
+          const [groups, devices] = await Promise.all([getTraccarGroups(), getTraccarDevices({ all: true })]);
+          if (!mounted || my !== loadGen) return rows;
+          const groupImeis = imeisForSiteGroup(devices, groups, siteName);
+          setActiveSiteGroupImeis(groupImeis);
+          const missing = missingDevicesForSite(
+            devices,
+            groups,
+            siteName,
+            rows.map((row) => String(row.imei ?? ""))
+          );
+          const extras = missing.map((device) => ({
+            id: `asset-${device.imei}`,
+            status: "available" as const,
+            assetDescription: device.name,
+            fleetNumber: "",
+            imei: device.imei,
+            site: device.site,
+            model: "",
+            lastPosition: "",
+            lastTrip: "",
+            registration: device.name,
+            assetId: 0,
+            country: "",
+            importedFrom: "traccar",
+            ...(device.traccarDeviceId ? { traccarDeviceId: device.traccarDeviceId } : {})
+          })) as Asset[];
+          const selection = readStoredSelectionScope();
+          const misplaced = rows.filter((row) => {
+            const imei = String(row.imei ?? "").trim();
+            if (!imei || !groupImeis.includes(imei)) return false;
+            return !matchesStoredSiteSelection(resolveAssetSiteName(row), selection);
+          });
+          if (canForPath("/Track/fleet/assets", "edit") && (extras.length || misplaced.length)) {
+            const syncKey = `vivi.assets.missingSiteSync:${tenantId}:${siteName}`;
+            const last = Number(window.sessionStorage.getItem(syncKey) ?? 0) || 0;
+            if (Date.now() - last > 10 * 60 * 1000) {
+              try {
+                window.sessionStorage.setItem(syncKey, String(Date.now()));
+              } catch {
+                // ignore
+              }
+              void (async () => {
+                let stored = 0;
+                for (const extra of extras) {
+                  const saved = await upsertAssetDetailed({
+                    id: extra.id,
+                    imei: extra.imei,
+                    assetDescription: extra.assetDescription,
+                    registration: extra.registration,
+                    site: extra.site,
+                    status: "available",
+                    importedFrom: "traccar",
+                    ...(extra as { traccarDeviceId?: number }).traccarDeviceId
+                      ? { traccarDeviceId: (extra as { traccarDeviceId?: number }).traccarDeviceId }
+                      : {}
+                  });
+                  if (saved.stored) stored += 1;
+                }
+                for (const row of misplaced) {
+                  const saved = await upsertAssetDetailed({
+                    id: row.id,
+                    imei: row.imei,
+                    site: siteName,
+                    ...(String(row.configGroup ?? "").trim() ? { configGroup: row.configGroup } : {})
+                  });
+                  if (saved.stored) stored += 1;
+                }
+                if (!stored || !mounted || my !== loadGen) return;
+                const refreshed = await getAssetsFromApi<Asset>({ force: true });
+                if (!mounted || my !== loadGen || !refreshed.length) return;
+                await syncAssetsForDisplay(refreshed, { enrich: false });
+              })();
+            }
+          }
+          return extras.length ? [...rows, ...extras] : rows;
+        } catch {
+          return rows;
+        }
+      };
+
+      const sharedDemoDatabase = isSharedDemoDatabaseTenant(tenantId);
       if (apiAssets.length) {
-        const normalized = normalizeAndDedupeAssets(apiAssets as any[]);
-        const enriched = await enrichAssetsWithFreshTelemetry(normalized);
-        setAssetsData(enriched);
-        writeAssetsCache(enriched);
+        const rows = sharedDemoDatabase
+          ? apiAssets
+          : await attachMissingSiteDevices(await syncFromTraccarIfNeeded(apiAssets));
+        if (!mounted || my !== loadGen) return;
+        // Show rows now; enrich telemetry without blocking the page.
+        await syncAssetsForDisplay(rows, { enrich: false });
+        if (mounted && my === loadGen) setAssetsListLoading(false);
+        void syncAssetsForDisplay(rows);
+      } else if (sharedDemoDatabase) {
+        assetsDataRef.current = [];
+        setAssetsData([]);
+        clearCachedAssets(tenantId || null);
       } else {
         // If this tenant has no assets yet, try a one-time migration from the legacy (no-tenant) store.
         // This happens when the org selector generates a new tenant id, but earlier assets were created before tenancy.
-        const tenantId = String(getTenantId() ?? "").trim();
         const migratedKey = tenantId ? `vivi.assets.migratedFromLegacy:${tenantId}` : "";
         const alreadyMigrated = migratedKey
           ? String(window.localStorage.getItem(migratedKey) ?? "").trim().toLowerCase() === "true"
           : false;
 
-        if (tenantId && !alreadyMigrated) {
+        if (tenantId && !alreadyMigrated && !tenantSkipsAutomaticFleetImport(tenantId)) {
           const legacyAssets = await getAssetsFromApiForTenant<Asset>(null);
-          if (legacyAssets.length > 0) {
+          if (!mounted || my !== loadGen) return;
+          const emptyTenantAssets = await getAssetsFromApiForTenant<Asset>("");
+          if (!mounted || my !== loadGen) return;
+          const sourceLegacy = legacyAssets.length ? legacyAssets : emptyTenantAssets;
+          if (sourceLegacy.length > 0) {
             // Requires login token.
             if (!getApiKey()) {
               showToast("Log in to migrate assets into this database.", "error");
@@ -1189,15 +2259,15 @@ export default function Assets() {
               return;
             }
 
-            const targetSite = String(window.localStorage.getItem("vivi.activeSite") ?? "").trim() || "Gamini";
-            showToast(`Migrating ${legacyAssets.length} assets into this database...`, "info");
+            const targetSite = String(window.localStorage.getItem("vivi.activeSite") ?? "").trim() || "Default";
+            showToast(`Migrating ${sourceLegacy.length} assets into this database...`, "info");
 
             let okCount = 0;
-            for (const asset of legacyAssets) {
+            for (const asset of sourceLegacy) {
               const id = String((asset as any)?.id ?? "").trim();
               const imei = String((asset as any)?.imei ?? "").trim();
-              const configGroup = String((asset as any)?.configGroup ?? (asset as any)?.configurationGroup ?? "").trim();
-              if (!id || !imei || !configGroup) continue;
+              const configGroup = String((asset as any)?.configGroup ?? (asset as any)?.configurationGroup ?? "").trim() || "default-group";
+              if (!id || !imei) continue;
               const payload: any = {
                 ...asset,
                 id,
@@ -1216,51 +2286,165 @@ export default function Assets() {
             }
 
             if (okCount > 0) {
-              const refreshed = await getAssetsFromApi<Asset>();
-              const normalized = normalizeAndDedupeAssets(refreshed as any[]);
-              const enriched = await enrichAssetsWithFreshTelemetry(normalized);
-              setAssetsData(enriched);
-              writeAssetsCache(enriched);
+              const refreshed = await getAssetsFromApi<Asset>({ force: true });
+              if (!mounted || my !== loadGen) return;
+              const rows = await syncFromTraccarIfNeeded(refreshed);
+              if (!mounted || my !== loadGen) return;
+              await syncAssetsForDisplay(rows);
               showToast(`Migrated ${okCount} assets.`, "success");
               return;
             }
           }
         }
 
-        writeAssetsCache(initialAssets);
+        const rows = await syncFromTraccarIfNeeded([]);
+        if (!mounted || my !== loadGen) return;
+        if (rows.length) {
+          await syncAssetsForDisplay(rows);
+          return;
+        }
+
+        if (!assetsDataRef.current.length) {
+          setAssetsData([]);
+        }
+      }
+      } finally {
+        if (mounted && my === loadGen) setAssetsListLoading(false);
       }
     };
+    const handleTimeZoneUpdate = (event: Event) => {
+      const detail = (event as CustomEvent<SiteTimeZoneSettings | null>)?.detail;
+      if (detail && typeof detail === "object") {
+        setSiteTimeZones(detail);
+        return;
+      }
+      void (async () => {
+        const tz = await getSiteTimeZoneSettings();
+        if (mounted) setSiteTimeZones(tz);
+      })();
+    };
+    const onContextChange = () => {
+      const nextTenant = String(readActiveTenantId() || getTenantId() || "").trim();
+      const nextSite = readActiveSiteName();
+      const tenantChanged = nextTenant !== loadedTenantRef.current;
+      const siteChanged = nextSite !== loadedSiteRef.current;
+      if (!tenantChanged && !siteChanged) return;
+      loadedTenantRef.current = nextTenant;
+      loadedSiteRef.current = nextSite;
+      const cached = readAssetsCache();
+      const selection = readStoredSelectionScope();
+      const cachedForSite = cached.filter((asset) => matchesStoredSiteSelection(resolveAssetSiteName(asset), selection));
+      assetsDataRef.current = cached;
+      setAssetsData(cached);
+      // Same database with rows for this site: refilter only. Empty after a
+      // switch must refetch — cache-first otherwise leaves Assets at 0.
+      if (!tenantChanged && cachedForSite.length) {
+        setAssetsListLoading(false);
+        return;
+      }
+      setAssetsListLoading(!cachedForSite.length);
+      void loadAssets({ force: !cachedForSite.length });
+    };
+    const onAssetsChange = (event: Event) => {
+      const detail = (event as CustomEvent<{ assets?: Asset[]; tenantId?: string; reason?: string }>)?.detail;
+      const assets = detail?.assets;
+      const eventTenant = String(detail?.tenantId ?? "").trim();
+      const activeTenant = String(readActiveTenantId() || getTenantId() || "").trim();
+      if (eventTenant && activeTenant && eventTenant !== activeTenant) return;
+      if (Array.isArray(assets) && mounted) {
+        void syncAssetsForDisplay(assets, { enrich: false });
+        void syncAssetsForDisplay(assets);
+        return;
+      }
+      // Catalog invalidate from another session / websocket — force refetch.
+      clearCachedAssets(activeTenant || null);
+      void loadAssets({ force: true });
+    };
+    const onVisibility = () => {
+      if (document.visibilityState !== "visible") return;
+      void loadAssets({ force: true });
+    };
+    window.addEventListener(SITE_TIME_ZONE_SETTINGS_UPDATED_EVENT, handleTimeZoneUpdate as EventListener);
+    const unsubscribeScope = subscribeScopeChange(onContextChange);
+    window.addEventListener("vivi:assetschange", onAssetsChange as EventListener);
+    document.addEventListener("visibilitychange", onVisibility);
     void loadAssets();
     return () => {
       mounted = false;
+      window.removeEventListener(SITE_TIME_ZONE_SETTINGS_UPDATED_EVENT, handleTimeZoneUpdate as EventListener);
+      unsubscribeScope();
+      window.removeEventListener("vivi:assetschange", onAssetsChange as EventListener);
+      document.removeEventListener("visibilitychange", onVisibility);
     };
   }, []);
 
+  // Keep Assets in sync when another account/session adds or edits fleet rows.
+  useEffect(() => {
+    const client = getSharedRealtimeClient();
+    const unsub = client.subscribe({
+      channels: ["live"],
+      site: readActiveSiteName(),
+      onMessage: (message) => {
+        if (message.type !== "catalog.assets") return;
+        const eventTenant = String((message.payload as any)?.tenantId ?? "").trim();
+        const activeTenant = String(readActiveTenantId() || getTenantId() || "").trim();
+        if (eventTenant && activeTenant && eventTenant !== activeTenant) return;
+        clearCachedAssets(activeTenant || null);
+        window.dispatchEvent(
+          new CustomEvent("vivi:assetschange", {
+            detail: { tenantId: activeTenant || eventTenant, reason: "catalog" }
+          })
+        );
+      }
+    });
+    return () => unsub();
+  }, []);
+
+  useEffect(() => {
+    if (!assetsData.length) return;
+    let cancelled = false;
+    let timer: number | null = null;
+
+    const pollLivePositions = async () => {
+      const current = assetsDataRef.current;
+      const next = (await applyTraccarLiveSnapshotsToAssets(current)) as Asset[];
+      if (cancelled) return;
+      const changed = next.some((row, index) => row !== current[index]);
+      if (changed) {
+        assetsDataRef.current = next;
+        setAssetsData(next);
+      }
+      timer = window.setTimeout(() => {
+        void pollLivePositions();
+      }, 5_000);
+    };
+
+    void pollLivePositions();
+    return () => {
+      cancelled = true;
+      if (timer) window.clearTimeout(timer);
+    };
+  }, [assetsData.length]);
+
   useEffect(() => {
     let mounted = true;
-    const loadCameraBindings = async () => {
-      const [apiCameras, deviceBindings] = await Promise.all([
-        getCamerasFromApi<Record<string, unknown>>(),
-        getBindings<DeviceBindingRecord>("devices")
+    const applyMobileCatalog = (mobile: string[]) => {
+      setDeviceCatalog(mobile);
+      setDeviceModels(buildDeviceModelMap(mobile));
+    };
+
+    const loadLibraryCatalogs = async () => {
+      const [mobile, firmware] = await Promise.all([
+        loadMobileDeviceLibraryOptions(),
+        loadFirmwareLibraryOptions()
       ]);
       if (!mounted) return;
-
-      const cameraIds = Array.from(
-        new Set(
-          apiCameras
-            .map((camera) => extractCameraIdFromRecord(camera as Record<string, unknown>))
-            .filter(Boolean)
-        )
-      );
-      cameraIds.sort((a, b) => a.localeCompare(b));
-      setAvailableCameraIds(cameraIds);
-      setCameraAssetBindings(parseCameraAssetBindings(deviceBindings));
+      applyMobileCatalog(mobile);
+      setFirmwareOptions(firmware);
     };
 
-    void loadCameraBindings();
-    const onOrgChange = () => {
-      void loadCameraBindings();
-    };
+    void loadLibraryCatalogs();
+    const onOrgChange = () => void loadLibraryCatalogs();
     window.addEventListener("vivi:orgchange", onOrgChange);
     return () => {
       mounted = false;
@@ -1271,22 +2455,28 @@ export default function Assets() {
   useEffect(() => {
     let mounted = true;
     const loadConfigGroups = async () => {
-      const tenantKey = `vivi.configGroups:${getTenantId()}`;
-      const groups = await getConfigurationGroups<ConfigGroupLike>();
+      purgeMockConfigurationGroupsFromLocalStorage();
+      const cacheKey = configGroupsCacheKey();
+      const groups = filterOutMockConfigurationGroups(await getConfigurationGroups<ConfigGroupLike>());
       if (!mounted) return;
-      let source = groups;
-      if (groups.length) {
+      const activeSite = readActiveSiteName();
+      const scopedGroups = filterForSiteScope(groups, activeSite);
+      let source = scopedGroups;
+      if (scopedGroups.length) {
         try {
-          window.localStorage.setItem(tenantKey, JSON.stringify(groups));
+          window.localStorage.setItem(cacheKey, JSON.stringify(scopedGroups));
         } catch {
           // ignore
         }
       } else {
-        const stored = window.localStorage.getItem(tenantKey);
+        const stored = window.localStorage.getItem(cacheKey);
         if (stored) {
           try {
             const parsed = JSON.parse(stored);
-            source = Array.isArray(parsed) ? parsed : [];
+            source = filterForSiteScope(
+              filterOutMockConfigurationGroups(Array.isArray(parsed) ? parsed : []),
+              activeSite
+            );
           } catch {
             source = [];
           }
@@ -1294,7 +2484,7 @@ export default function Assets() {
       }
 
       const options = buildConfigGroupOptions(source);
-      setConfigGroupOptions(options.length ? options : defaultConfigGroupOptions);
+      setConfigGroupOptions(options);
     };
     void loadConfigGroups();
     return () => {
@@ -1305,21 +2495,27 @@ export default function Assets() {
   useEffect(() => {
     const handleOrgChange = () => {
       void (async () => {
-        const tenantKey = `vivi.configGroups:${getTenantId()}`;
-        const groups = await getConfigurationGroups<ConfigGroupLike>();
-        let source = groups;
-        if (groups.length) {
+        purgeMockConfigurationGroupsFromLocalStorage();
+        const cacheKey = configGroupsCacheKey();
+        const groups = filterOutMockConfigurationGroups(await getConfigurationGroups<ConfigGroupLike>());
+        const activeSite = readActiveSiteName();
+        const scopedGroups = filterForSiteScope(groups, activeSite);
+        let source = scopedGroups;
+        if (scopedGroups.length) {
           try {
-            window.localStorage.setItem(tenantKey, JSON.stringify(groups));
+            window.localStorage.setItem(cacheKey, JSON.stringify(scopedGroups));
           } catch {
             // ignore
           }
         } else {
-          const stored = window.localStorage.getItem(tenantKey);
+          const stored = window.localStorage.getItem(cacheKey);
           if (stored) {
             try {
               const parsed = JSON.parse(stored);
-              source = Array.isArray(parsed) ? parsed : [];
+              source = filterForSiteScope(
+                filterOutMockConfigurationGroups(Array.isArray(parsed) ? parsed : []),
+                activeSite
+              );
             } catch {
               source = [];
             }
@@ -1327,7 +2523,7 @@ export default function Assets() {
         }
 
         const options = buildConfigGroupOptions(source);
-        setConfigGroupOptions(options.length ? options : defaultConfigGroupOptions);
+        setConfigGroupOptions(options);
       })();
     };
     window.addEventListener("vivi:orgchange", handleOrgChange);
@@ -1340,26 +2536,28 @@ export default function Assets() {
     if (!showAddModal) return;
     let mounted = true;
     const refreshGroups = async () => {
-      const tenantKey = `vivi.configGroups:${getTenantId()}`;
-      let groups = await getConfigurationGroups<ConfigGroupLike>();
-      if (!groups.length) {
-        await ensureDefaultConfigGroup();
-        groups = await getConfigurationGroups<ConfigGroupLike>();
-      }
+      purgeMockConfigurationGroupsFromLocalStorage();
+      const cacheKey = configGroupsCacheKey();
+      const groups = filterOutMockConfigurationGroups(await getConfigurationGroups<ConfigGroupLike>());
       if (!mounted) return;
-      let source = groups;
-      if (groups.length) {
+      const activeSite = readActiveSiteName();
+      const scopedGroups = filterForSiteScope(groups, activeSite);
+      let source = scopedGroups;
+      if (scopedGroups.length) {
         try {
-          window.localStorage.setItem(tenantKey, JSON.stringify(groups));
+          window.localStorage.setItem(cacheKey, JSON.stringify(scopedGroups));
         } catch {
           // ignore
         }
       } else {
-        const stored = window.localStorage.getItem(tenantKey);
+        const stored = window.localStorage.getItem(cacheKey);
         if (stored) {
           try {
             const parsed = JSON.parse(stored);
-            source = Array.isArray(parsed) ? parsed : [];
+            source = filterForSiteScope(
+              filterOutMockConfigurationGroups(Array.isArray(parsed) ? parsed : []),
+              activeSite
+            );
           } catch {
             source = [];
           }
@@ -1367,12 +2565,11 @@ export default function Assets() {
       }
 
       const options = buildConfigGroupOptions(source);
-      const finalOptions = options.length ? options : defaultConfigGroupOptions;
-      setConfigGroupOptions(finalOptions);
-      if (finalOptions.length) {
+      setConfigGroupOptions(options);
+      if (options.length) {
         setFormValues((current) => {
           if (current.configurationGroup) return current;
-          return { ...current, configurationGroup: finalOptions[0].value };
+          return { ...current, configurationGroup: options[0].value };
         });
       }
     };
@@ -1398,27 +2595,118 @@ export default function Assets() {
     refresh();
     const onOrgChange = () => {
       refresh();
-      void (async () => {
-        try {
-          const refreshed = await getAssetsFromApi<Asset>();
-          const normalized = normalizeAndDedupeAssets(refreshed as any[]);
-          setAssetsData(normalized);
-          writeAssetsCache(normalized);
-        } catch {
-          // Keep current list if refresh fails.
-        }
-      })();
     };
     window.addEventListener("vivi:orgchange", onOrgChange);
     return () => {
       window.removeEventListener("vivi:orgchange", onOrgChange);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [assetsData, showAddModal]);
+  }, [showAddModal]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const mergeCmsRows = (rows: Asset[], previous: Asset[]): Asset[] =>
+      rows.map((row): Asset => {
+        const prior = previous.find(
+          (item) => String(item.id) === String(row.id) || (row.imei && String(item.imei) === String(row.imei))
+        );
+        if (!prior) return row;
+        const hasFreshFix = Boolean(String(row.lastSeen ?? "").trim() || String(row.lastPosition ?? "").trim());
+        if (hasFreshFix) {
+          const rowTrip = String(row.lastTrip ?? "").trim();
+          const priorTrip = String(prior.lastTrip ?? "").trim();
+          const rowSeen = String(row.lastSeen ?? row.lastPosition ?? "").trim();
+          const newerStamp = (left: string, right: string) => {
+            const leftMs = Date.parse(left);
+            const rightMs = Date.parse(right);
+            if (!left) return right;
+            if (!right) return left;
+            if (Number.isNaN(leftMs)) return right;
+            if (Number.isNaN(rightMs)) return left;
+            return leftMs >= rightMs ? left : right;
+          };
+          return {
+            ...row,
+            lastTrip: newerStamp(newerStamp(rowTrip, priorTrip), rowSeen)
+          } as Asset;
+        }
+        return {
+          ...row,
+          lastSeen: prior.lastSeen,
+          lastPosition: prior.lastPosition,
+          lastTrip: prior.lastTrip || prior.lastSeen,
+          lat: typeof row.lat === "number" ? row.lat : prior.lat,
+          lng: typeof row.lng === "number" ? row.lng : prior.lng,
+          gps: row.gps || prior.gps,
+          speed: row.speed ?? prior.speed
+        } as Asset;
+      });
+    const loadCms = async () => {
+      if (!cms808HierarchyActive()) {
+        setCms808Assets([]);
+        return;
+      }
+      const vehicles = await loadCms808VehiclesForActiveHierarchy();
+      if (cancelled) return;
+      // First paint only when nothing is on screen yet — never wipe times on each poll.
+      setCms808Assets((prev) => {
+        if (prev.length) return prev;
+        return vehicles.map((vehicle) => cms808VehicleToAssetRecord(vehicle, null) as Asset);
+      });
+      const rows: Asset[] = await Promise.all(
+        vehicles.map(async (vehicle) => {
+          const gps = await loadCms808Position(vehicle).catch(() => null);
+          return cms808VehicleToAssetRecord(vehicle, gps) as Asset;
+        })
+      );
+      if (cancelled) return;
+      setCms808Assets((prev) => mergeCmsRows(rows, prev));
+    };
+    void loadCms();
+    const timer = window.setInterval(() => {
+      void loadCms();
+    }, 5_000);
+    const reload = () => void loadCms();
+    window.addEventListener("vivi:orgchange", reload);
+    window.addEventListener("vivi:contextchange", reload);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+      window.removeEventListener("vivi:orgchange", reload);
+      window.removeEventListener("vivi:contextchange", reload);
+    };
+  }, []);
+
+  const pathScopedAssets = useMemo(() => {
+    const groupImeis = new Set(activeSiteGroupImeis);
+    const activeSiteName = String(selectionScope.activeSite ?? "").trim();
+    const scoped = assetsData.filter((asset) => {
+      const imei = String(asset.imei ?? "").trim();
+      if (imei && groupImeis.has(imei)) return true;
+      return matchesStoredSiteSelection(resolveAssetSiteName(asset), selectionScope);
+    }).map((asset) => {
+      const imei = String(asset.imei ?? "").trim();
+      const resolved = resolveAssetSiteName(asset);
+      if (imei && groupImeis.has(imei) && activeSiteName && !matchesStoredSiteSelection(resolved, selectionScope)) {
+        return { ...asset, site: readActiveSiteName() || asset.site };
+      }
+      if (!String(asset.site ?? "").trim() && resolved) return { ...asset, site: resolved };
+      return asset;
+    });
+    const usedLive = new Set<string>();
+    const withLiveFix = scoped.map((asset) => {
+      const live = findCms808LiveMatch(asset, cms808Assets);
+      if (!live) return asset;
+      usedLive.add(String(live.id));
+      return overlayCms808LiveFields(asset, live);
+    });
+    const extra = cms808Assets.filter((asset) => !usedLive.has(String(asset.id)));
+    return [...withLiveFix, ...extra];
+  }, [activeSiteGroupImeis, assetsData, cms808Assets, selectionScope]);
 
   const filteredAssets = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
-    const byFilter = assetsData.filter((asset) => matchesFilter(asset, activeFilter));
+    const byFilter = pathScopedAssets.filter((asset) => matchesFilter(asset, activeFilter, bulkFilterTokens));
     if (!q) return byFilter;
     return byFilter.filter((a) => {
       const displayModel = resolveAssetDisplayModel(a);
@@ -1427,6 +2715,8 @@ export default function Assets() {
         a.registration,
         a.imei,
         a.fleetNumber,
+        a.vin,
+        a.engineNumber,
         a.site,
         displayModel,
         a.mobileModel,
@@ -1438,97 +2728,71 @@ export default function Assets() {
         .join(" ");
       return hay.includes(q);
     });
-  }, [assetsData, activeFilter, searchQuery]);
-  const assetBindingOptions = useMemo(
-    () =>
-      assetsData
-        .map((asset) => ({
-          id: String(asset.id ?? "").trim(),
-          description: String(asset.assetDescription ?? "").trim(),
-          registration: String(asset.registration ?? "").trim()
-        }))
-        .filter((asset): asset is AssetBindingOption => Boolean(asset.id)),
-    [assetsData]
+  }, [pathScopedAssets, activeFilter, searchQuery, bulkFilterTokens]);
+
+  const getAssetColumnSortValue = useCallback(
+    (asset: Asset, key: ColumnKey): unknown => {
+      if (key === "assetDescription") {
+        return formatAssetDescription(asset) || asset.assetDescription || "";
+      }
+      if (key === "infoIssued") return getInfoIssued(asset) ? "Yes" : "No";
+      if (key === "lastPosition" || key === "lastTrip") {
+        const raw =
+          key === "lastPosition" ? (asset.lastSeen || asset.lastPosition || "") : asset.lastTrip;
+        if (key === "lastPosition" && isCms808LiveAsset(asset)) {
+          return (
+            cms808DisplayTime(raw, asset.site, siteTimeZones)
+            || formatTimestampForSite(raw, asset.site, siteTimeZones)
+            || ""
+          );
+        }
+        return formatTimestampForSite(raw, asset.site, siteTimeZones) || "";
+      }
+      if (key === "model") return resolveAssetDisplayModel(asset);
+      if (key === "mobileDevice") return resolveMobileDeviceLabel(asset);
+      if (key === "configGroup") return resolveConfigGroupLabel(asset.configGroup);
+      return asset[key as keyof Asset] ?? "";
+    },
+    [siteTimeZones, configGroupOptions]
   );
 
-  useEffect(() => {
-    setBindingCameraId((current) => {
-      if (current && availableCameraIds.includes(current)) return current;
-      return availableCameraIds[0] ?? "";
-    });
-  }, [availableCameraIds]);
+  const { sortedRows: sortedFilteredAssets, getHeaderProps: getAssetHeaderProps } = useColumnSort({
+    rows: filteredAssets,
+    getValue: getAssetColumnSortValue
+  });
 
-  useEffect(() => {
-    setBindingAssetId((current) => {
-      if (current && assetBindingOptions.some((asset) => asset.id === current)) return current;
-      if (editingAssetId && assetBindingOptions.some((asset) => asset.id === editingAssetId)) return editingAssetId;
-      return assetBindingOptions[0]?.id ?? "";
-    });
-  }, [assetBindingOptions, editingAssetId]);
-  const totalPages = Math.max(1, Math.ceil(filteredAssets.length / ASSETS_PER_PAGE));
+  const fleetNumberColWidth = Math.max(
+    130,
+    Math.min(
+      320,
+      sortedFilteredAssets.reduce((max, a) => {
+        const len = String(a.fleetNumber ?? "").length;
+        return len > max ? len : max;
+      }, "ISP Serial Number".length) * 8 + 24
+    )
+  );
+  const grid = `${activeCols.map((col) => col.key === "fleetNumber" ? `${fleetNumberColWidth}px` : `${columnWidths[col.key]}px`).join(" ")} 48px`;
+
+  const totalPages = Math.max(1, Math.ceil(sortedFilteredAssets.length / ASSETS_PER_PAGE));
   const safeCurrentPage = Math.min(currentPage, totalPages);
   const pageStart = (safeCurrentPage - 1) * ASSETS_PER_PAGE;
-  const pagedAssets = filteredAssets.slice(pageStart, pageStart + ASSETS_PER_PAGE);
+  const pagedAssets = sortedFilteredAssets.slice(pageStart, pageStart + ASSETS_PER_PAGE);
 
   useEffect(() => {
     setCurrentPage(1);
-  }, [searchQuery, activeFilter]);
+  }, [searchQuery, activeFilter, bulkFilterTokens]);
 
   useEffect(() => {
     if (currentPage > totalPages) setCurrentPage(totalPages);
   }, [currentPage, totalPages]);
 
-  const countFor = (label: string) => assetsData.filter((asset) => matchesFilter(asset, label)).length;
-
-  const addCameraAssetBinding = async () => {
-    const cameraId = String(bindingCameraId ?? "").trim();
-    const assetId = String(bindingAssetId ?? "").trim();
-    if (!cameraId || !assetId) {
-      setBindingMessage("Select a camera and an asset before binding.");
-      return;
-    }
-
-    const linkedAsset = assetBindingOptions.find((asset) => asset.id === assetId);
-    if (!linkedAsset) {
-      setBindingMessage("Selected asset is no longer available.");
-      return;
-    }
-
-    const next: CameraAssetBinding[] = [
-      ...cameraAssetBindings.filter((row) => row.cameraId !== cameraId),
-      {
-        cameraId,
-        assetId,
-        assetDescription: linkedAsset.description,
-        registration: linkedAsset.registration
-      }
-    ];
-    const stored = await saveCameraAssetBindings(next);
-    if (!stored) {
-      setBindingMessage("Failed to save binding. Please retry.");
-      return;
-    }
-
-    setCameraAssetBindings(next);
-    setBindingMessage(`Bound ${cameraId} to ${linkedAsset.description || linkedAsset.registration || assetId}.`);
-  };
-
-  const removeCameraAssetBinding = async (cameraId: string) => {
-    const target = String(cameraId ?? "").trim();
-    if (!target) return;
-
-    const next = cameraAssetBindings.filter((row) => row.cameraId !== target);
-    const stored = await saveCameraAssetBindings(next);
-    if (!stored) {
-      setBindingMessage("Failed to remove binding. Please retry.");
-      return;
-    }
-
-    setCameraAssetBindings(next);
-    setBindingMessage(`Unbound ${target}.`);
-  };
+  const countFor = (label: string) =>
+    pathScopedAssets.filter((asset) =>
+      matchesFilter(asset, label, isBulkIdentityFilter(label) ? bulkFilterTokens : [])
+    ).length;
 
   const toggleCol = (key: ColumnKey) => {
+    if (key === "lastPosition") return;
     const next = new Set(visibleCols);
     if (next.has(key)) next.delete(key);
     else next.add(key);
@@ -1551,7 +2815,16 @@ export default function Assets() {
   const updateField = (key: keyof typeof formValues, value: (typeof formValues)[keyof typeof formValues]) => {
     setFormValues((current) => ({ ...current, [key]: value }));
     markTabDirty(activeAddTab);
+    setMissingRequiredFields((current) => {
+      if (!current.has(String(key))) return current;
+      const next = new Set(current);
+      next.delete(String(key));
+      return next;
+    });
   };
+
+  const fieldMissingClass = (key: string) =>
+    missingRequiredFields.has(key) ? REQUIRED_MISSING_CLASS : undefined;
 
   const openAddModal = () => {
     setEditingAssetId(null);
@@ -1596,11 +2869,18 @@ export default function Assets() {
       faults: ""
     });
     setMobileDeviceRows([createEmptyMobileDeviceRow()]);
+    setServiceHistoryRows([]);
+    setReminderRows([]);
+    setFuelRows([]);
+    setOtherCostRows([]);
+    setCertificateRows([]);
+    setLicenceRows([]);
     setShowAddModal(true);
   };
 
   const openEditModal = (asset: Asset) => {
     const stableId = getStableAssetId(asset) || asset.id;
+    const driverState = readAssetDefaultDriverFormState(asset as Record<string, unknown>);
     setEditingAssetId(stableId || null);
     setAssetSaved(true);
     setActiveAddTab("Asset details");
@@ -1617,7 +2897,7 @@ export default function Assets() {
       make: asset.make ?? "",
       model: asset.model ?? "",
       year: asset.year ?? "",
-      engineNumber: "",
+      engineNumber: String(asset.engineNumber ?? (asset as any).engine_no ?? "").trim(),
       fuelType: "",
       targetFuel: "",
       fuelTankCapacity: "",
@@ -1625,12 +2905,12 @@ export default function Assets() {
       additionalMobileDevice: asset.mobileDevice ?? "",
       trackingIcon: "",
       assetColour: "",
-      assetStatus: asset.status === "unavailable" ? "Not available" : "Available",
-      expiryMode: "never",
-      expiryDate: "",
-      statusNotes: "",
-      hasDefaultDriver: false,
-      defaultDriver: "",
+      assetStatus: asset.status === "unavailable" ? "Not available" : String((asset as any).assetStatus ?? "Available"),
+      expiryMode: String((asset as any).expiryMode ?? "never"),
+      expiryDate: String((asset as any).expiryDate ?? ""),
+      statusNotes: String((asset as any).statusNotes ?? ""),
+      hasDefaultDriver: driverState.hasDefaultDriver,
+      defaultDriver: driverState.defaultDriver,
       lastPosition: "",
       lastTrip: "",
       odometer: "",
@@ -1648,7 +2928,7 @@ export default function Assets() {
         device: String((asset as any).device ?? "").trim(),
         model: String((asset as any).mobileModel ?? "").trim(),
         imei: String(asset.imei ?? "").trim(),
-        installed: String((asset as any).installed ?? "").trim(),
+        odometer: String(asset.odometer ?? "").trim(),
         status: String(asset.status ?? "").trim(),
         firmware: String((asset as any).firmware ?? "").trim(),
         standaloneMode: String((asset as any).standaloneMode ?? "").trim().toLowerCase() === "yes" ? "yes" : "no",
@@ -1657,7 +2937,8 @@ export default function Assets() {
         ...normalizeVc400Protocols(
           (asset as any).cameraModel,
           (asset as any).cameraPositioningProtocol,
-          (asset as any).cameraVideoProtocol
+          (asset as any).cameraVideoProtocol,
+          (asset as any).camera
         ),
         cameraComponents: parseAdditionalCameraComponents(
           (asset as any).cameraComponents
@@ -1670,10 +2951,42 @@ export default function Assets() {
         cameraFirmware: String((asset as any).cameraFirmware ?? "").trim()
       }
     ]);
+    const editDevice = String((asset as any).device ?? asset.mobileDevice ?? "").trim();
+    const editModel = String((asset as any).mobileModel ?? "").trim();
+    const editFirmware = String((asset as any).firmware ?? "").trim();
+    setDeviceCatalog((current) => {
+      let next = current;
+      if (editDevice) next = mergeCatalogOption(next, editDevice);
+      if (String(asset.mobileDevice ?? "").trim()) {
+        next = mergeCatalogOption(next, String(asset.mobileDevice ?? "").trim());
+      }
+      return next;
+    });
+    setDeviceModels((current) => {
+      const next = { ...current };
+      const names = [editDevice, String(asset.mobileDevice ?? "").trim()].filter(Boolean);
+      for (const name of names) {
+        const model = editModel || name;
+        const models = [...(next[name] ?? [])];
+        if (!models.some((item) => item.trim().toLowerCase() === model.toLowerCase())) models.push(model);
+        next[name] = models.sort((a, b) => a.localeCompare(b));
+      }
+      return next;
+    });
+    if (editFirmware) {
+      setFirmwareOptions((current) => mergeCatalogOption(current, editFirmware));
+    }
+    setServiceHistoryRows(readAssetSectionRows(asset, "serviceHistory"));
+    setReminderRows(readAssetSectionRows(asset, "reminders"));
+    setFuelRows(readAssetSectionRows(asset, "fuelData"));
+    setOtherCostRows(readAssetSectionRows(asset, "otherCosts"));
+    setCertificateRows(readAssetSectionRows(asset, "requiredCertificates") as typeof certificateRows);
+    setLicenceRows(readAssetSectionRows(asset, "requiredLicences") as typeof licenceRows);
     setShowAddModal(true);
   };
 
   const openDuplicateModal = (asset: Asset) => {
+    const driverState = readAssetDefaultDriverFormState(asset as Record<string, unknown>);
     setEditingAssetId(null);
     setAssetSaved(true);
     setActiveAddTab("Asset details");
@@ -1698,12 +3011,12 @@ export default function Assets() {
       additionalMobileDevice: asset.mobileDevice ?? "",
       trackingIcon: "",
       assetColour: "",
-      assetStatus: asset.status === "unavailable" ? "Not available" : "Available",
-      expiryMode: "never",
-      expiryDate: "",
-      statusNotes: "",
-      hasDefaultDriver: false,
-      defaultDriver: "",
+      assetStatus: asset.status === "unavailable" ? "Not available" : String((asset as any).assetStatus ?? "Available"),
+      expiryMode: String((asset as any).expiryMode ?? "never"),
+      expiryDate: String((asset as any).expiryDate ?? ""),
+      statusNotes: String((asset as any).statusNotes ?? ""),
+      hasDefaultDriver: driverState.hasDefaultDriver,
+      defaultDriver: driverState.defaultDriver,
       lastPosition: "",
       lastTrip: "",
       odometer: "",
@@ -1716,6 +3029,12 @@ export default function Assets() {
       faults: ""
     });
     setMobileDeviceRows([createEmptyMobileDeviceRow()]);
+    setServiceHistoryRows(readAssetSectionRows(asset, "serviceHistory"));
+    setReminderRows(readAssetSectionRows(asset, "reminders"));
+    setFuelRows(readAssetSectionRows(asset, "fuelData"));
+    setOtherCostRows(readAssetSectionRows(asset, "otherCosts"));
+    setCertificateRows(readAssetSectionRows(asset, "requiredCertificates") as typeof certificateRows);
+    setLicenceRows(readAssetSectionRows(asset, "requiredLicences") as typeof licenceRows);
     setShowAddModal(true);
   };
 
@@ -1723,14 +3042,54 @@ export default function Assets() {
   const filteredCustomGroups = customGroups.filter((group) =>
     group.name.toLowerCase().includes(customGroupFilter.trim().toLowerCase())
   );
-  const driverOptions = [
-    "Tumwine Kevin",
-    "Wangwe Joel",
-    "Said Musa",
-    "Asha Kimaro",
-    "Peter Mussa",
-    "Neema Paul"
-  ];
+
+  const driverOptions = useMemo(() => {
+    const site = String(formValues.site ?? "").trim();
+    const filtered = site
+      ? driverList.filter((driver) => siteScopesMatch(String(driver.site ?? ""), site))
+      : driverList.filter((driver) => Boolean(String(driver.site ?? "").trim()));
+    return filtered
+      .map((driver) => driver.name)
+      .filter(Boolean)
+      .sort((a, b) => a.localeCompare(b));
+  }, [driverList, formValues.site]);
+
+  const loadDriverList = async () => {
+    setDriversLoading(true);
+    try {
+      const rows = await getDriversFromApi<{ id?: string; name?: string; site?: string }>();
+      setDriverList(
+        filterRecordsForActiveSelection(
+          (Array.isArray(rows) ? rows : [])
+            .map((row) => ({
+              id: String(row.id ?? "").trim(),
+              name: String(row.name ?? "").trim(),
+              site: String(row.site ?? "").trim()
+            }))
+            .filter((row) => row.name)
+        )
+      );
+    } catch {
+      setDriverList([]);
+    } finally {
+      setDriversLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void loadDriverList();
+    const onContextChange = () => void loadDriverList();
+    window.addEventListener("vivi:orgchange", onContextChange);
+    window.addEventListener("vivi:contextchange", onContextChange);
+    return () => {
+      window.removeEventListener("vivi:orgchange", onContextChange);
+      window.removeEventListener("vivi:contextchange", onContextChange);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (showAddModal) void loadDriverList();
+  }, [showAddModal]);
 
   type SectionKey =
     | "Service history"
@@ -1784,7 +3143,7 @@ export default function Assets() {
       { key: "device", label: "Device" },
       { key: "model", label: "Model" },
       { key: "imei", label: "IMEI" },
-      { key: "installed", label: "Installed" },
+      { key: "odometer", label: "Odometer (KMs)" },
       { key: "status", label: "Status" },
       { key: "firmware", label: "Firmware" },
       { key: "standaloneMode", label: "Standalone mode" },
@@ -1842,9 +3201,11 @@ export default function Assets() {
   const handleRefreshAssets = async (silent = false) => {
     try {
       const refreshed = await getAssetsFromApi<Asset>();
-      const normalized = normalizeAndDedupeAssets(refreshed as any[]);
-      setAssetsData(normalized);
-      writeAssetsCache(normalized);
+      if (refreshed.length) {
+        await syncAssetsForDisplay(refreshed);
+      } else if (!assetsDataRef.current.length) {
+        await syncAssetsForDisplay(refreshed);
+      }
       if (!silent) showToast("Assets refreshed.", "success");
     } catch (error: any) {
       if (!silent) showToast(`Failed to refresh assets: ${String(error?.message ?? error)}`, "error");
@@ -1915,8 +3276,7 @@ export default function Assets() {
 
     const refreshed = await getAssetsFromApi<Asset>();
     if (refreshed.length) {
-      setAssetsData(refreshed);
-      writeAssetsCache(refreshed);
+      await syncAssetsForDisplay(refreshed);
     }
   };
 
@@ -1953,20 +3313,19 @@ export default function Assets() {
     }
 
     const apiAssets = await getAssetsFromApi<Asset>();
-    const normalized = normalizeAndDedupeAssets(apiAssets as any[]);
-    setAssetsData(normalized);
-    writeAssetsCache(normalized);
+    await syncAssetsForDisplay(apiAssets);
+    const normalizedAssets = normalizeAndDedupeAssets(apiAssets as any[]);
 
-    const existsByImei = normalized.some((row) => String(row?.imei ?? "").trim() === String(imei ?? "").trim());
+    const existsByImei = normalizedAssets.some((row: Asset) => String(row?.imei ?? "").trim() === String(imei ?? "").trim());
     const payloadRegistration = String(payload.registration ?? "").trim().toLowerCase();
     const payloadDescription = String(payload.assetDescription ?? "").trim().toLowerCase();
     const existsByRegistration = Boolean(
       payloadRegistration &&
-        normalized.some((row) => String(row?.registration ?? "").trim().toLowerCase() === payloadRegistration)
+        normalizedAssets.some((row: Asset) => String(row?.registration ?? "").trim().toLowerCase() === payloadRegistration)
     );
     const existsByDescription = Boolean(
       payloadDescription &&
-        normalized.some((row) => String(row?.assetDescription ?? "").trim().toLowerCase() === payloadDescription)
+        normalizedAssets.some((row: Asset) => String(row?.assetDescription ?? "").trim().toLowerCase() === payloadDescription)
     );
 
     if (!existsByImei && !existsByRegistration && !existsByDescription) {
@@ -1980,14 +3339,262 @@ export default function Assets() {
     return { ok: true };
   };
 
+  const closeDecommissionConfirm = () => {
+    if (decommissionInProgress) return;
+    setDecommissionConfirm(null);
+    setDecommissionAcknowledged(false);
+  };
+
   useEffect(() => {
-    const timer = window.setInterval(() => {
-      void handleRefreshAssets(true);
-    }, 20_000);
-    return () => {
-      window.clearInterval(timer);
+    if (!decommissionConfirm) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") closeDecommissionConfirm();
     };
-  }, []);
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [decommissionConfirm, decommissionInProgress]);
+
+  const closeDeleteConfirm = () => {
+    if (deleteInProgress) return;
+    setDeleteConfirm(null);
+    setDeleteAcknowledged(false);
+  };
+
+  const openDeleteConfirm = (asset: Asset) => {
+    const id = String(asset.id ?? "").trim();
+    const imei = String(asset.imei ?? "").trim();
+    const registration = String(asset.registration ?? "").trim();
+    if (!id && !imei && !registration) {
+      showToast("This asset cannot be deleted because it has no identifier.", "error");
+      return;
+    }
+    setDeleteAcknowledged(false);
+    setDeleteConfirm({
+      id,
+      imei,
+      registration,
+      assetLabel:
+        String(asset.assetDescription ?? "").trim() ||
+        registration ||
+        id ||
+        "Untitled asset",
+      site: String(asset.site ?? "").trim(),
+      model: String(asset.model ?? "").trim(),
+      assetId: asset.assetId ?? ""
+    });
+  };
+
+  const executeAssetDelete = async () => {
+    if (!deleteConfirm || deleteInProgress || !deleteAcknowledged) return;
+    const { id, imei, registration } = deleteConfirm;
+    const tenantId = getTenantId();
+    const apiKey = getApiKey();
+    if (!tenantId) {
+      showToast("Select organisation/database first.", "error");
+      return;
+    }
+    if (!apiKey) {
+      showToast("You are not logged in. Please log in and retry.", "error");
+      return;
+    }
+    setDeleteInProgress(true);
+    const mark = { id, imei, registration };
+    for (const key of assetDeleteKeys(mark)) deletedAssetKeysRef.current.add(key);
+    const dropDeleted = (rows: Asset[]) => withoutDeletedAssets(rows);
+    assetsDataRef.current = dropDeleted(assetsDataRef.current);
+    setAssetsData(assetsDataRef.current);
+    writeAssetsCache(assetsDataRef.current, { allowEmpty: true });
+    try {
+      const params = new URLSearchParams();
+      if (id) params.set("id", id);
+      if (imei) params.set("imei", imei);
+      if (registration) params.set("registration", registration);
+      const res = await fetch(buildApiUrl(`/d1/assets?${params.toString()}`), {
+        method: "DELETE",
+        headers: {
+          "content-type": "application/json",
+          ...(tenantId ? { "x-tenant-id": tenantId } : {}),
+          ...(apiKey ? { "x-api-key": apiKey } : {})
+        }
+      });
+      const text = await res.text();
+      let body: any = null;
+      try {
+        body = text ? JSON.parse(text) : null;
+      } catch {
+        body = null;
+      }
+      if (!res.ok || !body?.deleted) {
+        for (const key of assetDeleteKeys(mark)) deletedAssetKeysRef.current.delete(key);
+        const msg = (body && (body.error || body.message)) || text || `HTTP ${res.status}`;
+        showToast(`Delete failed: ${String(msg)}`, "error");
+        const refreshed = await getAssetsFromApi<Asset>({ force: true });
+        await syncAssetsForDisplay(refreshed, { enrich: false });
+        return;
+      }
+      const remaining = dropDeleted(assetsDataRef.current);
+      assetsDataRef.current = remaining;
+      setAssetsData(remaining);
+      writeAssetsCache(remaining, { allowEmpty: true });
+      showToast("Asset deleted.", "success");
+      setDeleteConfirm(null);
+      setDeleteAcknowledged(false);
+    } catch (e: any) {
+      for (const key of assetDeleteKeys(mark)) deletedAssetKeysRef.current.delete(key);
+      showToast(`Delete failed: ${String(e?.message ?? e)}`, "error");
+      try {
+        const refreshed = await getAssetsFromApi<Asset>({ force: true });
+        await syncAssetsForDisplay(refreshed, { enrich: false });
+      } catch {
+        // The next assets refresh will restore the row if the delete did not land.
+      }
+    } finally {
+      setDeleteInProgress(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!deleteConfirm) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") closeDeleteConfirm();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [deleteConfirm, deleteInProgress]);
+
+  const openDecommissionConfirm = () => {
+    if (!assetSaved) {
+      showToast("Save the asset before decommissioning.", "error");
+      return;
+    }
+    const imei = String(mobileDeviceRows[0]?.imei ?? "").trim();
+    if (!imei || isDashPlaceholder(imei)) {
+      showToast("Enter an IMEI in Mobile device settings before decommissioning.", "error");
+      return;
+    }
+    const assetId =
+      String(editingAssetId ?? "").trim() ||
+      getStableAssetId({
+        registration: formValues.registration,
+        imei,
+        cameraSerial: formValues.cameraSerial,
+        assetId: 0
+      });
+    const mobileRow = mobileDeviceRows[0] ?? createEmptyMobileDeviceRow();
+    const editing =
+      assetsDataRef.current.find((asset) => String(asset.id ?? "").trim() === String(editingAssetId ?? "").trim()) ??
+      null;
+    setDecommissionAcknowledged(false);
+    setDecommissionConfirm({
+      assetId,
+      imei,
+      deviceId: String((editing as any)?.deviceId ?? (mobileRow as any)?.deviceId ?? "").trim(),
+      assetLabel:
+        String(formValues.assetDescription ?? "").trim() ||
+        String(formValues.registration ?? "").trim() ||
+        assetId,
+      registration: String(formValues.registration ?? "").trim(),
+      site: String(formValues.site ?? "").trim(),
+      device: String(mobileRow.device ?? "").trim(),
+      model: String(resolveMobileRowDisplayModel(mobileRow) ?? "").trim()
+    });
+  };
+
+  const applyDecommissionedAssetFromServer = (serverAsset: Asset) => {
+    setMobileDeviceRows([createEmptyMobileDeviceRow()]);
+    setFormValues((current) => ({
+      ...current,
+      assetStatus: "Decommissioned",
+      imsi: "",
+      msisdn: "",
+      cameraSerial: "",
+      additionalMobileDevice: "",
+      assetDescription: String(serverAsset.assetDescription ?? current.assetDescription ?? ""),
+      registration: String(serverAsset.registration ?? current.registration ?? ""),
+      site: String(serverAsset.site ?? current.site ?? "")
+    }));
+    setSelectedRowBySection((current) => ({
+      ...current,
+      "Mobile device settings": null
+    }));
+    setAssetSaved(true);
+  };
+
+  const executeDeviceDecommission = async (assetId: string, imei: string) => {
+    beginSaving("Decommissioning");
+    setDecommissionInProgress(true);
+    try {
+      const result = await decommissionDeviceDetailed({
+        assetId,
+        imei,
+        deviceId: String(decommissionConfirm?.deviceId ?? "").trim(),
+        id: String(editingAssetId ?? assetId).trim()
+      });
+      if (!result.decommissioned || result.source !== "server") {
+        endSavingError(String(result.error ?? "Device decommission failed on the server."));
+        return;
+      }
+
+      const clearedFromApi = result.asset ? (result.asset as Asset) : null;
+      const refreshed = await getAssetsFromApi<Asset>({ force: true }).catch(() => [] as Asset[]);
+      const serverRow =
+        refreshed.find((row) => {
+          const id = String(row?.id ?? "").trim();
+          const numericId = String(row?.assetId ?? "").trim();
+          return id === String(assetId).trim()
+            || id === String(editingAssetId ?? "").trim()
+            || (numericId && numericId === String(assetId).replace(/^gpsiot:/i, "").trim());
+        })
+        ?? clearedFromApi;
+      if (!serverRow) {
+        endSavingError("Decommission API succeeded but the asset could not be reloaded from the server.");
+        return;
+      }
+      // Force-clear local device identity even if the list refresh still echoes a stale IMEI briefly.
+      const clearedRow: Asset = {
+        ...serverRow,
+        imei: "",
+        device: "",
+        mobileDevice: "",
+        status: "unavailable",
+        assetStatus: "Decommissioned",
+        ...( { deviceId: "" } as any )
+      };
+      if (String(serverRow.imei ?? "").trim() && !clearedFromApi) {
+        endSavingError("Server still reports an IMEI for this asset. Decommission did not fully apply.");
+        return;
+      }
+
+      const nextList = refreshed.length
+        ? refreshed.map((row) => (String(row.id ?? "") === String(clearedRow.id ?? "") ? clearedRow : row))
+        : [clearedRow];
+      await syncAssetsForDisplay(nextList);
+      applyDecommissionedAssetFromServer(clearedRow);
+
+      setDecommissionConfirm(null);
+      setDecommissionAcknowledged(false);
+      showSaveDone();
+      const traccarNote = result.traccar?.removed
+        ? "Traccar device removed."
+        : result.traccar?.skipped
+          ? "Traccar device was not found (already removed)."
+          : result.traccarDeleteQueued
+            ? "Traccar delete queued for retry."
+            : result.traccar?.error
+              ? `Traccar: ${result.traccar.error}`
+              : "";
+      const purgedTelemetry = Number(result.purged?.telemetry ?? 0);
+      const purgeNote = purgedTelemetry > 0 ? ` Cleared ${purgedTelemetry} live telemetry row(s).` : "";
+      showToast(
+        traccarNote
+          ? `Device decommissioned on server.${purgeNote} ${traccarNote}`
+          : `Device decommissioned on server.${purgeNote} Asset history remains in Backblaze.`,
+        traccarNote && result.traccar?.error ? "info" : "success"
+      );
+    } finally {
+      setDecommissionInProgress(false);
+    }
+  };
 
   const handleDownloadTemplate = () => {
     const headers = [
@@ -2135,8 +3742,7 @@ export default function Assets() {
     showToast(importMsg, failCount === 0 ? "success" : okCount > 0 ? "info" : "error");
     const apiAssets = await getAssetsFromApi<Asset>();
     if (apiAssets.length) {
-      setAssetsData(apiAssets);
-      writeAssetsCache(apiAssets);
+      await syncAssetsForDisplay(apiAssets);
     }
   };
 
@@ -2178,288 +3784,212 @@ export default function Assets() {
     };
   }, []);
 
-  const [serviceHistoryRows, setServiceHistoryRows] = useState([
-    {
-      date: "2025-12-12",
-      service: "Scheduled service",
-      vendor: "Tanga Auto",
-      odometer: "121,420",
-      cost: "2,450,000",
-      currency: "TZS",
-      invoice: "INV-2391",
-      notes: "Oil + filters"
-    },
-    {
-      date: "2025-10-03",
-      service: "Brake pads",
-      vendor: "Peak Garage",
-      odometer: "116,008",
-      cost: "980,000",
-      currency: "TZS",
-      invoice: "INV-2214",
-      notes: "Front axle"
-    }
-  ]);
-
-  const [reminderRows, setReminderRows] = useState([
-    {
-      reminder: "Insurance renewal",
-      dueDate: "2026-02-01",
-      status: "Due soon",
-      cost: "1,200,000",
-      currency: "TZS",
-      notes: "Annual premium"
-    },
-    {
-      reminder: "Service interval",
-      dueDate: "2026-03-15",
-      status: "Scheduled",
-      cost: "",
-      currency: "TZS",
-      notes: "Every 15,000 km"
-    }
-  ]);
-
-  const [fuelRows, setFuelRows] = useState([
-    {
-      date: "2025-12-18",
-      supplier: "TotalEnergies",
-      location: "Dar Depot",
-      litres: "420",
-      pricePerLitre: "3,200",
-      total: "1,344,000",
-      currency: "TZS",
-      odometer: "122,104",
-      invoice: "FUEL-0881"
-    },
-    {
-      date: "2025-12-05",
-      supplier: "Puma",
-      location: "Morogoro",
-      litres: "360",
-      pricePerLitre: "3,150",
-      total: "1,134,000",
-      currency: "TZS",
-      odometer: "121,010",
-      invoice: "FUEL-0804"
-    }
-  ]);
-
-  const [otherCostRows, setOtherCostRows] = useState([
-    {
-      date: "2025-11-22",
-      category: "Toll fees",
-      vendor: "TANROADS",
-      cost: "120,000",
-      currency: "TZS",
-      invoice: "TOLL-331",
-      notes: "Up-country"
-    },
-    {
-      date: "2025-09-14",
-      category: "Tyres",
-      vendor: "Tyre World",
-      cost: "1,680,000",
-      currency: "TZS",
-      invoice: "TYR-558",
-      notes: "2 rear tyres"
-    }
-  ]);
+  const [serviceHistoryRows, setServiceHistoryRows] = useState<Array<Record<string, string>>>([]);
+  const [reminderRows, setReminderRows] = useState<Array<Record<string, string>>>([]);
+  const [fuelRows, setFuelRows] = useState<Array<Record<string, string>>>([]);
+  const [otherCostRows, setOtherCostRows] = useState<Array<Record<string, string>>>([]);
 
   const [mobileDeviceRows, setMobileDeviceRows] = useState<MobileDeviceRow[]>([createEmptyMobileDeviceRow()]);
 
-  const isSaveDisabled = (() => {
-    if (activeAddTab === "Asset details") {
-      return Boolean(
-        !formValues.assetDescription.trim() ||
-          !formValues.assetType.trim() ||
-          !formValues.registration.trim() ||
-          !formValues.site.trim() ||
-          !formValues.make.trim() ||
-          !formValues.configurationGroup.trim()
-      );
-    }
-    if (activeAddTab === "Mobile device settings") {
-      return Boolean(!mobileDeviceRows[0]?.imei?.trim());
-    }
-    return false;
-  })();
-
-  const [deviceCatalog, setDeviceCatalog] = useState([
-    "Vivi4000",
-    "ViviMini",
-    "ViviPro",
-    "Teltonika",
-    "Queclink",
-    "Concox",
-    "Ruptela",
-    "CalAmp",
-    "SinoTrack",
-    "Jimi",
-    "TKStar",
-    "MeiTrack",
-    "Cobblestone",
-    "Trackimo",
-    "Geotab",
-    "Traccar",
-    "Omnicomm",
-    "Sierra Wireless",
-    "Novatel",
-    "Suntech",
-    "Atrack",
-    "Xirgo",
-    "Gurtam",
-    "GalileoSky",
-    "Navixy",
-    "Fleet Complete",
-    "Digi",
-    "Micronet",
-    "CareTrack",
-    "Jablotron",
-    "ATrack",
-    "Gosafe",
-    "iStartek",
-    "Rohde & Schwarz",
-    "Honeywell",
-    "Trimble",
-    "Orbcomm",
-    "StarLink",
-    "Quectel",
-    "U-Blox",
-    "Neomatica",
-    "Technoton",
-    "Argus",
-    "Bitrek",
-    "Digital Matter",
-    "FleetGO",
-    "Itron",
-    "Gosafe (Meiligao)",
-    "Smartrak",
-    "Samsara",
-    "OneStep GPS",
-    "Spireon",
-    "Linxup",
-    "GpsGate",
-    "Autofleet",
-    "BCE",
-    "Monico",
-    "Navtelecom",
-    "ATrack",
-    "Lacuna",
-    "Zonar",
-    "Inseego",
-    "Topflytech",
-    "Navixy X",
-    "Wialon"
-  ]);
-
-  const [deviceModels, setDeviceModels] = useState<Record<string, string[]>>({
-    Vivi4000: ["Vivi4000 Pro", "Vivi4000 Lite"],
-    ViviMini: ["ViviMini X", "ViviMini 2"],
-    ViviPro: ["ViviPro Max", "ViviPro S"],
-    Teltonika: ["FMB920", "FMB130", "FMC650"],
-    Queclink: ["GV300", "GV500", "GV600"],
-    Concox: ["GT06", "JM-VL103"],
-    Ruptela: ["FM-Pro4", "FM-Tco4"],
-    CalAmp: ["LMU-2630", "LMU-3640"],
-    SinoTrack: ["ST-901", "ST-905"],
-    Jimi: ["GV55", "GV75"],
-    TKStar: ["TK905", "TK909"],
-    MeiTrack: ["T366", "T622"],
-    Cobblestone: ["Cobblestone Gen2"],
-    Trackimo: ["Trackimo 3G"],
-    Geotab: ["GO9", "GO8"],
-    Traccar: ["Traccar Client"],
-    Omnicomm: ["L-Series"],
-    "Sierra Wireless": ["FX30", "FX11"],
-    Novatel: ["MiFi 8800"],
-    Suntech: ["ST3300", "ST4310"],
-    Atrack: ["AX7", "AK11"],
-    Xirgo: ["XT63", "XT65"],
-    GalileoSky: ["7x", "9x"],
-    Navixy: ["X-Box", "Tracker"],
-    "Fleet Complete": ["FCG100", "FCG200"],
-    Digi: ["IX20", "IX30"],
-    Micronet: ["Nexus", "Control"],
-    CareTrack: ["GT06N"],
-    Jablotron: ["JA-82"],
-    "Digital Matter": ["Oyster", "Hawk"],
-    Samsara: ["VG34", "VG54"],
-    Spireon: ["GoldStar", "FleetLocate"],
-    Zonar: ["ZTrak", "V4"],
-    Inseego: ["FX2000"],
-    Topflytech: ["TLW2", "TLD2"],
-    Wialon: ["Wialon Pro"],
-    Quectel: ["EC25", "EG25"],
-    "U-Blox": ["SARA-R5", "TOBY"],
-    Neomatica: ["Galileosky Mini"],
-    Technoton: ["DUT-E", "DUT-S"],
-    Argus: ["Track L1"],
-    Bitrek: ["BI-810"],
-    "Navtelecom": ["Smart S-2433"],
-    Lacuna: ["Lacuna 1"],
-    "OneStep GPS": ["OS-100"],
-    "Smartrak": ["SMT-1"],
-    "GpsGate": ["Gateway"],
-    "Autofleet": ["AutoTrack"],
-    "BCE": ["BCE-100"],
-    "Monico": ["MoniPro"],
-    "Gosafe": ["GS-01"],
-    "iStartek": ["VT900"],
-    "Rohde & Schwarz": ["R&S Track"],
-    "Honeywell": ["HX-20"],
-    "Trimble": ["TL200"],
-    "Orbcomm": ["OG2", "IDP"],
-    "StarLink": ["SL-Tracker"],
-    "Itron": ["IT-Track"],
-    "Gurtam": ["Wialon App"],
-    "Navixy X": ["Navixy X1"],
-    "ATrack": ["AX5", "AL11"],
-    "FleetGO": ["FG-1"],
-    "Gosafe (Meiligao)": ["Meiligao GT30"],
-    "LinXup": ["LX-200"]
-  });
+  const [deviceCatalog, setDeviceCatalog] = useState<string[]>([]);
+  const [deviceModels, setDeviceModels] = useState<Record<string, string[]>>({});
 
   const [deviceSearch, setDeviceSearch] = useState("");
   const [modelSearch, setModelSearch] = useState("");
   const [cameraDeviceSearch, setCameraDeviceSearch] = useState("");
   const [cameraModelSearch, setCameraModelSearch] = useState("");
-  const [firmwareOptions, setFirmwareOptions] = useState([
-    "v3.2.1",
-    "v3.1.8",
-    "v3.0.5",
-    "v2.9.9"
-  ]);
+  const [firmwareOptions, setFirmwareOptions] = useState<string[]>([]);
   const [statusOptions, setStatusOptions] = useState(["Online", "Offline", "Deinstalled"]);
-  const [cameraCatalog, setCameraCatalog] = useState(["ViviCam", "RoadEye", "MiXVision", "TrackCam", "VisionTrack"]);
+  const [cameraCatalog, setCameraCatalog] = useState(["ViviCam", "RoadEye", "VIVIVision", "TrackCam", "VisionTrack", "CMS 808"]);
   const [cameraModels, setCameraModels] = useState<Record<string, string[]>>({
     ViviCam: ["VC-200", "VC-400"],
     RoadEye: ["RE-1"],
-    MiXVision: ["MX-500"],
+    VIVIVision: ["MX-500"],
     TrackCam: ["TC-100"],
-    VisionTrack: ["VT-20"]
+    VisionTrack: ["VT-20"],
+    "CMS 808": ["MDVR-3CH", "MDVR-4CH", "MDVR-8CH", "AI-MDVR", "AHD-4CH"]
   });
   const [cameraFirmwareOptions, setCameraFirmwareOptions] = useState(["v1.1.0", "v1.0.4", "v0.9.8"]);
+  const [inlineAddKind, setInlineAddKind] = useState<InlineAddKind | null>(null);
+  const [inlineAddValue, setInlineAddValue] = useState("");
 
-  const [certificateRows, setCertificateRows] = useState([
-    {
-      certificate: "Hazmat",
-      holder: "Tumwine Kevin",
-      issued: "2024-04-01",
-      expiry: "2026-04-01",
-      status: "Valid"
+  const ensureMobileCatalogValues = (device: string, model: string, firmware: string) => {
+    const deviceName = String(device ?? "").trim();
+    const modelName = String(model ?? "").trim();
+    const firmwareName = String(firmware ?? "").trim();
+    if (deviceName) {
+      setDeviceCatalog((current) => mergeCatalogOption(current, deviceName));
+      setDeviceModels((current) => {
+        const next = { ...current };
+        const models = [...(next[deviceName] ?? [])];
+        const candidate = modelName || deviceName;
+        if (!models.some((item) => item.trim().toLowerCase() === candidate.toLowerCase())) {
+          models.push(candidate);
+        }
+        next[deviceName] = models.sort((a, b) => a.localeCompare(b));
+        return next;
+      });
     }
-  ]);
+    if (firmwareName) {
+      setFirmwareOptions((current) => mergeCatalogOption(current, firmwareName));
+    }
+  };
 
-  const [licenceRows, setLicenceRows] = useState([
-    {
-      licence: "Class E",
-      holder: "Tumwine Kevin",
-      issued: "2023-08-12",
-      expiry: "2026-08-12",
-      status: "Valid"
+  const closeInlineAddModal = () => {
+    setInlineAddKind(null);
+    setInlineAddValue("");
+  };
+
+  const openInlineAddModal = (kind: InlineAddKind) => {
+    setInlineAddKind(kind);
+    setInlineAddValue("");
+  };
+
+  const includesIgnoreCase = (items: string[], candidate: string) => {
+    const normalized = candidate.trim().toLowerCase();
+    return items.some((item) => item.trim().toLowerCase() === normalized);
+  };
+
+  const findCaseInsensitive = (items: string[], candidate: string) => {
+    const normalized = candidate.trim().toLowerCase();
+    return items.find((item) => item.trim().toLowerCase() === normalized) ?? null;
+  };
+
+  const confirmInlineAddModal = () => {
+    if (!inlineAddKind) return;
+    const trimmed = inlineAddValue.trim();
+    if (!trimmed) {
+      showToast("Enter a value before adding.", "error");
+      return;
     }
-  ]);
+
+    if (inlineAddKind === "tracking-device") {
+      const existing = findCaseInsensitive(deviceCatalog, trimmed);
+      const nextDevice = existing ?? trimmed;
+      if (!existing) {
+        setDeviceCatalog((current) => [...current, trimmed]);
+      }
+      setDeviceModels((current) => (current[nextDevice] ? current : { ...current, [nextDevice]: [] }));
+      setDataDraft((current) => ({ ...current, device: nextDevice, model: "" }));
+      closeInlineAddModal();
+      return;
+    }
+
+    if (inlineAddKind === "tracking-model") {
+      const device = String(dataDraft.device ?? "").trim();
+      if (!device) {
+        showToast("Select a tracking device first.", "error");
+        return;
+      }
+      const existing = findCaseInsensitive(deviceModels[device] ?? [], trimmed);
+      const nextModel = existing ?? trimmed;
+      if (!existing) {
+        setDeviceModels((current) => ({
+          ...current,
+          [device]: [...(current[device] ?? []), trimmed]
+        }));
+      }
+      setDataDraft((current) => ({ ...current, model: nextModel }));
+      closeInlineAddModal();
+      return;
+    }
+
+    if (inlineAddKind === "tracking-status") {
+      const existing = findCaseInsensitive(statusOptions, trimmed);
+      const nextStatus = existing ?? trimmed;
+      if (!existing) {
+        setStatusOptions((current) => [...current, trimmed]);
+      }
+      setDataDraft((current) => ({ ...current, status: nextStatus }));
+      closeInlineAddModal();
+      return;
+    }
+
+    if (inlineAddKind === "tracking-firmware") {
+      const existing = findCaseInsensitive(firmwareOptions, trimmed);
+      const nextFirmware = existing ?? trimmed;
+      if (!existing) {
+        setFirmwareOptions((current) => [...current, trimmed]);
+      }
+      setDataDraft((current) => ({ ...current, firmware: nextFirmware }));
+      closeInlineAddModal();
+      return;
+    }
+
+    if (inlineAddKind === "camera-device") {
+      const existing = findCaseInsensitive(cameraCatalog, trimmed);
+      const nextCamera = existing ?? trimmed;
+      if (!existing) {
+        setCameraCatalog((current) => [...current, trimmed]);
+      }
+      setCameraModels((current) => (current[nextCamera] ? current : { ...current, [nextCamera]: [] }));
+      setDataDraft((current) => ({ ...current, camera: nextCamera, cameraModel: "" }));
+      closeInlineAddModal();
+      return;
+    }
+
+    if (inlineAddKind === "camera-model") {
+      const camera = String(dataDraft.camera ?? "").trim();
+      if (!camera) {
+        showToast("Select a camera first.", "error");
+        return;
+      }
+      const existing = findCaseInsensitive(cameraModels[camera] ?? [], trimmed);
+      const nextModel = existing ?? trimmed;
+      if (!existing) {
+        setCameraModels((current) => ({
+          ...current,
+          [camera]: [...(current[camera] ?? []), trimmed]
+        }));
+      }
+      setDataDraft((current) => {
+        const protocols = normalizeVc400Protocols(
+          nextModel,
+          current.cameraPositioningProtocol,
+          current.cameraVideoProtocol,
+          current.camera
+        );
+        return {
+          ...current,
+          cameraModel: nextModel,
+          cameraPositioningProtocol: protocols.cameraPositioningProtocol,
+          cameraVideoProtocol: protocols.cameraVideoProtocol
+        };
+      });
+      closeInlineAddModal();
+      return;
+    }
+
+    if (inlineAddKind === "camera-status") {
+      const existing = findCaseInsensitive(statusOptions, trimmed);
+      const nextStatus = existing ?? trimmed;
+      if (!existing) {
+        setStatusOptions((current) => [...current, trimmed]);
+      }
+      setDataDraft((current) => ({ ...current, cameraStatus: nextStatus }));
+      closeInlineAddModal();
+      return;
+    }
+
+    if (inlineAddKind === "camera-firmware") {
+      const existing = findCaseInsensitive(cameraFirmwareOptions, trimmed);
+      const nextFirmware = existing ?? trimmed;
+      if (!existing) {
+        setCameraFirmwareOptions((current) => [...current, trimmed]);
+      }
+      setDataDraft((current) => ({ ...current, cameraFirmware: nextFirmware }));
+      closeInlineAddModal();
+      return;
+    }
+  };
+
+  const [certificateRows, setCertificateRows] = useState<
+    Array<{ certificate: string; holder: string; issued: string; expiry: string; status: string }>
+  >([]);
+
+  const [licenceRows, setLicenceRows] = useState<
+    Array<{ licence: string; holder: string; issued: string; expiry: string; status: string }>
+  >([]);
 
   const sectionRows = useMemo(
     () => ({
@@ -2496,6 +4026,44 @@ export default function Assets() {
   const [dataModalSection, setDataModalSection] = useState<SectionKey | null>(null);
   const [dataModalIndex, setDataModalIndex] = useState<number | null>(null);
   const [dataDraft, setDataDraft] = useState<Record<string, string>>({});
+  const [deviceIdentityErrors, setDeviceIdentityErrors] = useState<{ imei?: string; cameraSerial?: string }>({});
+
+  const checkGlobalDeviceIdentityConflicts = async (
+    imeiRaw: string,
+    cameraSerialRaw: string,
+    excludeIdRaw?: string
+  ): Promise<{ imei?: string; cameraSerial?: string }> => {
+    const imei = String(imeiRaw ?? "").trim();
+    const cameraSerial = String(cameraSerialRaw ?? "").trim();
+    const excludeId = String(excludeIdRaw ?? "").trim();
+    if (!imei && !cameraSerial) return {};
+    try {
+      const params = new URLSearchParams();
+      if (imei) params.set("imei", imei);
+      if (cameraSerial) params.set("cameraSerial", cameraSerial);
+      if (excludeId) params.set("excludeId", excludeId);
+      const response = await fetch(buildApiUrl(`/d1/assets/duplicate-check?${params.toString()}`), {
+        method: "GET",
+        headers: {
+          ...(getTenantId() ? { "x-tenant-id": getTenantId() } : {}),
+          ...(getApiKey() ? { "x-api-key": getApiKey() } : {})
+        }
+      });
+      const text = await response.text();
+      let body: any = null;
+      try {
+        body = text ? JSON.parse(text) : null;
+      } catch {
+        body = null;
+      }
+      return {
+        ...(body?.duplicateImei ? { imei: "Device IMEI in use" } : {}),
+        ...(body?.duplicateCameraSerial ? { cameraSerial: "Device IMEI in use" } : {})
+      };
+    } catch {
+      return {};
+    }
+  };
 
   const openDataModal = (section: SectionKey, index: number | null) => {
     setDataModalSection(section);
@@ -2531,7 +4099,15 @@ export default function Assets() {
         draft.standaloneMode = String(row.standaloneMode ?? "").trim().toLowerCase() === "yes" ? "yes" : "no";
       }
       setDataDraft(draft);
+      if (section === "Mobile device settings") {
+        ensureMobileCatalogValues(
+          String(draft.device ?? ""),
+          String(draft.model ?? ""),
+          String(draft.firmware ?? "")
+        );
+      }
     }
+    setDeviceIdentityErrors({});
     setDataModalOpen(true);
   };
 
@@ -2540,19 +4116,55 @@ export default function Assets() {
     setDataModalSection(null);
     setDataModalIndex(null);
     setDataDraft({});
+    setDeviceIdentityErrors({});
   };
 
-  const saveDataModal = () => {
+  const persistSharedAssetSection = async (section: string, rows: Array<Record<string, string>>) => {
+    const field = assetSectionField(section);
+    const assetId = String(editingAssetId ?? "").trim();
+    if (!field || !assetId) return;
+    const existing =
+      assetsDataRef.current.find((asset) => String(asset.id ?? "").trim() === assetId) ?? null;
+    if (!existing) return;
+    const next = { ...existing, [field]: rows } as Asset;
+    const result = await upsertAssetDetailed(next);
+    if (!result.stored) {
+      showToast("The change is on this screen. It could not be stored for other users yet.", "error");
+      return;
+    }
+    setAssetsData((current) => {
+      const index = current.findIndex((asset) => String(asset.id ?? "").trim() === assetId);
+      if (index < 0) return current;
+      const updated = [...current];
+      updated[index] = next;
+      writeAssetsCache(updated);
+      return updated;
+    });
+  };
+
+  const saveDataModal = async () => {
     if (!dataModalSection) return;
     const normalizedDraft = { ...dataDraft };
     if (dataModalSection === "Mobile device settings") {
+      const duplicateErrors = await checkGlobalDeviceIdentityConflicts(
+        String(normalizedDraft.imei ?? "").trim(),
+        String(normalizedDraft.cameraSerial ?? "").trim(),
+        String(editingAssetId ?? "").trim()
+      );
+      if (duplicateErrors.imei || duplicateErrors.cameraSerial) {
+        setDeviceIdentityErrors(duplicateErrors);
+        showToast("Device IMEI in use", "error");
+        return;
+      }
+      setDeviceIdentityErrors({});
+
       const hasCamera = String(normalizedDraft.hasCamera ?? "no").trim().toLowerCase() === "yes";
       const standaloneMode = String(normalizedDraft.standaloneMode ?? "").trim().toLowerCase() === "yes" ? "yes" : "no";
       normalizedDraft.standaloneMode = standaloneMode;
       if (standaloneMode === "yes") {
         normalizedDraft.device = "";
         normalizedDraft.model = "";
-        normalizedDraft.installed = "";
+        normalizedDraft.odometer = "";
         normalizedDraft.status = "";
         normalizedDraft.firmware = "";
       } else if (!String(normalizedDraft.device ?? "").trim()) {
@@ -2571,7 +4183,8 @@ export default function Assets() {
         const protocols = normalizeVc400Protocols(
           normalizedDraft.cameraModel,
           normalizedDraft.cameraPositioningProtocol,
-          normalizedDraft.cameraVideoProtocol
+          normalizedDraft.cameraVideoProtocol,
+          normalizedDraft.camera
         );
         normalizedDraft.cameraPositioningProtocol = protocols.cameraPositioningProtocol;
         normalizedDraft.cameraVideoProtocol = protocols.cameraVideoProtocol;
@@ -2618,32 +4231,37 @@ export default function Assets() {
       default:
         break;
     }
-    void saveToApi(`assets:data:${dataModalSection}`, {
-      section: dataModalSection,
-      rows: nextRows,
-      updatedAt: new Date().toISOString()
-    });
+    void persistSharedAssetSection(dataModalSection, nextRows as Array<Record<string, string>>);
     markTabDirty(dataModalSection);
     closeDataModal();
   };
 
-  const validateMandatoryForTab = (tab: string) => {
+  const validateMandatoryForTab = (tab: string): { error: string; fields: string[] } => {
     if (tab === "Asset details") {
-      if (!formValues.assetDescription.trim()) return "Asset description is required.";
-      if (!formValues.assetType.trim()) return "Asset type is required.";
-      if (!formValues.registration.trim()) return "Registration number is required.";
-      if (!formValues.site.trim()) return "Site is required.";
-      if (!formValues.make.trim()) return "Make is required.";
-      if (!formValues.configurationGroup.trim()) return "Configuration group is required.";
-      return "";
+      const fields: string[] = [];
+      if (!formValues.assetDescription.trim()) fields.push("assetDescription");
+      if (!formValues.assetType.trim()) fields.push("assetType");
+      if (!formValues.registration.trim()) fields.push("registration");
+      if (!formValues.site.trim()) fields.push("site");
+      if (!formValues.make.trim()) fields.push("make");
+      if (!formValues.configurationGroup.trim()) fields.push("configurationGroup");
+      if (fields.length) {
+        return { error: "Fill in the required fields marked in red.", fields };
+      }
+      return { error: "", fields: [] };
     }
     if (tab === "Mobile device settings") {
       const imei = String(mobileDeviceRows[0]?.imei ?? "").trim();
       const cameraSerial = String(mobileDeviceRows[0]?.cameraSerial ?? "").trim();
-      if (!imei && !cameraSerial) return "Either IMEI or Camera serial is required on Mobile device settings.";
-      return "";
+      if (!imei && !cameraSerial) {
+        return {
+          error: "Either IMEI or Camera serial is required on Mobile device settings.",
+          fields: ["imei", "cameraSerial"]
+        };
+      }
+      return { error: "", fields: [] };
     }
-    return "";
+    return { error: "", fields: [] };
   };
 
   const showCameraSettingsInModal =
@@ -2668,15 +4286,22 @@ export default function Assets() {
     && String(dataDraft.standaloneMode ?? "").trim().toLowerCase() === "yes";
 
   const handleSaveAssetModal = async () => {
-    const requiredError = validateMandatoryForTab(activeAddTab);
+    if (isSaving) return;
+    const { error: requiredError, fields: missingFields } = validateMandatoryForTab(activeAddTab);
     if (requiredError) {
+      setMissingRequiredFields(new Set(missingFields));
+      if (activeAddTab === "Mobile device settings" && !(dataModalOpen && dataModalSection === "Mobile device settings")) {
+        openDataModal("Mobile device settings", 0);
+      }
       showToast(requiredError, "error");
       return;
     }
+    setMissingRequiredFields(new Set());
 
-    const configGroupReady = await ensureSelectedConfigGroupExists(formValues.configurationGroup);
+    const configGroupReady = await configGroupExists(formValues.configurationGroup);
     if (!configGroupReady) {
-      showToast("Unable to prepare configuration group. Please check your login and retry.", "error");
+      setMissingRequiredFields(new Set(["configurationGroup"]));
+      showToast("Configuration group not found. Create bindings and a configuration group first.", "error");
       return;
     }
 
@@ -2684,11 +4309,34 @@ export default function Assets() {
     const cameraSerialFromRow = String(mobileDeviceRows[0]?.cameraSerial ?? "").trim();
     const cameraSerialFromForm = String(formValues.cameraSerial ?? "").trim();
     const cameraSerial = cameraSerialFromRow || cameraSerialFromForm;
+
+    const duplicateErrors = await checkGlobalDeviceIdentityConflicts(
+      imei,
+      cameraSerial,
+      String(editingAssetId ?? "").trim()
+    );
+    if (duplicateErrors.imei || duplicateErrors.cameraSerial) {
+      setDeviceIdentityErrors(duplicateErrors);
+      setActiveAddTab("Mobile device settings");
+      if (!(dataModalOpen && dataModalSection === "Mobile device settings")) {
+        openDataModal("Mobile device settings", 0);
+      }
+      showToast("Device IMEI in use", "error");
+      return;
+    }
+    setDeviceIdentityErrors({});
+
     const derivedId =
       String(editingAssetId ?? "").trim() ||
       getStableAssetId({ registration: formValues.registration, imei, cameraSerial, assetId: 0 }) ||
       `asset-${Date.now()}`;
     const assetId = derivedId;
+    setIsSaving(true);
+    beginSaving();
+    try {
+    const editingExisting =
+      assetsDataRef.current.find((asset) => String(asset.id ?? "").trim() === String(editingAssetId ?? "").trim()) ??
+      null;
     const payload: Asset = {
       id: assetId,
       status: formValues.assetStatus === "Not available" ? "unavailable" : "available",
@@ -2707,16 +4355,45 @@ export default function Assets() {
       make: formValues.make || "",
       year: formValues.year || "",
       vin: formValues.vin || "",
-      mobileDevice: formValues.additionalMobileDevice || "",
+      engineNumber: formValues.engineNumber || "",
+      mobileDevice:
+        String(formValues.additionalMobileDevice ?? "").trim() ||
+        String(mobileDeviceRows[0]?.device ?? "").trim() ||
+        String((editingExisting as any)?.mobileDevice ?? "").trim() ||
+        "",
       odometer: formValues.odometer || "",
       engineHours: formValues.engineHours || "",
       lastLocation: formValues.lastLocation || "",
       configUploadDate: formValues.configUploadDate || "",
       configGroup: formValues.configurationGroup || "",
+      database:
+        String((editingExisting as any)?.database ?? "").trim() ||
+        String(activeDatabaseLabel ?? "").trim() ||
+        "",
+      organisation:
+        String((editingExisting as any)?.organisation ?? "").trim() ||
+        String(activeOrganisationLabel ?? "").trim() ||
+        undefined,
+      dealer:
+        String((editingExisting as any)?.dealer ?? "").trim() ||
+        String(activeDealerLabel ?? "").trim() ||
+        undefined,
+      hierarchyNamingVersion: "2",
       imsi: formValues.imsi || "",
       msisdn: formValues.msisdn || "",
       cameraSerial: formValues.cameraSerial || "",
-      faults: formValues.faults || ""
+      faults: formValues.faults || "",
+      ...buildAssetDriverFields(formValues.hasDefaultDriver, formValues.defaultDriver),
+      assetStatus: formValues.assetStatus || "Available",
+      expiryMode: formValues.expiryMode || "never",
+      expiryDate: formValues.expiryMode === "date" ? String(formValues.expiryDate ?? "").trim() : "",
+      statusNotes: String(formValues.statusNotes ?? "").trim(),
+      serviceHistory: serviceHistoryRows,
+      reminders: reminderRows,
+      fuelData: fuelRows,
+      otherCosts: otherCostRows,
+      requiredCertificates: certificateRows,
+      requiredLicences: licenceRows
     };
 
     const mobileRow = mobileDeviceRows[0] ?? createEmptyMobileDeviceRow();
@@ -2736,12 +4413,22 @@ export default function Assets() {
     const vc400Protocols = normalizeVc400Protocols(
       mobileRow.cameraModel,
       mobileRow.cameraPositioningProtocol,
-      mobileRow.cameraVideoProtocol
+      mobileRow.cameraVideoProtocol,
+      mobileRow.camera
     );
 
     payload.device = String(mobileRow.device ?? "").trim();
     payload.mobileModel = String(mobileRow.model ?? "").trim();
-    payload.installed = String(mobileRow.installed ?? "").trim();
+    // Keep Mobile Device column in sync with the Device chosen in Mobile device settings.
+    const existingMobile = String(payload.mobileDevice ?? "").trim();
+    if (
+      payload.device &&
+      (!existingMobile || existingMobile.toLowerCase() === "traccar")
+    ) {
+      payload.mobileDevice = payload.device;
+    }
+    formValues.odometer = String(mobileRow.odometer ?? "").trim();
+    payload.odometer = String(mobileRow.odometer ?? "").trim();
     payload.status = String(mobileRow.status ?? "").trim().toLowerCase() === "unavailable" ? "unavailable" : payload.status;
     payload.firmware = String(mobileRow.firmware ?? "").trim();
     payload.standaloneMode = standaloneMode;
@@ -2762,7 +4449,7 @@ export default function Assets() {
     const result = await upsertAssetDetailed(payload);
     if (!result.stored) {
       if (result.status === 401 || result.status === 403) {
-        showToast("You are not logged in. Please log in to save changes.", "error");
+        endSavingError("You are not logged in. Please log in to save changes.");
         navigate("/login");
         return;
       }
@@ -2771,14 +4458,31 @@ export default function Assets() {
         (result.body && typeof result.body === "object" && (result.body.error || result.body.message)) ||
         result.error ||
         "Unknown error";
-      showToast(`Failed to save asset. ${status ? `${status}: ` : ""}${String(message)}`, "error");
+      if (String(message).toLowerCase().includes("device imei in use")) {
+        const field = String((result.body as any)?.field ?? "").trim();
+        setDeviceIdentityErrors(
+          field === "cameraSerial"
+            ? { cameraSerial: "Device IMEI in use" }
+            : { imei: "Device IMEI in use" }
+        );
+      }
+      endSavingError(`Failed to save asset. ${status ? `${status}: ` : ""}${String(message)}`);
       return;
     }
 
-    setLastSaveWasLocal(result.source === "local");
+    const driverName = String((payload as any)?.defaultDriver ?? "").trim();
+    const driverSite = String((payload as any)?.site ?? "").trim();
+    if (driverName && driverSite) {
+      void ensureNamedDriverOnServer(driverName, driverSite);
+    }
 
     const serverAssetId = Number((result.body as any)?.assetId ?? 0) || 0;
     const nextPayload = serverAssetId > 0 ? ({ ...payload, assetId: serverAssetId } as Asset) : payload;
+
+    // Keep editing on the same record across tab saves to avoid duplicate inserts.
+    if (!editingAssetId) {
+      setEditingAssetId(assetId);
+    }
 
     setAssetsData((current) => {
       const existingIndex = current.findIndex((asset) => asset.id === assetId);
@@ -2794,22 +4498,71 @@ export default function Assets() {
     });
 
     try {
-      const refreshed = await getAssetsFromApi<Asset>();
+      const refreshed = await getAssetsFromApi<Asset>({ force: true });
       if (refreshed.length) {
-        const normalized = normalizeAndDedupeAssets(refreshed as any[]);
-        setAssetsData(normalized);
-        writeAssetsCache(normalized);
+        // Paint saved data immediately; live Traccar enrich must not block Saving / Done.
+        // Merge with local list so a concurrent older loadAssets cannot drop this row.
+        await syncAssetsForDisplay(
+          mergeAssetListsPreservingLocal(refreshed, [nextPayload, ...assetsDataRef.current]),
+          { enrich: false }
+        );
+        void syncAssetsForDisplay(refreshed);
       }
     } catch {
       // keep current UI state if refresh fails
     }
 
+    if (result.body?.traccarError) {
+      // Keep Done as the primary success signal; sync detail stays as info toast.
+      showToast(`VIVI sync: ${String(result.body.traccarError)}`, "info");
+    } else if (result.body?.traccarSynced !== true && result.body?.traccarSyncQueued) {
+      showToast("Asset saved. VIVI device sync queued.", "info");
+    } else if (result.body?.traccarSynced !== true && String(payload.imei ?? "").trim()) {
+      showToast("Asset saved, but VIVI device sync did not start.", "info");
+    }
+
+    const configGroupName = String(formValues.configurationGroup ?? "").trim();
+    if (configGroupName) {
+      void (async () => {
+        const groups = await getConfigurationGroups<{
+          id: string;
+          name: string;
+          site?: string;
+          notificationBinding: string;
+          locationBinding?: string;
+          deviceBinding?: string;
+        }>();
+        const group =
+          groups.find((entry) => entry.id === configGroupName || entry.name === configGroupName) ?? null;
+        if (group) {
+          const syncResult = await syncConfigurationGroupToTraccar({
+            id: group.id,
+            name: group.name,
+            site: String(group.site ?? "").trim(),
+            notificationBinding: String(group.notificationBinding ?? ""),
+            locationBinding: String(group.locationBinding ?? ""),
+            deviceBinding: String(group.deviceBinding ?? "")
+          });
+          if (syncResult.errors.length && !(
+            syncResult.eventsSynced > 0 ||
+            syncResult.attributesAttached > 0 ||
+            syncResult.devicesPushed > 0 ||
+            syncResult.devicesTraccarUpdated > 0
+          )) {
+            showToast(syncResult.errors[0], "error");
+          }
+        }
+      })();
+    }
+
     setAssetSaved(true);
-    setShowSaveToast(true);
-    window.setTimeout(() => {
-      setShowSaveToast(false);
-    }, 1400);
+    endSavingDone();
     clearTabDirty(activeAddTab);
+    } catch (error: any) {
+      endSavingError(String(error?.message ?? error ?? "Unable to save asset."));
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   const deleteSelectedRow = (section: SectionKey) => {
@@ -2845,10 +4598,11 @@ export default function Assets() {
         break;
     }
     setSelectedRowBySection((current) => ({ ...current, [section]: null }));
+    void persistSharedAssetSection(section, nextRows as Array<Record<string, string>>);
   };
 
   return (
-    <div className="assets-layout assets-layout--full">
+    <div className="page assets-page">
       <input
         ref={importInputRef}
         type="file"
@@ -2861,108 +4615,47 @@ export default function Assets() {
           void handleImportFile(file);
         }}
       />
-      <div className="assets-toolbar">
-        <div className="assets-toolbar-left">
-          <span className="assets-toolbar-pill">All</span>
-          <span className="assets-toolbar-count">{filteredAssets.length}</span>
-        </div>
-      </div>
 
-      {(availableCameraIds.length > 0 || cameraAssetBindings.length > 0) && (
-        <section className="assets-camera-binding">
-          <div className="assets-camera-binding__header">
-            <strong>Camera to Asset Binding</strong>
-            <span className="assets-camera-binding__hint">
-              Map standalone cameras to assets for tracking and video context
-            </span>
-          </div>
-          <div className="assets-camera-binding__controls">
-            <select value={bindingCameraId} onChange={(event) => setBindingCameraId(event.target.value)}>
-              <option value="">Select camera</option>
-              {availableCameraIds.map((cameraId) => (
-                <option key={cameraId} value={cameraId}>
-                  {cameraId}
-                </option>
-              ))}
-            </select>
-            <select value={bindingAssetId} onChange={(event) => setBindingAssetId(event.target.value)}>
-              <option value="">Select asset</option>
-              {assetBindingOptions.map((asset) => {
-                const label = [asset.description, asset.registration].filter(Boolean).join(" - ") || asset.id;
-                return (
-                  <option key={asset.id} value={asset.id}>
-                    {label}
-                  </option>
-                );
-              })}
-            </select>
-            <button
-              type="button"
-              className="assets-camera-binding__bind"
-              onClick={() => void addCameraAssetBinding()}
-            >
-              Bind
-            </button>
-          </div>
-          {bindingMessage ? <p className="assets-camera-binding__message">{bindingMessage}</p> : null}
-          {cameraAssetBindings.length > 0 && (
-            <ul className="assets-camera-binding__list">
-              {cameraAssetBindings.map((binding) => {
-                const currentAsset =
-                  assetBindingOptions.find((asset) => asset.id === binding.assetId) ??
-                  ({
-                    id: binding.assetId,
-                    description: binding.assetDescription ?? "",
-                    registration: binding.registration ?? ""
-                  } as AssetBindingOption);
-                const label = [currentAsset.description, currentAsset.registration].filter(Boolean).join(" - ") || currentAsset.id;
-                return (
-                  <li key={binding.cameraId}>
-                    <span>
-                      {binding.cameraId} {" -> "} {label}
-                    </span>
-                    <button
-                      type="button"
-                      className="assets-camera-binding__unbind"
-                      onClick={() => void removeCameraAssetBinding(binding.cameraId)}
-                    >
-                      Unbind
-                    </button>
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-        </section>
-      )}
-
+      <div className="assets-layout assets-layout--full">
       <aside className="assets-filter">
         <button
           type="button"
           className={`assets-filter-header${activeFilter === "All" ? " active" : ""}`}
-          onClick={() => setActiveFilter("All")}
+          onClick={() => selectStatusFilter("All")}
         >
-          <span>All</span>
-          <span className="pill-active" style={{ padding: "6px 10px" }}>
-            {countFor("All")}
+          <span className="assets-filter-label">{activeFilter}</span>
+          <span className="assets-filter-count" aria-label={`${countFor(activeFilter)} assets`}>
+            {countFor(activeFilter)}
           </span>
         </button>
-        {[
-          "Available",
-          "Not available",
-          "No Mobile device",
-          "No trips and positions ≥ 5 days",
-          "No trips ≥ 5 days",
-          "No positions ≥ 5 days",
-          "Decommissioned",
-          "Reminders due soon",
-          "Reminders overdue"
-        ].map((label) => (
+        <div className="assets-filter-section-label">Identity bulk search</div>
+        {BULK_IDENTITY_FILTERS.map((row) => {
+          const active = activeFilter === row.label && bulkFilterTokens.length > 0;
+          return (
+            <button
+              key={row.label}
+              type="button"
+              className={`filter-row${active ? " active" : ""}`}
+              onClick={() => openBulkSearchModal(row.label)}
+              title={`Paste multiple ${row.label} values`}
+            >
+              <span>
+                {row.label}
+                {active ? (
+                  <span className="assets-bulk-filter-meta"> · {bulkFilterTokens.length}</span>
+                ) : null}
+              </span>
+              <span className="count-pill">{active ? countFor(row.label) : "…"}</span>
+            </button>
+          );
+        })}
+        <div className="assets-filter-section-label">Status</div>
+        {STATUS_FILTERS.map((label) => (
           <button
             key={label}
             type="button"
             className={`filter-row${activeFilter === label ? " active" : ""}`}
-            onClick={() => setActiveFilter(label)}
+            onClick={() => selectStatusFilter(label)}
           >
             <span>{label}</span>
             <span className="count-pill">{countFor(label)}</span>
@@ -3002,7 +4695,11 @@ export default function Assets() {
                 }}
                 onDragEnd={() => setDragCol(null)}
               >
-                {c.label}
+                <SortableColumnHeader
+                  label={c.label}
+                  {...getAssetHeaderProps(c.key)}
+                  className={centeredColumns.has(c.key) ? "is-center" : ""}
+                />
               </div>
             ))}
             <div className="assets-col-menu">
@@ -3021,16 +4718,21 @@ export default function Assets() {
               </button>
               {colMenuOpen && colMenuPos && (
                 <div className="assets-col-dropdown" style={{ top: colMenuPos.top, left: colMenuPos.left }}>
-                  {columns.map((opt) => (
+                  {columns.filter((opt) => opt.key !== "infoIssued" || isFullAccessRole).map((opt) => (
                     <label key={opt.key} className="columns-option">
-                      <input type="checkbox" checked={visibleCols.has(opt.key)} onChange={() => toggleCol(opt.key)} />
+                      <input
+                        type="checkbox"
+                        checked={opt.key === "lastPosition" ? true : visibleCols.has(opt.key)}
+                        disabled={opt.key === "lastPosition"}
+                        onChange={() => toggleCol(opt.key)}
+                      />
                       {opt.label}
                     </label>
                   ))}
                 </div>
               )}
             </div>
-            </div>
+          </div>
             <div className="assets-table-body">
               {pagedAssets.map((a) => (
                 <div key={a.id} className="assets-row" style={{ gridTemplateColumns: grid }}>
@@ -3041,18 +4743,18 @@ export default function Assets() {
                           const status = getDotStatus(a);
                           return (
                             <span className="assets-cell--asset-description">
-                              {shouldShowStatusDot(a) ? <span className={`status-dot status-${status}`} /> : null}
+                              {shouldShowStatusDot(a) ? <AssetStatusDot asset={a as any} status={status} /> : null}
                           {canEditAssets ? (
                             <button
                               type="button"
-                              className={`assets-asset-description-btn status-${status}`}
+                              className="assets-asset-description-btn"
                               onClick={() => openEditModal(a)}
-                              aria-label={`Edit ${displayValue(a[col.key as keyof Asset])}`}
+                              aria-label={`Edit ${displayValue(formatAssetDescription(a) || a[col.key as keyof Asset])}`}
                             >
-                              {displayValue(a[col.key as keyof Asset])}
+                              {displayValue(formatAssetDescription(a) || a[col.key as keyof Asset])}
                             </button>
                           ) : (
-                            <span className={`assets-asset-description-text status-${status}`}>{displayValue(a[col.key as keyof Asset])}</span>
+                            <span className="assets-asset-description-text">{displayValue(formatAssetDescription(a) || a[col.key as keyof Asset])}</span>
                           )}
                         </span>
                           );
@@ -3061,13 +4763,40 @@ export default function Assets() {
                         getInfoIssued(a) ? "Yes" : "No"
                       ) : col.key === "lastPosition" || col.key === "lastTrip" ? (
                         (() => {
-                          const tz = resolveTimeZoneForSite(String(a.site ?? ""), siteTimeZones);
-                          const raw = a[col.key as "lastPosition" | "lastTrip"];
-                          const formatted = siteTimeZones ? formatTimestampWithZone(raw, tz) : formatTimestamp(raw);
-                          return formatted ? formatted : "";
+                          const raw = col.key === "lastPosition"
+                            ? (a.lastSeen || a.lastPosition || "")
+                            : a.lastTrip;
+                          if (col.key === "lastPosition" && isCms808LiveAsset(a)) {
+                            return cms808DisplayTime(raw, a.site, siteTimeZones) || formatTimestampForSite(raw, a.site, siteTimeZones) || "";
+                          }
+                          return formatTimestampForSite(raw, a.site, siteTimeZones) || "";
                         })()
                       ) : col.key === "model" ? (
                         displayValue(resolveAssetDisplayModel(a))
+                      ) : col.key === "mobileDevice" ? (
+                        displayValue(resolveMobileDeviceLabel(a))
+                      ) : col.key === "configGroup" ? (
+                        (() => {
+                          const raw = String(a.configGroup ?? "").trim();
+                          const label = resolveConfigGroupLabel(raw);
+                          const shown = displayValue(label);
+                          if (!shown) return shown;
+                          const groupRef = raw || label;
+                          return (
+                            <button
+                              type="button"
+                              className="assets-config-group-btn"
+                              onClick={() =>
+                                navigate(
+                                  `/Control/config/configuration-groups?group=${encodeURIComponent(groupRef)}`
+                                )
+                              }
+                              aria-label={`Open configuration group ${shown}`}
+                            >
+                              {shown}
+                            </button>
+                          );
+                        })()
                       ) : (
                         displayValue(a[col.key as keyof Asset])
                       )}
@@ -3084,20 +4813,23 @@ export default function Assets() {
                     {openRowMenu === a.id && (
                       <div className="assets-row-menu" role="menu">
                         {[
-                          ...(canEditAssets ? [{ label: "Edit", icon: <EditIcon /> }] : []),
-                          ...(canEditAssets ? [{ label: "Duplicate", icon: <ReportIcon /> }] : []),
-                          ...(canEditAssets ? [{ label: "Commission asset", icon: <SettingsIcon /> }] : []),
-                          ...(canEditAssets ? [{ label: "Confirm data received", icon: <QueryIcon /> }] : []),
+                          ...(canEditAssets && !isBasicAssetUser ? [{ label: "Edit", icon: <EditIcon /> }] : []),
+                          ...(canEditAssets && !isBasicAssetUser ? [{ label: "Duplicate", icon: <ReportIcon /> }] : []),
+                          ...(canEditAssets && !isBasicAssetUser ? [{ label: "Commission asset", icon: <SettingsIcon /> }] : []),
+                          ...(isFullAccessRole || (canEditAssets && !isSupportLimitedRole && !isBasicAssetUser)
+                            ? [{ label: "Confirm data received", icon: <QueryIcon /> }]
+                            : []),
                           { label: "Show on historical tracking", icon: <PinsIcon /> },
                           { label: "Show on trip timeline", icon: <TimelineIcon /> },
-                          { label: "Diagnostics", icon: <QueryIcon /> },
-                          { label: "Resend commissioning SMS", icon: <CompassIcon /> },
-                          ...(canDeleteAssets ? [{ label: "Delete", icon: <QueryIcon /> }] : [])
+                          ...(isBasicAssetUser ? [] : [{ label: "Diagnostics", icon: <QueryIcon /> }]),
+                          ...(isCms808Server() || isBasicAssetUser || isSupportLimitedRole ? [] : [{ label: "IOs List", icon: <QueryIcon /> }]),
+                          ...(isBasicAssetUser || isSupportLimitedRole ? [] : [{ label: "Resend commissioning SMS", icon: <CompassIcon /> }]),
+                          ...(canDeleteAssets ? [{ label: "Delete", icon: <TrashIcon /> }] : [])
                         ].map((item) => (
                           <button
                             key={item.label}
                             type="button"
-                            className="assets-row-menu-item"
+                            className={`assets-row-menu-item${item.label === "Delete" ? " assets-row-menu-item--danger" : ""}`}
                             role="menuitem"
                             onClick={() => {
                               setOpenRowMenu(null);
@@ -3106,89 +4838,39 @@ export default function Assets() {
                               } else if (item.label === "Duplicate") {
                                 openDuplicateModal(a);
                               } else if (item.label === "Delete") {
-                              const id = String(a.id ?? "").trim();
-                              const imei = String(a.imei ?? "").trim();
-                              const registration = String(a.registration ?? "").trim();
-                              if (!id && !imei && !registration) return;
-                              const ok = window.confirm(`Delete asset "${String(a.assetDescription ?? id)}"? This cannot be undone.`);
-                              if (!ok) return;
-                              (async () => {
-                                try {
-                                  const tenantId = getTenantId();
-                                  const apiKey = getApiKey();
-                                  if (!tenantId) {
-                                    showToast("Select organisation/database first.", "error");
-                                    return;
-                                  }
-                                  if (!apiKey) {
-                                    showToast("You are not logged in. Please log in and retry.", "error");
-                                    return;
-                                  }
-                                  const params = new URLSearchParams();
-                                  if (id) params.set("id", id);
-                                  if (imei) params.set("imei", imei);
-                                  if (registration) params.set("registration", registration);
-                                  const url = buildApiUrl(`/d1/assets?${params.toString()}`);
-                                  const res = await fetch(url, {
-                                    method: "DELETE",
-                                    headers: {
-                                      "content-type": "application/json",
-                                      ...(tenantId ? { "x-tenant-id": tenantId } : {}),
-                                      ...(apiKey ? { "x-api-key": apiKey } : {})
-                                    }
-                                  });
-                                  const text = await res.text();
-                                  let body: any = null;
-                                  try {
-                                    body = text ? JSON.parse(text) : null;
-                                  } catch {
-                                    body = null;
-                                  }
-                                  if (!res.ok || !body?.deleted) {
-                                    const msg = (body && (body.error || body.message)) || text || `HTTP ${res.status}`;
-                                    showToast(`Delete failed: ${String(msg)}`, "error");
-                                    return;
-                                  }
-                                  setAssetsData((current) =>
-                                    current.filter((x) => {
-                                      const xid = String((x as any).id ?? "").trim();
-                                      const ximei = String((x as any).imei ?? "").trim();
-                                      const xreg = String((x as any).registration ?? "").trim();
-                                      if (id && xid === id) return false;
-                                      if (imei && ximei === imei) return false;
-                                      if (registration && xreg === registration) return false;
-                                      return true;
-                                    })
-                                  );
-                                  showToast("Asset deleted.", "success");
-                                } catch (e: any) {
-                                  showToast(`Delete failed: ${String(e?.message ?? e)}`, "error");
-                                }
-                              })();
+                              openDeleteConfirm(a);
                               } else if (item.label === "Show on trip timeline") {
                               const assetLabel = `${a.assetDescription} - ${a.registration}`;
                               const assetImei = String(a.imei ?? "").trim();
-                              localStorage.setItem("vivi.activeAsset", assetLabel);
-                              localStorage.setItem("vivi.activeRegistration", displayValue(a.registration));
-                              if (assetImei) localStorage.setItem("vivi.activeImei", assetImei);
+                              writeActiveAssetPrefs({
+                                asset: assetLabel,
+                                registration: displayValue(a.registration),
+                                imei: assetImei
+                              });
                               localStorage.setItem("vivi.activeSite", displayValue(a.site));
-                              localStorage.removeItem("vivi.contextType");
-                              localStorage.removeItem("vivi.contextName");
+                              clearUserPref(USER_PREF_KEYS.contextType);
+                              clearUserPref(USER_PREF_KEYS.contextName);
                               localStorage.removeItem("vivi.contextOptions");
-                              window.dispatchEvent(new Event("vivi:contextchange"));
+                              window.setTimeout(() => {
+                                window.dispatchEvent(new Event("vivi:contextchange"));
+                              }, 0);
                               navigate("/Track/activity/trip-timeline");
                               } else if (item.label === "Show on historical tracking") {
                               const assetLabel = `${a.assetDescription} - ${a.registration}`;
                               const assetImei = String(a.imei ?? "").trim();
-                              localStorage.setItem("vivi.activeAsset", assetLabel);
-                              localStorage.setItem("vivi.activeRegistration", displayValue(a.registration));
-                              if (assetImei) localStorage.setItem("vivi.activeImei", assetImei);
+                              writeActiveAssetPrefs({
+                                asset: assetLabel,
+                                registration: displayValue(a.registration),
+                                imei: assetImei
+                              });
                               localStorage.setItem("vivi.activeSite", displayValue(a.site));
                               localStorage.setItem("vivi.historyTime", new Date().toISOString().slice(0, 16));
-                              localStorage.removeItem("vivi.contextType");
-                              localStorage.removeItem("vivi.contextName");
+                              clearUserPref(USER_PREF_KEYS.contextType);
+                              clearUserPref(USER_PREF_KEYS.contextName);
                               localStorage.removeItem("vivi.contextOptions");
-                              window.dispatchEvent(new Event("vivi:contextchange"));
+                              window.setTimeout(() => {
+                                window.dispatchEvent(new Event("vivi:contextchange"));
+                              }, 0);
                               navigate("/Track/tracking/historical");
                               } else if (item.label === "Diagnostics") {
                               setDiagnosticsAsset(a);
@@ -3196,9 +4878,13 @@ export default function Assets() {
                                 assetDetails: true,
                                 mobileDevice: true,
                                 tripInfo: false,
-                                latestPosition: false
+                                latestPosition: false,
+                                inputStatus: true
                               });
+                              setDiagnosticsInputStatus({ status: "idle", inputs: [] });
                               setShowDiagnosticsModal(true);
+                              } else if (item.label === "IOs List") {
+                              setIoListAsset(a);
                               } else if (item.label === "Commission asset") {
                               const imei = String(a.imei ?? "").trim();
                               if (!imei || isDashPlaceholder(imei)) {
@@ -3212,25 +4898,23 @@ export default function Assets() {
                                 return;
                               }
 
-                              showToast("Asset commissioning: syncing asset…", "info");
+                              beginSaving("Commissioning");
 
                               (async () => {
                                 const syncResult = await syncAssetForCommission(a, imei);
                                 if (!syncResult.ok) {
-                                  showToast(String(syncResult.error ?? "Cannot commission this asset."), "error");
+                                  endSavingError(String(syncResult.error ?? "Cannot commission this asset."));
                                   return;
                                 }
 
-                                showToast("Asset commissioning: compiling and queuing settings…", "info");
+                                beginSaving("Compiling");
                                 const result = await commissionDeviceDetailed(imei);
                                 if (!result.queued) {
-                                  showToast(`Asset commissioning failed: ${result.error ?? "Unknown error"}`, "error");
+                                  endSavingError(`Asset commissioning failed: ${result.error ?? "Unknown error"}`);
                                   return;
                                 }
-                                showToast("Commissioning confirmed. Settings queued.", "success");
-                                if (result.kickQueued) {
-                                  showToast("Telemetry wake-up command sent to device.", "success");
-                                } else if (result.kickError) {
+                                showSaveDone();
+                                if (result.kickError) {
                                   const kickMessage = String(result.kickError).trim().toLowerCase();
                                   const ignorableKickError =
                                     kickMessage.includes("not found") ||
@@ -3242,14 +4926,11 @@ export default function Assets() {
                                   }
                                 }
 
-                                showToast("Commissioning complete. Waiting for first telemetry…", "info");
                                 let telemetryConfirmed = false;
-                                let telemetryLastAt = "";
                                 for (let attempt = 0; attempt < 5; attempt += 1) {
                                   const telemetry = await confirmTelemetryForImei(imei);
                                   if (telemetry.ok && telemetry.received) {
                                     telemetryConfirmed = true;
-                                    telemetryLastAt = String(telemetry.lastAt ?? "");
                                     break;
                                   }
                                   if (attempt < 4) {
@@ -3257,24 +4938,15 @@ export default function Assets() {
                                   }
                                 }
 
-                                if (telemetryConfirmed) {
+                                if (!telemetryConfirmed) {
                                   showToast(
-                                    telemetryLastAt
-                                      ? `Telemetry confirmed (last: ${telemetryLastAt}).`
-                                      : "Telemetry confirmed.",
-                                    "success"
-                                  );
-                                } else {
-                                  showToast(
-                                    "Commissioning saved. Telemetry not received yet—device should report shortly.",
+                                    "Telemetry not received yet—device should report shortly.",
                                     "info"
                                   );
                                 }
                                 const apiAssets = await getAssetsFromApi<Asset>();
                                 if (apiAssets.length) {
-                                  const normalized = normalizeAndDedupeAssets(apiAssets as any[]);
-                                  setAssetsData(normalized);
-                                  writeAssetsCache(normalized);
+                                  await syncAssetsForDisplay(apiAssets);
                                 }
                               })();
                               } else if (item.label === "Confirm data received") {
@@ -3291,9 +4963,7 @@ export default function Assets() {
                                   showToast(latestText ? `Telemetry received. ${latestText}` : "Telemetry received.", "success");
                                   const apiAssets = await getAssetsFromApi<Asset>();
                                   if (apiAssets.length) {
-                                    const normalized = normalizeAndDedupeAssets(apiAssets as any[]);
-                                    setAssetsData(normalized);
-                                    writeAssetsCache(normalized);
+                                    await syncAssetsForDisplay(apiAssets);
                                   }
                                   return;
                                 }
@@ -3321,9 +4991,7 @@ export default function Assets() {
                                 }
                                 const apiAssets = await getAssetsFromApi<Asset>();
                                 if (apiAssets.length) {
-                                  const normalized = normalizeAndDedupeAssets(apiAssets as any[]);
-                                  setAssetsData(normalized);
-                                  writeAssetsCache(normalized);
+                                  await syncAssetsForDisplay(apiAssets);
                                 }
                               })();
                               } else if (item.label === "Push device settings") {
@@ -3367,7 +5035,9 @@ export default function Assets() {
                   </div>
                 </div>
               ))}
-              {pagedAssets.length === 0 ? <div className="assets-empty">No assets to display.</div> : null}
+              {!assetsListLoading && pagedAssets.length === 0 ? (
+                <div className="assets-empty">No assets to display.</div>
+              ) : null}
             </div>
           </div>
         </div>
@@ -3406,6 +5076,60 @@ export default function Assets() {
           <div className="assets-copyright">Copyright Reserved © 2025 Vivi Telematics.</div>
         </div>
       </section>
+      </div>
+
+      {showBulkSearchModal && bulkSearchKind && (
+        <div
+          className="assets-add-modal"
+          role="dialog"
+          aria-modal="true"
+          aria-label={BULK_IDENTITY_FILTERS.find((row) => row.label === bulkSearchKind)?.title || "Bulk search"}
+          onClick={() => setShowBulkSearchModal(false)}
+        >
+          <div className="assets-add-card assets-bulk-search-card" onClick={(event) => event.stopPropagation()}>
+            <div className="assets-add-header">
+              <div>
+                <div className="assets-add-title">
+                  {BULK_IDENTITY_FILTERS.find((row) => row.label === bulkSearchKind)?.title}
+                </div>
+                <p className="assets-bulk-search-hint">
+                  {BULK_IDENTITY_FILTERS.find((row) => row.label === bulkSearchKind)?.hint}
+                </p>
+              </div>
+              <div className="assets-add-actions">
+                <button type="button" className="btn ghost" onClick={() => setShowBulkSearchModal(false)}>
+                  Cancel
+                </button>
+                {(activeFilter === bulkSearchKind && bulkFilterTokens.length > 0) || bulkPasteDraft.trim() ? (
+                  <button type="button" className="btn ghost" onClick={clearBulkSearch}>
+                    Clear
+                  </button>
+                ) : null}
+                <button type="button" className="btn primary" onClick={applyBulkSearch}>
+                  Apply filter
+                </button>
+              </div>
+            </div>
+            <div className="assets-add-body assets-bulk-search-body">
+              <label className="assets-bulk-search-label">
+                Paste values
+                <textarea
+                  className="assets-bulk-search-textarea"
+                  value={bulkPasteDraft}
+                  onChange={(event) => setBulkPasteDraft(event.target.value)}
+                  placeholder={BULK_IDENTITY_FILTERS.find((row) => row.label === bulkSearchKind)?.placeholder}
+                  rows={12}
+                  autoFocus
+                />
+              </label>
+              <div className="assets-bulk-search-footer">
+                {parseBulkSearchTokens(bulkPasteDraft).length} value
+                {parseBulkSearchTokens(bulkPasteDraft).length === 1 ? "" : "s"} ready
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {showAddModal && (
         <div className="assets-add-modal" role="dialog" aria-modal="true" aria-label="Create new asset">
@@ -3429,7 +5153,7 @@ export default function Assets() {
                   type="button"
                   className="btn primary"
                   onClick={handleSaveAssetModal}
-                  disabled={isSaveDisabled}
+                  disabled={isSaving}
                 >
                   Save
                 </button>
@@ -3518,11 +5242,18 @@ export default function Assets() {
                 </div>
               </aside>
               <section className="assets-add-form">
+                <div className="assets-add-form-panel">
+                  <div className="assets-add-page-header">
+                    <h3>{ASSET_TAB_META[activeAddTab]?.title ?? activeAddTab}</h3>
+                    {ASSET_TAB_META[activeAddTab]?.description ? (
+                      <p>{ASSET_TAB_META[activeAddTab].description}</p>
+                    ) : null}
+                  </div>
+                  <div className="assets-add-panel-body">
                 {activeAddTab === "Asset details" && (
                   <>
-                    <h3>Asset details</h3>
                     <div className="assets-add-grid">
-                      <label>
+                      <label className={fieldMissingClass("assetDescription")}>
                         Asset description <span>*</span>
                         <input
                           type="text"
@@ -3531,7 +5262,7 @@ export default function Assets() {
                           onChange={(e) => updateField("assetDescription", e.target.value)}
                         />
                       </label>
-                      <label>
+                      <label className={fieldMissingClass("assetType")}>
                         Asset type <span>*</span>
                         <select
                           value={formValues.assetType}
@@ -3545,7 +5276,7 @@ export default function Assets() {
                           ))}
                         </select>
                       </label>
-                      <label>
+                      <label className={fieldMissingClass("registration")}>
                         Registration number <span>*</span>
                         <input
                           type="text"
@@ -3554,7 +5285,7 @@ export default function Assets() {
                           onChange={(e) => updateField("registration", e.target.value)}
                         />
                       </label>
-                      <label>
+                      <label className={fieldMissingClass("site")}>
                         Site <span>*</span>
                         <select value={formValues.site} onChange={(e) => updateField("site", e.target.value)}>
                           <option value="">Select a site</option>
@@ -3565,8 +5296,8 @@ export default function Assets() {
                           ))}
                         </select>
                       </label>
-                      <label>
-                        Configuration group
+                      <label className={fieldMissingClass("configurationGroup")}>
+                        Configuration group <span>*</span>
                         <select
                           value={formValues.configurationGroup}
                           onChange={(e) => updateField("configurationGroup", e.target.value)}
@@ -3601,10 +5332,10 @@ export default function Assets() {
                         </select>
                       </label>
                       <label>
-                        Fleet number
+                        ISP Serial Number
                         <input
                           type="text"
-                          placeholder=""
+                          placeholder="SIM serial (SimSerial)"
                           value={formValues.fleetNumber}
                           onChange={(e) => updateField("fleetNumber", e.target.value)}
                         />
@@ -3618,7 +5349,7 @@ export default function Assets() {
                           onChange={(e) => updateField("vin", e.target.value)}
                         />
                       </label>
-                      <label>
+                      <label className={fieldMissingClass("make")}>
                         Make <span>*</span>
                         <select value={formValues.make} onChange={(e) => updateField("make", e.target.value)}>
                           <option value="">Select a make</option>
@@ -3700,12 +5431,17 @@ export default function Assets() {
                       <div className="assets-add-grid">
                         <label>
                           Additional mobile device
-                          <input
-                            type="text"
-                            placeholder=""
+                          <select
                             value={formValues.additionalMobileDevice}
                             onChange={(e) => updateField("additionalMobileDevice", e.target.value)}
-                          />
+                          >
+                            <option value="">Select mobile device</option>
+                            {deviceCatalog.map((device) => (
+                              <option key={device} value={device}>
+                                {device}
+                              </option>
+                            ))}
+                          </select>
                         </label>
                       </div>
                     </div>
@@ -3733,72 +5469,80 @@ export default function Assets() {
 
                 {activeAddTab === "Asset status" && (
                   <>
-                    <h3>Asset status</h3>
-                    <div className="assets-add-section">
-                      <div className="assets-add-section-title">Current asset status</div>
-                      <label>
-                        <select
-                          value={formValues.assetStatus}
-                          onChange={(e) => updateField("assetStatus", e.target.value)}
-                        >
-                          <option value="Available">Available</option>
-                          <option value="Not available">Not available</option>
-                          <option value="Decommissioned">Decommissioned</option>
-                        </select>
-                      </label>
-                    </div>
-                    <div className="assets-add-section">
-                      <div className="assets-add-section-title">Expiry date</div>
-                      <label>
-                        <input
-                          type="radio"
-                          name="expiryMode"
-                          checked={formValues.expiryMode === "date"}
-                          onChange={() => updateField("expiryMode", "date")}
-                        />
-                        On specified date
-                      </label>
-                      <input
-                        type="date"
-                        value={formValues.expiryDate}
-                        onChange={(e) => updateField("expiryDate", e.target.value)}
-                        disabled={formValues.expiryMode !== "date"}
-                      />
-                      <label>
-                        <input
-                          type="radio"
-                          name="expiryMode"
-                          checked={formValues.expiryMode === "never"}
-                          onChange={() => updateField("expiryMode", "never")}
-                        />
-                        Never
-                      </label>
-                    </div>
-                    <div className="assets-add-section">
-                      <label>
-                        <textarea
-                          rows={3}
-                          placeholder=""
-                          value={formValues.statusNotes}
-                          onChange={(e) => updateField("statusNotes", e.target.value)}
-                        />
-                      </label>
-                    </div>
-                    <div className="assets-add-section">
-                      <small>
-                        This asset status was last changed to '{formValues.assetStatus}' on 25/06/2024 13:49 (EAT) by
-                        MUSISI JOEL
-                      </small>
-                      <small>This asset was created on 25/06/2024 13:49 (EAT) by MUSISI JOEL</small>
+                    <div className="assets-status-panel">
+                      <div className="assets-status-intro">
+                        <h3>Asset status</h3>
+                        <p>Set availability, expiry rules, and operational notes for this asset.</p>
+                      </div>
+                      <div className="assets-access-card assets-status-card">
+                        <label className="assets-form-field">
+                          <span className="assets-form-label">Current asset status</span>
+                          <select
+                            className="assets-field-select"
+                            value={formValues.assetStatus}
+                            onChange={(e) => updateField("assetStatus", e.target.value)}
+                          >
+                            <option value="Available">Available</option>
+                            <option value="Not available">Not available</option>
+                            <option value="Decommissioned">Decommissioned</option>
+                          </select>
+                        </label>
+                      </div>
+                      <div className="assets-access-card assets-status-card">
+                        <div className="assets-form-label">Expiry date</div>
+                        <div className="assets-radio-group">
+                          <label className="assets-radio-option">
+                            <input
+                              type="radio"
+                              name="expiryMode"
+                              checked={formValues.expiryMode === "date"}
+                              onChange={() => updateField("expiryMode", "date")}
+                            />
+                            <span>On specified date</span>
+                          </label>
+                          <input
+                            className="assets-field-input"
+                            type="date"
+                            value={formValues.expiryDate}
+                            onChange={(e) => updateField("expiryDate", e.target.value)}
+                            disabled={formValues.expiryMode !== "date"}
+                          />
+                          <label className="assets-radio-option">
+                            <input
+                              type="radio"
+                              name="expiryMode"
+                              checked={formValues.expiryMode === "never"}
+                              onChange={() => updateField("expiryMode", "never")}
+                            />
+                            <span>Never</span>
+                          </label>
+                        </div>
+                      </div>
+                      <div className="assets-access-card assets-status-card">
+                        <label className="assets-form-field">
+                          <span className="assets-form-label">Operational notes</span>
+                          <textarea
+                            className="assets-field-textarea"
+                            rows={4}
+                            placeholder="Add operational notes for this asset..."
+                            value={formValues.statusNotes}
+                            onChange={(e) => updateField("statusNotes", e.target.value)}
+                          />
+                        </label>
+                      </div>
+                      <div className="assets-status-audit">
+                        <p>
+                          This asset status was last changed to &lsquo;{formValues.assetStatus}&rsquo; on 25/06/2024 13:49 (EAT) by MUSISI JOEL.
+                        </p>
+                        <p>This asset was created on 25/06/2024 13:49 (EAT) by MUSISI JOEL.</p>
+                      </div>
                     </div>
                   </>
                 )}
 
                 {activeAddTab === "Custom groups" && (
                   <>
-                    <h3>Custom groups</h3>
                     <div className="assets-add-section">
-                      <small>Select the custom groups that this asset should be assigned to</small>
                     </div>
                     <div className="assets-groups-card">
                       <input
@@ -3837,40 +5581,66 @@ export default function Assets() {
 
                 {activeAddTab === "Access control" && (
                   <>
-                    <h3>Access control</h3>
-                    <div className="assets-add-section">
-                      <label className="assets-add-checkbox">
-                        <input
-                          type="checkbox"
-                          checked={formValues.hasDefaultDriver}
-                          onChange={(e) => updateField("hasDefaultDriver", e.target.checked)}
-                        />
-                        Asset has a default driver
-                      </label>
-                    </div>
-                    <div className="assets-add-section">
-                      <label>
-                        Default driver name <span>*</span>
-                        <select
-                          value={formValues.defaultDriver}
-                          onChange={(e) => updateField("defaultDriver", e.target.value)}
-                          disabled={!formValues.hasDefaultDriver}
-                        >
-                          <option value="">Select a driver</option>
-                          {driverOptions.map((driver) => (
-                            <option key={driver} value={driver}>
-                              {driver}
+                    <div className="assets-access-panel">
+                      <div className="assets-status-intro">
+                        <h3>Access control</h3>
+                        <p>Assign a default driver for trips, alerts, and live tracking attribution.</p>
+                      </div>
+                      <div className="assets-access-card">
+                        <label className="assets-add-checkbox assets-add-checkbox--card">
+                          <input
+                            type="checkbox"
+                            checked={formValues.hasDefaultDriver}
+                            onChange={(e) => updateField("hasDefaultDriver", e.target.checked)}
+                          />
+                          <span>
+                            <strong>Asset has a default driver</strong>
+                            <small>When enabled, trips and alerts can be attributed to the selected driver.</small>
+                          </span>
+                        </label>
+                      </div>
+                      <div className="assets-access-card">
+                        <label className="assets-form-field">
+                          <span className="assets-form-label">
+                            Default driver name <span className="assets-required">*</span>
+                          </span>
+                          <select
+                            className="assets-field-select"
+                            value={formValues.defaultDriver}
+                            onChange={(e) => updateField("defaultDriver", e.target.value)}
+                            disabled={!formValues.hasDefaultDriver || driversLoading}
+                          >
+                            <option value="">
+                              {driversLoading
+                                ? "Loading drivers..."
+                                : driverOptions.length > 0
+                                  ? "Select a driver"
+                                  : "No drivers found — add drivers on the Drivers page"}
                             </option>
-                          ))}
-                        </select>
-                      </label>
+                            {driverOptions.map((driver) => (
+                              <option key={driver} value={driver}>
+                                {driver}
+                              </option>
+                            ))}
+                          </select>
+                          {!driversLoading && driverOptions.length === 0 && (
+                            <small className="assets-add-helper">
+                              Create drivers under Control → Drivers, then return here to assign a default driver.
+                            </small>
+                          )}
+                          {formValues.site && driverOptions.length > 0 && (
+                            <small className="assets-add-helper">
+                              Showing drivers for site &ldquo;{formValues.site}&rdquo; and unassigned drivers.
+                            </small>
+                          )}
+                        </label>
+                      </div>
                     </div>
                   </>
                 )}
 
                 {activeAddTab !== "Asset details" && activeAddTab !== "Asset status" && activeAddTab !== "Custom groups" && activeAddTab !== "Access control" && (
                   <>
-                    <h3>{activeAddTab}</h3>
                     {activeAddTab === "Service history" && (
                       <div className="assets-data-card">
                         <div className="assets-data-toolbar">
@@ -4278,7 +6048,7 @@ export default function Assets() {
                     )}
 
                     {activeAddTab === "Mobile device settings" && (
-                      <div className="assets-data-card">
+                      <div className="assets-data-card assets-data-card--wide">
                         <div className="assets-data-toolbar">
                           <small>Hardware and SIM details tied to the asset.</small>
                           <div className="assets-data-actions">
@@ -4318,7 +6088,7 @@ export default function Assets() {
                                     "Device",
                                     "Model",
                                     "IMEI",
-                                    "Installed",
+                                    "Odometer (KMs)",
                                     "Status",
                                     "Firmware",
                                     "Camera",
@@ -4332,7 +6102,7 @@ export default function Assets() {
                                     row.device,
                                     resolveMobileRowDisplayModel(row),
                                     row.imei,
-                                    row.installed,
+                                    row.odometer,
                                     row.status,
                                     row.firmware,
                                     row.camera,
@@ -4367,7 +6137,7 @@ export default function Assets() {
                                   return;
                                 }
 
-                                showToast("Asset commissioning: syncing asset…", "info");
+                                beginSaving("Commissioning");
                                 (async () => {
                                   const assetId = editingAssetId ?? `asset-${Date.now()}`;
                                   const mobileRow = mobileDeviceRows[0] ?? createEmptyMobileDeviceRow();
@@ -4398,17 +6168,23 @@ export default function Assets() {
                                     make: formValues.make || "",
                                     year: formValues.year || "",
                                     vin: formValues.vin || "",
-                                    mobileDevice: formValues.additionalMobileDevice || "",
-                                    odometer: formValues.odometer || "",
+                                    mobileDevice:
+                                      String(formValues.additionalMobileDevice ?? "").trim() ||
+                                      String(mobileRow.device ?? "").trim() ||
+                                      "",
                                     engineHours: formValues.engineHours || "",
                                     lastLocation: formValues.lastLocation || "",
                                     configUploadDate: formValues.configUploadDate || "",
                                     configGroup: configGroup || "",
+                                    database: String(activeDatabaseLabel ?? "").trim() || "",
+                                    organisation: String(activeOrganisationLabel ?? "").trim() || undefined,
+                                    dealer: String(activeDealerLabel ?? "").trim() || undefined,
+                                    hierarchyNamingVersion: "2",
                                     imsi: formValues.imsi || "",
                                     msisdn: formValues.msisdn || "",
                                     device: String(mobileRow.device ?? "").trim(),
                                     mobileModel: String(mobileRow.model ?? "").trim(),
-                                    installed: String(mobileRow.installed ?? "").trim(),
+                                    odometer: String(mobileRow.odometer ?? "").trim(),
                                     firmware: String(mobileRow.firmware ?? "").trim(),
                                     standaloneMode,
                                     hasCamera,
@@ -4427,23 +6203,20 @@ export default function Assets() {
 
                                   const syncResult = await syncAssetForCommission(payload, imei);
                                   if (!syncResult.ok) {
-                                    showToast(String(syncResult.error ?? "Cannot commission this asset."), "error");
+                                    endSavingError(String(syncResult.error ?? "Cannot commission this asset."));
                                     return;
                                   }
 
-                                  setLastSaveWasLocal(false);
                                   setAssetSaved(true);
 
-                                  showToast("Asset commissioning: compiling and queuing settings…", "info");
+                                  beginSaving("Compiling");
                                   const result = await commissionDeviceDetailed(imei);
                                   if (!result.queued) {
-                                    showToast(`Asset commissioning failed: ${result.error ?? "Unknown error"}`, "error");
+                                    endSavingError(`Asset commissioning failed: ${result.error ?? "Unknown error"}`);
                                     return;
                                   }
-                                  showToast("Commissioning confirmed. Settings queued.", "success");
-                                  if (result.kickQueued) {
-                                    showToast("Telemetry wake-up command sent to device.", "success");
-                                  } else if (result.kickError) {
+                                  showSaveDone();
+                                  if (result.kickError) {
                                     const kickMessage = String(result.kickError).trim().toLowerCase();
                                     const ignorableKickError =
                                       kickMessage.includes("not found") ||
@@ -4455,14 +6228,11 @@ export default function Assets() {
                                     }
                                   }
 
-                                  showToast("Commissioning complete. Waiting for first telemetry…", "info");
                                   let telemetryConfirmed = false;
-                                  let telemetryLastAt = "";
                                   for (let attempt = 0; attempt < 5; attempt += 1) {
                                     const telemetry = await confirmTelemetryForImei(imei);
                                     if (telemetry.ok && telemetry.received) {
                                       telemetryConfirmed = true;
-                                      telemetryLastAt = String(telemetry.lastAt ?? "");
                                       break;
                                     }
                                     if (attempt < 4) {
@@ -4470,16 +6240,9 @@ export default function Assets() {
                                     }
                                   }
 
-                                  if (telemetryConfirmed) {
+                                  if (!telemetryConfirmed) {
                                     showToast(
-                                      telemetryLastAt
-                                        ? `Telemetry confirmed (last: ${telemetryLastAt}).`
-                                        : "Telemetry confirmed.",
-                                      "success"
-                                    );
-                                  } else {
-                                    showToast(
-                                      "Commissioning saved. Telemetry not received yet—device should report shortly.",
+                                      "Telemetry not received yet—device should report shortly.",
                                       "info"
                                     );
                                   }
@@ -4489,14 +6252,22 @@ export default function Assets() {
                             >
                               Commission
                             </button>
+                            <button
+                              type="button"
+                              className="assets-data-decommission"
+                              onClick={openDecommissionConfirm}
+                              title="Remove this IMEI from the system; asset history stays in Backblaze"
+                            >
+                              Decommission
+                            </button>
                           </div>
                         </div>
-                        <div className="assets-data-table">
+                        <div className="assets-data-table assets-data-table--mobile-device">
                           <div className="assets-data-row assets-data-head">
                             <div className="assets-data-cell">Device</div>
                             <div className="assets-data-cell">Model</div>
                             <div className="assets-data-cell">IMEI</div>
-                            <div className="assets-data-cell">Installed</div>
+                            <div className="assets-data-cell">Odometer (KMs)</div>
                             <div className="assets-data-cell">Status</div>
                             <div className="assets-data-cell">Firmware</div>
                             <div className="assets-data-cell">Camera</div>
@@ -4521,7 +6292,7 @@ export default function Assets() {
                                 <div className="assets-data-cell">{row.device}</div>
                                 <div className="assets-data-cell">{resolveMobileRowDisplayModel(row)}</div>
                                 <div className="assets-data-cell">{row.imei}</div>
-                                <div className="assets-data-cell">{row.installed}</div>
+                                <div className="assets-data-cell">{row.odometer}</div>
                                 <div className="assets-data-cell">{row.status}</div>
                                 <div className="assets-data-cell">{row.firmware}</div>
                                 <div className="assets-data-cell">{row.camera}</div>
@@ -4747,6 +6518,8 @@ export default function Assets() {
                     )}
                   </>
                 )}
+                  </div>
+                </div>
               </section>
             </div>
           </div>
@@ -4805,19 +6578,7 @@ export default function Assets() {
                             type="button"
                             className="assets-inline-add"
                             aria-label="Add device"
-                            onClick={() => {
-                              const next = window.prompt("Add device");
-                              if (!next) return;
-                              const trimmed = next.trim();
-                              if (!trimmed) return;
-                              setDeviceCatalog((current) =>
-                                current.includes(trimmed) ? current : [...current, trimmed]
-                              );
-                              setDeviceModels((current) =>
-                                current[trimmed] ? current : { ...current, [trimmed]: [] }
-                              );
-                              setDataDraft((current) => ({ ...current, device: trimmed, model: "" }));
-                            }}
+                            onClick={() => openInlineAddModal("tracking-device")}
                           >
                             +
                           </button>
@@ -4871,19 +6632,11 @@ export default function Assets() {
                             className="assets-inline-add"
                             aria-label="Add model"
                             onClick={() => {
-                              const device = dataDraft.device ?? "";
-                              if (!device) return;
-                              const next = window.prompt("Add model");
-                              if (!next) return;
-                              const trimmed = next.trim();
-                              if (!trimmed) return;
-                              setDeviceModels((current) => ({
-                                ...current,
-                                [device]: current[device]?.includes(trimmed)
-                                  ? current[device]
-                                  : [...(current[device] ?? []), trimmed]
-                              }));
-                              setDataDraft((current) => ({ ...current, model: trimmed }));
+                              if (!String(dataDraft.device ?? "").trim()) {
+                                showToast("Select a tracking device first.", "error");
+                                return;
+                              }
+                              openInlineAddModal("tracking-model");
                             }}
                           >
                             +
@@ -4908,23 +6661,35 @@ export default function Assets() {
                         </div>
                       </label>
                       )}
-                      <label>
+                      <label className={fieldMissingClass("imei")}>
                         IMEI
                         <input
                           type="text"
                           value={dataDraft.imei ?? ""}
-                          onChange={(event) =>
-                            setDataDraft((current) => ({ ...current, imei: event.target.value }))
-                          }
+                          onChange={(event) => {
+                            const nextValue = event.target.value;
+                            setDataDraft((current) => ({ ...current, imei: nextValue }));
+                            if (deviceIdentityErrors.imei) {
+                              setDeviceIdentityErrors((current) => ({ ...current, imei: undefined }));
+                            }
+                            setMissingRequiredFields((current) => {
+                              if (!current.has("imei") && !current.has("cameraSerial")) return current;
+                              const next = new Set(current);
+                              next.delete("imei");
+                              next.delete("cameraSerial");
+                              return next;
+                            });
+                          }}
                         />
+                        {deviceIdentityErrors.imei && <small className="assets-field-error">{deviceIdentityErrors.imei}</small>}
                       </label>
                       <label>
-                        Installed
+                        Odometer (KMs)
                         <input
                           type="text"
-                          value={dataDraft.installed ?? ""}
+                          value={dataDraft.odometer ?? ""}
                           onChange={(event) =>
-                            setDataDraft((current) => ({ ...current, installed: event.target.value }))
+                            setDataDraft((current) => ({ ...current, odometer: event.target.value }))
                           }
                         />
                       </label>
@@ -4948,16 +6713,7 @@ export default function Assets() {
                             type="button"
                             className="assets-inline-add"
                             aria-label="Add status"
-                            onClick={() => {
-                              const next = window.prompt("Add status");
-                              if (!next) return;
-                              const trimmed = next.trim();
-                              if (!trimmed) return;
-                              setStatusOptions((current) =>
-                                current.includes(trimmed) ? current : [...current, trimmed]
-                              );
-                              setDataDraft((current) => ({ ...current, status: trimmed }));
-                            }}
+                            onClick={() => openInlineAddModal("tracking-status")}
                           >
                             +
                           </button>
@@ -4996,16 +6752,7 @@ export default function Assets() {
                             type="button"
                             className="assets-inline-add"
                             aria-label="Add firmware"
-                            onClick={() => {
-                              const next = window.prompt("Add firmware version");
-                              if (!next) return;
-                              const trimmed = next.trim();
-                              if (!trimmed) return;
-                              setFirmwareOptions((current) =>
-                                current.includes(trimmed) ? current : [...current, trimmed]
-                              );
-                              setDataDraft((current) => ({ ...current, firmware: trimmed }));
-                            }}
+                            onClick={() => openInlineAddModal("tracking-firmware")}
                           >
                             +
                           </button>
@@ -5071,7 +6818,7 @@ export default function Assets() {
                                 standaloneMode: "yes",
                                 device: "",
                                 model: "",
-                                installed: "",
+                                odometer: "",
                                 status: "",
                                 firmware: ""
                               }))
@@ -5126,19 +6873,7 @@ export default function Assets() {
                             type="button"
                             className="assets-inline-add"
                             aria-label="Add camera"
-                            onClick={() => {
-                              const next = window.prompt("Add camera");
-                              if (!next) return;
-                              const trimmed = next.trim();
-                              if (!trimmed) return;
-                              setCameraCatalog((current) =>
-                                current.includes(trimmed) ? current : [...current, trimmed]
-                              );
-                              setCameraModels((current) =>
-                                current[trimmed] ? current : { ...current, [trimmed]: [] }
-                              );
-                              setDataDraft((current) => ({ ...current, camera: trimmed, cameraModel: "" }));
-                            }}
+                            onClick={() => openInlineAddModal("camera-device")}
                           >
                             +
                           </button>
@@ -5180,7 +6915,8 @@ export default function Assets() {
                                 const protocols = normalizeVc400Protocols(
                                   nextModel,
                                   current.cameraPositioningProtocol,
-                                  current.cameraVideoProtocol
+                                  current.cameraVideoProtocol,
+                                  current.camera
                                 );
                                 return {
                                   ...current,
@@ -5205,31 +6941,11 @@ export default function Assets() {
                             className="assets-inline-add"
                             aria-label="Add camera model"
                             onClick={() => {
-                              const camera = dataDraft.camera ?? "";
-                              if (!camera) return;
-                              const next = window.prompt("Add camera model");
-                              if (!next) return;
-                              const trimmed = next.trim();
-                              if (!trimmed) return;
-                              setCameraModels((current) => ({
-                                ...current,
-                                [camera]: current[camera]?.includes(trimmed)
-                                  ? current[camera]
-                                  : [...(current[camera] ?? []), trimmed]
-                              }));
-                              setDataDraft((current) => {
-                                const protocols = normalizeVc400Protocols(
-                                  trimmed,
-                                  current.cameraPositioningProtocol,
-                                  current.cameraVideoProtocol
-                                );
-                                return {
-                                  ...current,
-                                  cameraModel: trimmed,
-                                  cameraPositioningProtocol: protocols.cameraPositioningProtocol,
-                                  cameraVideoProtocol: protocols.cameraVideoProtocol
-                                };
-                              });
+                              if (!String(dataDraft.camera ?? "").trim()) {
+                                showToast("Select a camera first.", "error");
+                                return;
+                              }
+                              openInlineAddModal("camera-model");
                             }}
                           >
                             +
@@ -5292,6 +7008,9 @@ export default function Assets() {
                         {isVc400Model(dataDraft.cameraModel) && (
                           <small>VC-400 defaults to JT/T808 (positioning) and JT/T1078 (video).</small>
                         )}
+                        {isCms808Camera(dataDraft.camera, dataDraft.cameraModel) && (
+                          <small>CMS 808 standalone cameras default to JT/T808 (GPS) and JT/T1078 (video).</small>
+                        )}
                       </label>
                       <label>
                         Additional components
@@ -5317,17 +7036,28 @@ export default function Assets() {
                             );
                           })}
                         </div>
-                        <small>Select additional cameras to activate in Live Video (Forward, DMS and In cab stay active).</small>
                       </label>
-                      <label>
+                      <label className={fieldMissingClass("cameraSerial")}>
                         Camera serial
                         <input
                           type="text"
                           value={dataDraft.cameraSerial ?? ""}
-                          onChange={(event) =>
-                            setDataDraft((current) => ({ ...current, cameraSerial: event.target.value }))
-                          }
+                          onChange={(event) => {
+                            const nextValue = event.target.value;
+                            setDataDraft((current) => ({ ...current, cameraSerial: nextValue }));
+                            if (deviceIdentityErrors.cameraSerial) {
+                              setDeviceIdentityErrors((current) => ({ ...current, cameraSerial: undefined }));
+                            }
+                            setMissingRequiredFields((current) => {
+                              if (!current.has("imei") && !current.has("cameraSerial")) return current;
+                              const next = new Set(current);
+                              next.delete("imei");
+                              next.delete("cameraSerial");
+                              return next;
+                            });
+                          }}
                         />
+                        {deviceIdentityErrors.cameraSerial && <small className="assets-field-error">{deviceIdentityErrors.cameraSerial}</small>}
                       </label>
                       <label>
                         Camera status
@@ -5349,16 +7079,7 @@ export default function Assets() {
                             type="button"
                             className="assets-inline-add"
                             aria-label="Add camera status"
-                            onClick={() => {
-                              const next = window.prompt("Add status");
-                              if (!next) return;
-                              const trimmed = next.trim();
-                              if (!trimmed) return;
-                              setStatusOptions((current) =>
-                                current.includes(trimmed) ? current : [...current, trimmed]
-                              );
-                              setDataDraft((current) => ({ ...current, cameraStatus: trimmed }));
-                            }}
+                            onClick={() => openInlineAddModal("camera-status")}
                           >
                             +
                           </button>
@@ -5397,16 +7118,7 @@ export default function Assets() {
                             type="button"
                             className="assets-inline-add"
                             aria-label="Add camera firmware"
-                            onClick={() => {
-                              const next = window.prompt("Add camera firmware");
-                              if (!next) return;
-                              const trimmed = next.trim();
-                              if (!trimmed) return;
-                              setCameraFirmwareOptions((current) =>
-                                current.includes(trimmed) ? current : [...current, trimmed]
-                              );
-                              setDataDraft((current) => ({ ...current, cameraFirmware: trimmed }));
-                            }}
+                            onClick={() => openInlineAddModal("camera-firmware")}
                           >
                             +
                           </button>
@@ -5434,13 +7146,35 @@ export default function Assets() {
                     {sectionFields[dataModalSection].map((field) => (
                       <label key={field.key}>
                         {field.label}
-                        <input
-                          type="text"
-                          value={dataDraft[field.key] ?? ""}
-                          onChange={(event) =>
-                            setDataDraft((current) => ({ ...current, [field.key]: event.target.value }))
-                          }
-                        />
+                        {field.key === "holder" ? (
+                          <select
+                            value={dataDraft[field.key] ?? ""}
+                            onChange={(event) =>
+                              setDataDraft((current) => ({ ...current, [field.key]: event.target.value }))
+                            }
+                          >
+                            <option value="">
+                              {driversLoading
+                                ? "Loading drivers..."
+                                : driverOptions.length > 0
+                                  ? "Select a driver"
+                                  : "No drivers found"}
+                            </option>
+                            {driverOptions.map((driver) => (
+                              <option key={driver} value={driver}>
+                                {driver}
+                              </option>
+                            ))}
+                          </select>
+                        ) : (
+                          <input
+                            type="text"
+                            value={dataDraft[field.key] ?? ""}
+                            onChange={(event) =>
+                              setDataDraft((current) => ({ ...current, [field.key]: event.target.value }))
+                            }
+                          />
+                        )}
                       </label>
                     ))}
                   </div>
@@ -5451,9 +7185,280 @@ export default function Assets() {
         </div>
       )}
 
-      {showSaveToast && (
-        <div className="assets-save-toast" role="status" aria-live="polite">
-          {lastSaveWasLocal ? "Saved locally (backend offline)" : "Changes Successfully Saved"}
+      {inlineAddKind && (
+        <div className="assets-add-modal" role="dialog" aria-modal="true" aria-label={INLINE_ADD_META[inlineAddKind].title}>
+          <div className="assets-add-card inline-add-modal-card">
+            <div className="assets-add-header inline-add-header">
+              <div>
+                <div className="assets-add-title">{INLINE_ADD_META[inlineAddKind].title}</div>
+                <div className="inline-add-subtitle">{INLINE_ADD_META[inlineAddKind].subtitle}</div>
+              </div>
+              <div className="assets-add-actions">
+                <button type="button" className="btn ghost" onClick={closeInlineAddModal}>
+                  Cancel
+                </button>
+                <button type="button" className="btn primary" onClick={confirmInlineAddModal}>
+                  {INLINE_ADD_META[inlineAddKind].actionLabel}
+                </button>
+              </div>
+            </div>
+            <div className="assets-add-body inline-add-body">
+              <label className="inline-add-field">
+                Value
+                <input
+                  autoFocus
+                  type="text"
+                  value={inlineAddValue}
+                  placeholder={INLINE_ADD_META[inlineAddKind].placeholder}
+                  onChange={(event) => setInlineAddValue(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      confirmInlineAddModal();
+                    }
+                    if (event.key === "Escape") {
+                      event.preventDefault();
+                      closeInlineAddModal();
+                    }
+                  }}
+                />
+              </label>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {decommissionConfirm && (
+        <div
+          className="assets-add-modal decommission-modal-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="decommission-modal-title"
+          onClick={closeDecommissionConfirm}
+        >
+          <div
+            className="assets-add-card decommission-modal-card"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <header className="decommission-modal-header">
+              <div className="decommission-modal-header-main">
+                <div className="decommission-modal-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75">
+                    <path d="M12 9v4m0 4h.01M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z" />
+                  </svg>
+                </div>
+                <div>
+                  <div className="decommission-modal-eyebrow">Device lifecycle · irreversible</div>
+                  <h2 id="decommission-modal-title" className="decommission-modal-title">
+                    Confirm device decommission
+                  </h2>
+                </div>
+              </div>
+              <button
+                type="button"
+                className="decommission-modal-close"
+                aria-label="Close decommission dialog"
+                disabled={decommissionInProgress}
+                onClick={closeDecommissionConfirm}
+              >
+                ×
+              </button>
+            </header>
+
+            <div className="decommission-modal-body">
+              <section className="decommission-summary" aria-label="Asset and device summary">
+                <div className="decommission-summary-head">
+                  <span className="decommission-summary-label">Target asset</span>
+                  <span className="decommission-summary-pill">IMEI ending {decommissionConfirm.imei.slice(-4)}</span>
+                </div>
+                <div className="decommission-summary-title">{decommissionConfirm.assetLabel}</div>
+                <dl className="decommission-summary-grid">
+                  <div>
+                    <dt>Registration</dt>
+                    <dd>{decommissionConfirm.registration || "—"}</dd>
+                  </div>
+                  <div>
+                    <dt>Site</dt>
+                    <dd>{decommissionConfirm.site || "—"}</dd>
+                  </div>
+                  <div>
+                    <dt>Device</dt>
+                    <dd>{decommissionConfirm.device || "—"}</dd>
+                  </div>
+                  <div>
+                    <dt>Model</dt>
+                    <dd>{decommissionConfirm.model || "—"}</dd>
+                  </div>
+                  <div className="decommission-summary-imei">
+                    <dt>IMEI</dt>
+                    <dd>
+                      <code>{decommissionConfirm.imei}</code>
+                    </dd>
+                  </div>
+                </dl>
+              </section>
+
+              <label className="decommission-ack">
+                <input
+                  type="checkbox"
+                  checked={decommissionAcknowledged}
+                  disabled={decommissionInProgress}
+                  onChange={(event) => setDecommissionAcknowledged(event.target.checked)}
+                />
+                <span>
+                  I authorize decommission of IMEI <code>{decommissionConfirm.imei}</code> and understand this cannot be
+                  undone from the application.
+                </span>
+              </label>
+            </div>
+
+            <footer className="decommission-modal-footer">
+              <p className="decommission-modal-footer-note">
+                {decommissionAcknowledged
+                  ? "Ready to proceed when you confirm below."
+                  : "Review the summary and acknowledge to enable decommission."}
+              </p>
+              <div className="decommission-modal-footer-actions">
+                <button
+                  type="button"
+                  className="btn ghost"
+                  disabled={decommissionInProgress}
+                  onClick={closeDecommissionConfirm}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className="btn danger"
+                  disabled={decommissionInProgress || !decommissionAcknowledged}
+                  onClick={() =>
+                    void executeDeviceDecommission(decommissionConfirm.assetId, decommissionConfirm.imei)
+                  }
+                >
+                  {decommissionInProgress ? "Decommissioning…" : "Confirm decommission"}
+                </button>
+              </div>
+            </footer>
+          </div>
+        </div>
+      )}
+
+      {deleteConfirm && (
+        <div
+          className="assets-add-modal decommission-modal-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="delete-asset-modal-title"
+          onClick={closeDeleteConfirm}
+        >
+          <div className="assets-add-card decommission-modal-card" onClick={(event) => event.stopPropagation()}>
+            <header className="decommission-modal-header">
+              <div className="decommission-modal-header-main">
+                <div className="decommission-modal-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75">
+                    <path d="M3 6h18" />
+                    <path d="M8 6v14a2 2 0 0 0 2 2h4a2 2 0 0 0 2-2V6" />
+                    <path d="M10 11v6M14 11v6M9 6V4h6v2" />
+                  </svg>
+                </div>
+                <div>
+                  <div className="decommission-modal-eyebrow">Fleet records · irreversible</div>
+                  <h2 id="delete-asset-modal-title" className="decommission-modal-title">
+                    Delete this asset?
+                  </h2>
+                </div>
+              </div>
+              <button
+                type="button"
+                className="decommission-modal-close"
+                aria-label="Close delete dialog"
+                disabled={deleteInProgress}
+                onClick={closeDeleteConfirm}
+              >
+                ×
+              </button>
+            </header>
+
+            <div className="decommission-modal-body">
+              <section className="decommission-summary" aria-label="Asset to delete">
+                <div className="decommission-summary-head">
+                  <span className="decommission-summary-label">Target asset</span>
+                  {deleteConfirm.imei ? (
+                    <span className="decommission-summary-pill">
+                      IMEI ending {deleteConfirm.imei.slice(-4)}
+                    </span>
+                  ) : (
+                    <span className="decommission-summary-pill">No IMEI on file</span>
+                  )}
+                </div>
+                <div className="decommission-summary-title">{deleteConfirm.assetLabel}</div>
+                <dl className="decommission-summary-grid">
+                  <div>
+                    <dt>Registration</dt>
+                    <dd>{deleteConfirm.registration || "—"}</dd>
+                  </div>
+                  <div>
+                    <dt>Site</dt>
+                    <dd>{deleteConfirm.site || "—"}</dd>
+                  </div>
+                  <div>
+                    <dt>Model</dt>
+                    <dd>{deleteConfirm.model || "—"}</dd>
+                  </div>
+                  <div>
+                    <dt>Asset ID</dt>
+                    <dd>{deleteConfirm.assetId || "—"}</dd>
+                  </div>
+                  {deleteConfirm.imei ? (
+                    <div className="decommission-summary-imei">
+                      <dt>IMEI</dt>
+                      <dd>
+                        <code>{deleteConfirm.imei}</code>
+                      </dd>
+                    </div>
+                  ) : null}
+                </dl>
+              </section>
+
+              <ul className="asset-delete-consequences">
+                <li>The asset record is removed from this database and site.</li>
+                <li>This cannot be undone from the application.</li>
+              </ul>
+
+              <label className="decommission-ack">
+                <input
+                  type="checkbox"
+                  checked={deleteAcknowledged}
+                  disabled={deleteInProgress}
+                  onChange={(event) => setDeleteAcknowledged(event.target.checked)}
+                />
+                <span>
+                  I understand that deleting <strong>{deleteConfirm.assetLabel}</strong> is permanent and cannot be reversed.
+                </span>
+              </label>
+            </div>
+
+            <footer className="decommission-modal-footer">
+              <p className="decommission-modal-footer-note">
+                {deleteAcknowledged
+                  ? "Ready to delete when you confirm below."
+                  : "Review the asset and acknowledge to enable delete."}
+              </p>
+              <div className="decommission-modal-footer-actions">
+                <button type="button" className="btn ghost" disabled={deleteInProgress} onClick={closeDeleteConfirm}>
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className="btn danger"
+                  disabled={deleteInProgress || !deleteAcknowledged}
+                  onClick={() => void executeAssetDelete()}
+                >
+                  {deleteInProgress ? "Deleting…" : "Delete asset"}
+                </button>
+              </div>
+            </footer>
+          </div>
         </div>
       )}
 
@@ -5522,6 +7527,18 @@ export default function Assets() {
         </div>
       )}
 
+      {ioListAsset && (
+        <AssetIoListModal
+          asset={{
+            registration: ioListAsset.registration,
+            assetDescription: ioListAsset.assetDescription,
+            imei: ioListAsset.imei,
+            traccarDeviceId: (ioListAsset as { traccarDeviceId?: number | string }).traccarDeviceId
+          }}
+          onClose={() => setIoListAsset(null)}
+        />
+      )}
+
       {showDiagnosticsModal && diagnosticsAsset && (
         <div className="assets-add-modal" role="dialog" aria-modal="true" aria-label="Diagnostics">
           <div className="assets-add-card diagnostics-modal-card">
@@ -5560,7 +7577,9 @@ export default function Assets() {
                     <div className="diagnostics-row"><span>Registration number</span><span>{diagnosticsAsset.registration}</span></div>
                     <div className="diagnostics-row"><span>Asset ID</span><span>{diagnosticsAsset.assetId}</span></div>
                     <div className="diagnostics-row"><span>Organisation</span><span>{activeOrganisationLabel || "Not available"}</span></div>
-                    <div className="diagnostics-row"><span>Site</span><span>{diagnosticsAsset.site}</span></div>
+                    <div className="diagnostics-row"><span>Dealer</span><span>{activeDealerLabel || "Not available"}</span></div>
+                    <div className="diagnostics-row"><span>Database</span><span>{activeDatabaseLabel || diagnosticsAsset.configGroup || "Not available"}</span></div>
+                    <div className="diagnostics-row"><span>Site</span><span>{diagnosticsAsset.site || activeSiteFilter || "Not available"}</span></div>
                     <div className="diagnostics-row"><span>Asset type</span><span>{displayValue(diagnosticsAsset.assetType)}</span></div>
                     <div className="diagnostics-row"><span>Status</span><span>{diagnosticsAsset.status === "available" ? "Available" : "Unavailable"}</span></div>
                     <div className="diagnostics-row"><span>Vehicle Identification Number (VIN)</span><span>{diagnosticsAsset.vin ?? "Not available"}</span></div>
@@ -5594,7 +7613,7 @@ export default function Assets() {
                     const fw = latest?.firmwareVersion ?? anyAsset?.firmwareVersion ?? anyAsset?.firmware ?? "";
                     return (
                       <div className="diagnostics-table">
-                        <div className="diagnostics-row"><span>Mobile device</span><span>{displayValue(rowFromAsset?.device ?? anyAsset?.mobileDevice ?? anyAsset?.device ?? "")}</span></div>
+                        <div className="diagnostics-row"><span>Mobile device</span><span>{displayValue(anyAsset?.device ?? rowFromAsset?.device ?? anyAsset?.mobileDevice ?? "")}</span></div>
                         <div className="diagnostics-row"><span>IMEI</span><span>{displayValue(rowFromAsset?.imei ?? anyAsset?.imei ?? "")}</span></div>
                         <div className="diagnostics-row"><span>Firmware version</span><span>{displayValue(fw)}</span></div>
                         <div className="diagnostics-row"><span>GPS module</span><span>{displayValue(anyAsset?.gpsModule ?? "")}</span></div>
@@ -5631,10 +7650,17 @@ export default function Assets() {
                           : typeof latest?.io?.Speed !== "undefined"
                             ? latest.io.Speed
                           : "";
+                    const ignition =
+                      typeof latest?.ignition !== "undefined"
+                        ? latest.ignition
+                        : typeof latest?.io?.Ignition !== "undefined"
+                          ? latest.io.Ignition
+                          : anyAsset?.ignition;
                     return (
                       <div className="diagnostics-table">
                         <div className="diagnostics-row"><span>Trip mode</span><span>{displayValue(anyAsset?.tripMode ?? "Out of Trip")}</span></div>
-                        <div className="diagnostics-row"><span>Driver</span><span>{displayValue(anyAsset?.defaultDriver ?? anyAsset?.driver ?? anyAsset?.assignedDriver ?? "")}</span></div>
+                        <div className="diagnostics-row"><span>Driver</span><span>{displayValue(readAssetDefaultDriverFormState(anyAsset).defaultDriver || anyAsset?.driver || "")}</span></div>
+                        <div className="diagnostics-row"><span>Ignition state</span><span>{toIgnitionLabel(ignition) || "Off"}</span></div>
                         <div className="diagnostics-row"><span>Speed</span><span>{typeof speed !== "undefined" && String(speed) !== "" ? `${String(speed)} km/h` : ""}</span></div>
                         <div className="diagnostics-row"><span>Odometer</span><span>{displayValue(anyAsset?.odometer)}</span></div>
                       </div>
@@ -5666,22 +7692,72 @@ export default function Assets() {
                       const tl = anyAsset.telemetryLatest;
                       const io = tl?.io && typeof tl.io === "object" ? tl.io : {};
                       const speed = typeof anyAsset.speed !== "undefined" ? anyAsset.speed : io["Speed"];
-                      const sats = io["Number of Satellites"] ?? io["Satellites"];
-                      const heading = io["Heading"];
+                      const sats =
+                        io["Number of Satellites"] ??
+                        io["Satellites"] ??
+                        io["GNSS Satellites"] ??
+                        io["GPS Satellites"] ??
+                        io["sat"] ??
+                        tl?.satellites ??
+                        tl?.sat ??
+                        anyAsset?.satellites ??
+                        anyAsset?.sat;
+                      const heading = io["Heading"] ?? tl?.heading ?? anyAsset?.heading;
+                      const ignition =
+                        typeof tl?.ignition !== "undefined"
+                          ? tl.ignition
+                          : typeof io["Ignition"] !== "undefined"
+                            ? io["Ignition"]
+                            : anyAsset?.ignition;
                       return (
                         <>
                           <div className="diagnostics-row"><span>Date and time of last AVL</span><span>{lastSeen || ""}</span></div>
+                          <div className="diagnostics-row"><span>Ignition state</span><span>{toIgnitionLabel(ignition) || "Off"}</span></div>
                           <div className="diagnostics-row"><span>Longitude</span><span>{lng || ""}</span></div>
                           <div className="diagnostics-row"><span>Latitude</span><span>{lat || ""}</span></div>
                           <div className="diagnostics-row"><span>GPS velocity</span><span>{typeof speed !== "undefined" ? `${String(speed)} km/h` : ""}</span></div>
                           <div className="diagnostics-row"><span>Heading</span><span>{typeof heading !== "undefined" ? String(heading) : ""}</span></div>
-                          <div className="diagnostics-row"><span>Number of satellites</span><span>{typeof sats !== "undefined" ? String(sats) : ""}</span></div>
+                          <div className="diagnostics-row"><span>Number of satellites</span><span>{typeof sats !== "undefined" && String(sats).trim() !== "" ? String(sats) : "0"}</span></div>
                         </>
                       );
                     })()}
                   </div>
                 )}
               </div>
+
+              {isGpsIotServer() && (
+                <div className="diagnostics-card">
+                  <button
+                    type="button"
+                    className="diagnostics-toggle"
+                    onClick={() =>
+                      setDiagnosticsOpen((current) => ({ ...current, inputStatus: !current.inputStatus }))
+                    }
+                  >
+                    Input status
+                    <span>{diagnosticsOpen.inputStatus ? "−" : "+"}</span>
+                  </button>
+                  {diagnosticsOpen.inputStatus && (
+                    <div className="diagnostics-table">
+                      {diagnosticsInputStatus.status === "loading" && (
+                        <div className="diagnostics-row"><span>Loading</span><span>Fetching GPS IoT input status…</span></div>
+                      )}
+                      {diagnosticsInputStatus.status === "error" && (
+                        <div className="diagnostics-row"><span>Error</span><span>{diagnosticsInputStatus.error || "Unavailable"}</span></div>
+                      )}
+                      {diagnosticsInputStatus.status === "ready" && diagnosticsInputStatus.inputs.length === 0 && (
+                        <div className="diagnostics-row"><span>Inputs</span><span>No input status reported</span></div>
+                      )}
+                      {diagnosticsInputStatus.inputs.map((input) => (
+                        <div className="diagnostics-row" key={`${input.name}-${input.kind}`}>
+                          <span>{input.name}{input.kind !== "unknown" ? ` (${input.kind})` : ""}</span>
+                          <span>{formatGpsIotInputStatusLabel(input)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           </div>
         </div>

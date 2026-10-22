@@ -1,0 +1,165 @@
+# Industry-standard defaults for Vivitel on a single VPS (k3s) or multi-node cluster.
+# Control plane = Kubernetes brain; worker nodes = muscle that run these pods.
+
+global:
+  image:
+    repository: ghcr.io/vivitel/vivitel-vps
+    tag: latest
+    pullPolicy: IfNotPresent
+  namespace: vivitel
+
+# Shared hostPath for single-node SQLite (WAL + busy_timeout enabled in app).
+persistence:
+  enabled: true
+  hostPath: /opt/vivitel/data
+  size: 40Gi
+
+valkey:
+  enabled: true
+  image: valkey/valkey:8-alpine
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: "1"
+      memory: 512Mi
+
+# Module split — each Deployment is independent so LB overload on one does not kill others.
+services:
+  track:
+    enabled: true
+    role: track
+    replicas: 1
+    # TCP ingest + SQLite writes: keep 1 writer replica on single-node.
+    autoscaling:
+      enabled: false
+      minReplicas: 1
+      maxReplicas: 2
+      targetCPUUtilizationPercentage: 70
+    resources:
+      requests:
+        cpu: 250m
+        memory: 512Mi
+      limits:
+        cpu: "2"
+        memory: 2Gi
+  control:
+    enabled: true
+    role: control
+    replicas: 2
+    autoscaling:
+      enabled: true
+      minReplicas: 2
+      maxReplicas: 6
+      targetCPUUtilizationPercentage: 65
+      targetMemoryUtilizationPercentage: 80
+    resources:
+      requests:
+        cpu: 200m
+        memory: 384Mi
+      limits:
+        cpu: "1"
+        memory: 1Gi
+  analyse:
+    enabled: true
+    role: analyse
+    replicas: 2
+    autoscaling:
+      enabled: true
+      minReplicas: 2
+      maxReplicas: 8
+      targetCPUUtilizationPercentage: 65
+      targetMemoryUtilizationPercentage: 80
+    resources:
+      requests:
+        cpu: 250m
+        memory: 512Mi
+      limits:
+        cpu: "2"
+        memory: 2Gi
+  deliver:
+    enabled: true
+    role: deliver
+    replicas: 2
+    autoscaling:
+      enabled: true
+      minReplicas: 2
+      maxReplicas: 6
+      targetCPUUtilizationPercentage: 70
+    resources:
+      requests:
+        cpu: 150m
+        memory: 256Mi
+      limits:
+        cpu: "1"
+        memory: 1Gi
+
+env:
+  NODE_ENV: production
+  PORT: "8787"
+  REQUIRE_PERSISTENT_DB: "true"
+  VPS_MAX_IN_FLIGHT: "400"
+  VPS_RATE_LIMIT_ENABLED: "true"
+  VPS_RATE_LIMIT_MAX: "600"
+  VPS_RATE_LIMIT_WINDOW_MS: "60000"
+  VALKEY_URL: "redis://valkey:6379"
+  WORKER_TELEMETRY_FORWARD_URL: "https://api.vivitelematics.ca/ingest/telemetry"
+
+secrets:
+  ADMIN_EMAIL: "admin@example.com"
+  ADMIN_PASSWORD_HASH: "replace-me"
+  API_KEY: "replace-me"
+  # Backblaze B2 — set real values in a private values override (do not commit secrets).
+  B2_KEY_ID: ""
+  B2_APP_KEY: ""
+  B2_BUCKET: ""
+  B2_REGION: "ca-east-006"
+  B2_ENDPOINT: "https://s3.ca-east-006.backblazeb2.com"
+  B2_TRACK_KEY_ID: ""
+  B2_TRACK_APP_KEY: ""
+  B2_BUCKET_TRACK: "VIVI-TRACK"
+  B2_REPORTS_KEY_ID: ""
+  B2_REPORTS_APP_KEY: ""
+  B2_BUCKET_REPORTS: "Vivi-Reports"
+  REPORT_ARCHIVE_HOT_DAYS: "90"
+
+ingress:
+  enabled: true
+  className: nginx
+  host: vps.vivitelematics.ca
+  additionalHosts:
+    - vps-api.vivitelematics.ca
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "64m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-http-version: "1.1"
+    # Retry next upstream when a pod is overloaded / restarting (self-heal at LB).
+    nginx.ingress.kubernetes.io/proxy-next-upstream: "error timeout http_502 http_503 http_504"
+    nginx.ingress.kubernetes.io/proxy-next-upstream-tries: "3"
+    nginx.ingress.kubernetes.io/affinity: "cookie"
+    nginx.ingress.kubernetes.io/session-cookie-name: "VIVI_AFFINITY"
+    nginx.ingress.kubernetes.io/load-balance: "ewma"
+
+probes:
+  startup:
+    path: /health/live
+    failureThreshold: 30
+    periodSeconds: 5
+  liveness:
+    path: /health/live
+    periodSeconds: 15
+    timeoutSeconds: 3
+    failureThreshold: 5
+  readiness:
+    path: /health/ready
+    periodSeconds: 5
+    timeoutSeconds: 2
+    failureThreshold: 2
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+terminationGracePeriodSeconds: 45

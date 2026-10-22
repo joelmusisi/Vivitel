@@ -1,0 +1,146 @@
+# Vivitel module stack without full Kubernetes (Docker Compose HA).
+# Use when SSH/k3s is not ready: same 4 roles + nginx load balancer + Valkey.
+#
+#   cd vivi_telematic/backend
+#   docker compose -f ../deploy/docker-compose.modules.yml up -d --build
+#
+# Nginx listens on :8787 and spreads HTTP across healthy backends.
+# Overloaded pods fail /health/ready → nginx marks them down (max_fails).
+
+name: vivitel-modules
+
+services:
+  valkey:
+    image: valkey/valkey:8-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  track:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: "8787"
+      VIVI_SERVICE_ROLE: track
+      DB_PATH: /data/vivitel.sqlite
+      REQUIRE_PERSISTENT_DB: "true"
+      VALKEY_URL: redis://valkey:6379
+      VPS_MAX_IN_FLIGHT: "400"
+      VPS_RATE_LIMIT_ENABLED: "true"
+      VPS_RATE_LIMIT_MAX: "600"
+      VPS_RATE_LIMIT_WINDOW_MS: "60000"
+    volumes:
+      - vivitel-data:/data
+    depends_on:
+      valkey:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8787/health/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 6
+      start_period: 25s
+
+  control:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: "8787"
+      VIVI_SERVICE_ROLE: control
+      DB_PATH: /data/vivitel.sqlite
+      REQUIRE_PERSISTENT_DB: "true"
+      VALKEY_URL: redis://valkey:6379
+      VPS_MAX_IN_FLIGHT: "400"
+      VPS_RATE_LIMIT_ENABLED: "true"
+    volumes:
+      - vivitel-data:/data
+    depends_on:
+      valkey:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8787/health/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 6
+      start_period: 25s
+
+  analyse:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: "8787"
+      VIVI_SERVICE_ROLE: analyse
+      DB_PATH: /data/vivitel.sqlite
+      REQUIRE_PERSISTENT_DB: "true"
+      VALKEY_URL: redis://valkey:6379
+      VPS_MAX_IN_FLIGHT: "400"
+    volumes:
+      - vivitel-data:/data
+    depends_on:
+      valkey:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8787/health/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 6
+      start_period: 25s
+
+  deliver:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: "8787"
+      VIVI_SERVICE_ROLE: deliver
+      DB_PATH: /data/vivitel.sqlite
+      REQUIRE_PERSISTENT_DB: "true"
+      VALKEY_URL: redis://valkey:6379
+      VPS_MAX_IN_FLIGHT: "400"
+    volumes:
+      - vivitel-data:/data
+    depends_on:
+      valkey:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8787/health/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 6
+      start_period: 25s
+
+  gateway:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    ports:
+      - "8787:80"
+    volumes:
+      - ./nginx/modules-gateway.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      track:
+        condition: service_healthy
+      control:
+        condition: service_healthy
+      analyse:
+        condition: service_healthy
+      deliver:
+        condition: service_healthy
+
+volumes:
+  vivitel-data:

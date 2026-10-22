@@ -1,20 +1,45 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
   <uses-permission android:name="android.permission.RECORD_AUDIO" />
   <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
   <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+  <uses-permission android:name="android.permission.INTERNET" />
+  <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
   <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+  <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
   <application
     android:allowBackup="false"
     android:label="Vivitel AI Intercom"
     android:supportsRtl="true">
 
-    <activity android:name=".MainActivity">
+    <provider
+      android:name="androidx.core.content.FileProvider"
+      android:authorities="com.vivitel.camera.fileprovider"
+      android:exported="false"
+      android:grantUriPermissions="true">
+      <meta-data
+        android:name="android.support.FILE_PROVIDER_PATHS"
+        android:resource="@xml/file_paths" />
+    </provider>
+
+    <activity
+      android:name=".MainActivity"
+      android:exported="true">
       <intent-filter>
         <action android:name="android.intent.action.MAIN" />
         <category android:name="android.intent.category.LAUNCHER" />
       </intent-filter>
     </activity>
+
+    <activity
+      android:name=".DeploymentFeedbackActivity"
+      android:exported="true"
+      android:excludeFromRecents="true"
+      android:launchMode="singleTask"
+      android:showOnLockScreen="true"
+      android:theme="@android:style/Theme.DeviceDefault.NoActionBar.Fullscreen" />
 
     <service
       android:name=".IntercomService"
@@ -23,7 +48,18 @@
 
     <service
       android:name=".TalkbackService"
-      android:exported="false" />
+      android:exported="false"
+      android:foregroundServiceType="mediaPlayback" />
+
+    <service
+      android:name=".NetworkStatusService"
+      android:exported="false"
+      android:foregroundServiceType="mediaPlayback" />
+
+    <service
+      android:name=".DeploymentFeedbackService"
+      android:exported="true"
+      android:foregroundServiceType="mediaPlayback" />
 
     <receiver
       android:name=".SdBootstrapReceiver"
@@ -31,6 +67,7 @@
       <intent-filter>
         <action android:name="android.intent.action.BOOT_COMPLETED" />
         <action android:name="android.intent.action.MEDIA_MOUNTED" />
+        <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
         <data android:scheme="file" />
       </intent-filter>
     </receiver>

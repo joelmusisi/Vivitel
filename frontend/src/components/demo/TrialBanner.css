@@ -1,0 +1,123 @@
+.trial-banner {
+  position: fixed;
+  top: calc(var(--topnav-height, 88px) + 10px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 4050;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: min(640px, calc(100vw - 32px));
+  padding: 10px 12px 10px 14px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, #b42318 0%, #9f1239 100%);
+  color: #fff;
+  box-shadow: 0 14px 32px rgba(127, 29, 29, 0.28);
+}
+
+.trial-banner__mark {
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.16);
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+}
+
+.trial-banner__mark span {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: #fff;
+  box-shadow: 0 8px 0 -4px #fff;
+}
+
+.trial-banner__copy {
+  min-width: 0;
+  flex: 1;
+}
+
+.trial-banner__copy p,
+.trial-banner__copy strong {
+  display: block;
+  margin: 0;
+}
+
+.trial-banner__copy p {
+  font-size: 0.68rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  opacity: 0.86;
+}
+
+.trial-banner__copy strong {
+  font-size: 0.95rem;
+  font-weight: 700;
+}
+
+.trial-banner__meter {
+  height: 4px;
+  margin: 5px 0 4px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.22);
+  overflow: hidden;
+}
+
+.trial-banner__meter i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: #fff;
+}
+
+.trial-banner__activate,
+.trial-banner__close {
+  border: 0;
+  cursor: pointer;
+}
+
+.trial-banner__activate {
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: #fff;
+  color: #9f1239;
+  font-weight: 700;
+  padding: 8px 14px;
+}
+
+.trial-banner__close {
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  background: transparent;
+  color: #fff;
+  font-size: 1.2rem;
+  line-height: 1;
+}
+
+.trial-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 700;
+}
+
+.trial-switch input {
+  width: 36px;
+  height: 20px;
+  accent-color: #9f1239;
+}
+
+@media (max-width: 720px) {
+  .trial-banner {
+    top: auto;
+    bottom: 84px;
+    border-radius: 18px;
+    flex-wrap: wrap;
+  }
+
+  .trial-banner__activate {
+    margin-left: 42px;
+  }
+}

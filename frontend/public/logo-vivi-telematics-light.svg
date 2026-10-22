@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="12 -14 136 112" role="img" aria-labelledby="viviLightTitle viviLightDesc">
+  <title id="viviLightTitle">VIVI Telematics</title>
+  <desc id="viviLightDesc">VIVI Telematics wordmark for light backgrounds — last I uses a green location-pin tittle instead of a text dot.</desc>
+  <g transform="translate(24 8)">
+    <text x="0" y="50" fill="#111111" font-family="Montserrat, Segoe UI, Arial, sans-serif" font-weight="800" font-size="54" letter-spacing="0.05em">VIV</text>
+    <rect x="89.25" y="16" width="9.5" height="34" rx="1.2" fill="#111111"/>
+    <g transform="translate(94 16) scale(0.42) translate(0 -38.4)">
+      <path fill="#89c84a" fill-rule="evenodd" d="M0 -24c13.2 0 24 10.8 24 24 0 9.6-10.8 22.8-24 38.4C-13.2 22.8-24 9.6-24 0c0-13.2 10.8-24 24-24zm0 14.4a9.6 9.6 0 1 0 0 19.2 9.6 9.6 0 0 0 0-19.2z"/>
+    </g>
+    <text x="53" y="84" text-anchor="middle" fill="#111111" font-family="Montserrat, Segoe UI, Arial, sans-serif" font-weight="300" font-size="14" letter-spacing="0.34em">TELEMATICS</text>
+  </g>
+</svg>

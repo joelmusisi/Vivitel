@@ -1,0 +1,62 @@
+/* Global light / dark theme tokens (applied via data-theme on <html>). */
+
+:root,
+[data-theme="light"] {
+  color-scheme: light;
+  --vivi-bg: #f6f9fa;
+  --vivi-surface: #ffffff;
+  --vivi-surface-elevated: #ffffff;
+  --vivi-text: #0f172a;
+  --vivi-text-muted: #64748b;
+  --vivi-border: rgba(15, 23, 42, 0.1);
+  --vivi-accent: #16a34a;
+  --vivi-accent-soft: rgba(22, 163, 74, 0.12);
+  --vivi-danger: #dc2626;
+  --vivi-warning: #f59e0b;
+  --vivi-phone-header: #ffffff;
+  --vivi-phone-nav: #ffffff;
+  --vivi-phone-nav-active: #16a34a;
+}
+
+[data-theme="dark"] {
+  color-scheme: dark;
+  --vivi-bg: #0b1220;
+  --vivi-surface: #111827;
+  --vivi-surface-elevated: #1a2332;
+  --vivi-text: #f8fafc;
+  --vivi-text-muted: #94a3b8;
+  --vivi-border: rgba(148, 163, 184, 0.18);
+  --vivi-accent: #22c55e;
+  --vivi-accent-soft: rgba(34, 197, 94, 0.14);
+  --vivi-danger: #f87171;
+  --vivi-warning: #fbbf24;
+  --vivi-phone-header: #0f172a;
+  --vivi-phone-nav: #0f172a;
+  --vivi-phone-nav-active: #22c55e;
+}
+
+body {
+  background: var(--vivi-bg);
+  color: var(--vivi-text);
+}
+
+.page {
+  background: var(--vivi-bg);
+  color: var(--vivi-text);
+}
+
+.app-shell--phone {
+  --topnav-height: 0px;
+  --org-ribbon-height: 0px;
+  --org-ribbon-gap: 0px;
+  --phone-header-height: 56px;
+  --phone-nav-height: 64px;
+  padding-top: calc(var(--phone-header-height) + env(safe-area-inset-top, 0px));
+  padding-bottom: calc(var(--phone-nav-height) + env(safe-area-inset-bottom, 0px));
+  min-height: 100dvh;
+  background: var(--vivi-bg);
+}
+
+.app-shell--phone .page {
+  padding: 12px 14px 20px;
+}

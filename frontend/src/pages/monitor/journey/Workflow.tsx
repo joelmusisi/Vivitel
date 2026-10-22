@@ -1,115 +1,191 @@
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import VTLoader from "../../../components/VTLoader";
 import { useNavigate } from "react-router-dom";
+import JourneyPipelineNav from "../../../components/journey/JourneyPipelineNav";
+import { ROUTES_REPORTS_PATH } from "../../../utils/journeyCatalog";
+import {
+  formatRouteSchedule,
+  clearRouteLibraryMemoryCache,
+  loadRouteLibrary,
+  scheduleRouteInWorkflow,
+  workflowDisplayStatus,
+  type RouteLibraryRecord
+} from "../../../utils/journeyRouteLibraryStore";
+import SortableColumnHeader from "../../../components/SortableColumnHeader";
+import { useColumnSort } from "../../../hooks/useColumnSort";
+import { beginSaving, endSavingDone, endSavingError } from "../../../utils/saveFeedback";
+import { showToast } from "../../../utils/toast";
 import "../../../index.css";
 
-type WorkflowRow = {
-  id: string;
-  name: string;
-  owner: string;
-  stageCount: number;
-  lastUpdated: string;
-  status: "active" | "draft" | "paused";
-};
-
-const workflows: WorkflowRow[] = [
-  {
-    id: "wf-1",
-    name: "Fuel delivery run",
-    owner: "Dispatch",
-    stageCount: 6,
-    lastUpdated: "Today 08:20",
-    status: "active"
-  },
-  {
-    id: "wf-2",
-    name: "Cross-dock transfer",
-    owner: "Logistics",
-    stageCount: 4,
-    lastUpdated: "Yesterday",
-    status: "paused"
-  },
-  {
-    id: "wf-3",
-    name: "Port clearance",
-    owner: "Compliance",
-    stageCount: 7,
-    lastUpdated: "Jan 10",
-    status: "draft"
-  }
-];
+function toLocalInputValue(isoOrEmpty: string): string {
+  const ts = Date.parse(isoOrEmpty);
+  const base = Number.isFinite(ts) ? new Date(ts) : new Date(Date.now() + 60 * 60 * 1000);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${base.getFullYear()}-${pad(base.getMonth() + 1)}-${pad(base.getDate())}T${pad(base.getHours())}:${pad(base.getMinutes())}`;
+}
 
 export default function Workflow() {
   const navigate = useNavigate();
+  const [routes, setRoutes] = useState<RouteLibraryRecord[]>([]);
+  const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
+  const [showSchedule, setShowSchedule] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [form, setForm] = useState({
+    routeId: "",
+    owner: "Dispatch",
+    scheduledFor: toLocalInputValue("")
+  });
 
-  const summary = useMemo(
-    () => [
-      { label: "Active", value: workflows.filter((row) => row.status === "active").length },
-      { label: "Drafts", value: workflows.filter((row) => row.status === "draft").length },
-      { label: "Paused", value: workflows.filter((row) => row.status === "paused").length },
-      { label: "Total workflows", value: workflows.length }
-    ],
-    []
+  const refresh = useCallback(async () => {
+    setLoading(true);
+    try {
+      setRoutes(await loadRouteLibrary());
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  useEffect(() => {
+    const onContextChange = () => {
+      clearRouteLibraryMemoryCache();
+      setRoutes([]);
+      void refresh();
+    };
+    window.addEventListener("vivi:orgchange", onContextChange);
+    window.addEventListener("vivi:contextchange", onContextChange);
+    return () => {
+      window.removeEventListener("vivi:orgchange", onContextChange);
+      window.removeEventListener("vivi:contextchange", onContextChange);
+    };
+  }, [refresh]);
+
+  const workflowRows = useMemo(
+    () =>
+      routes
+        .filter((row) => row.status !== "closed")
+        .map((row) => ({
+          row,
+          displayStatus: workflowDisplayStatus(row)
+        })),
+    [routes]
   );
 
   const filtered = useMemo(() => {
-    return workflows.filter((row) => {
-      const matchesSearch = row.name.toLowerCase().includes(search.toLowerCase());
-      const matchesStatus = statusFilter === "all" || row.status === statusFilter;
+    return workflowRows.filter(({ row, displayStatus }) => {
+      const haystack = `${row.name} ${row.origin} ${row.destination} ${row.owner}`.toLowerCase();
+      const matchesSearch = haystack.includes(search.toLowerCase());
+      const matchesStatus = statusFilter === "all" || displayStatus === statusFilter;
       return matchesSearch && matchesStatus;
     });
-  }, [search, statusFilter]);
+  }, [workflowRows, search, statusFilter]);
+
+  type WorkflowRow = { row: RouteLibraryRecord; displayStatus: string };
+
+  const getWorkflowSortValue = useCallback((entry: WorkflowRow, key: string) => {
+    const { row, displayStatus } = entry;
+    if (key === "routes") return row.name;
+    if (key === "owner") return row.owner ?? "";
+    if (key === "route") return `${row.origin ?? ""} ${row.destination ?? ""}`;
+    if (key === "stops") return row.stops.length;
+    if (key === "scheduled") return row.scheduledFor ?? "";
+    if (key === "status") return displayStatus;
+    return "";
+  }, []);
+  const workflowSort = useColumnSort({ rows: filtered, getValue: getWorkflowSortValue });
+
+  const openSchedule = (route?: RouteLibraryRecord) => {
+    const target =
+      route ??
+      routes.find((row) => row.status === "open") ??
+      routes.find((row) => row.status !== "closed") ??
+      null;
+    setForm({
+      routeId: target?.id ?? "",
+      owner: target?.owner || "Dispatch",
+      scheduledFor: toLocalInputValue(target?.scheduledFor || "")
+    });
+    setShowSchedule(true);
+  };
+
+  const saveSchedule = async () => {
+    if (!form.routeId) {
+      showToast("Select a route from Libraries to schedule.", "error");
+      return;
+    }
+    if (!form.scheduledFor.trim()) {
+      showToast("Start time is required.", "error");
+      return;
+    }
+    setSaving(true);
+    beginSaving("Scheduling route…");
+    try {
+      const scheduledFor = new Date(form.scheduledFor).toISOString();
+      const next = await scheduleRouteInWorkflow(form.routeId, {
+        owner: form.owner,
+        scheduledFor
+      });
+      setRoutes(next);
+      setShowSchedule(false);
+      endSavingDone("Route scheduled");
+      showToast("Schedule saved. Next: assign vehicle and driver in Resource allocation.", "success");
+      navigate("/Track/routes/resource-allocation");
+    } catch (error) {
+      endSavingError();
+      const message = error instanceof Error ? error.message : "Unable to schedule this route right now.";
+      showToast(/backblaze|\bb2\b/i.test(message) ? "Unable to schedule this route right now." : message, "error");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const schedulable = routes.filter((row) => row.status === "open" || row.status === "scheduled");
 
   return (
     <div className="page journey-workflow-page">
       <div className="journey-topbar">
         <div>
           <div className="journey-title">Workflow</div>
-          <div className="journey-path">Monitor / Journey management / Workflow</div>
+          <div className="journey-path">
+            Track / Routes / Workflow — Schedule routes created in Libraries, then allocate resources
+          </div>
         </div>
         <div className="journey-actions">
-          <button
-            type="button"
-            className="journey-btn ghost"
-            onClick={() => navigate("/measure/insights/reports?category=Journey%20Management%20Reports")}
-          >
-            View journey reports
+          <button type="button" className="journey-btn ghost" onClick={() => navigate("/Track/routes/libraries")}>
+            Open libraries
           </button>
-          <button type="button" className="journey-btn ghost">
-            Import
+          <button type="button" className="journey-btn ghost" onClick={() => navigate(ROUTES_REPORTS_PATH)}>
+            Routes reports
           </button>
-          <button
-            type="button"
-            className="journey-btn"
-            data-modal="Create workflow"
-            data-modal-sub="Define steps and routing logic."
-            data-modal-fields="Workflow name|Owner|Template"
-          >
-            Create workflow
+          <button type="button" className="journey-btn ghost" onClick={() => void refresh()} disabled={loading}>
+            {loading ? "Loading…" : "Refresh"}
+          </button>
+          <button type="button" className="journey-btn" onClick={() => openSchedule()}>
+            Schedule route
           </button>
         </div>
       </div>
 
-      <section className="journey-summary">
-        {summary.map((card) => (
-          <div key={card.label} className="journey-summary-card">
-            <div className="journey-summary-label">{card.label}</div>
-            <div className="journey-summary-value">{card.value}</div>
-          </div>
-        ))}
-      </section>
+      <JourneyPipelineNav active="workflow" />
 
       <section className="journey-panel">
         <div className="journey-panel-header">
           <div>
-            <div className="journey-panel-title">Workflow library</div>
-            <div className="journey-panel-sub">Operational playbooks used by live monitoring.</div>
+            <div className="journey-panel-title">Scheduled routes</div>
+            <div className="journey-panel-sub">
+              Routes created in Libraries appear here. Schedule a start time, then assign vehicle and driver in
+              Resource allocation.
+            </div>
           </div>
           <div className="journey-filter-row">
             <input
               className="journey-search"
-              placeholder="Search workflow"
+              placeholder="Search route"
               value={search}
               onChange={(event) => setSearch(event.target.value)}
             />
@@ -119,40 +195,162 @@ export default function Workflow() {
               onChange={(event) => setStatusFilter(event.target.value)}
             >
               <option value="all">All status</option>
-              <option value="active">Active</option>
-              <option value="draft">Draft</option>
+              <option value="active">Live now</option>
+              <option value="scheduled">Scheduled</option>
+              <option value="draft">Awaiting schedule</option>
               <option value="paused">Paused</option>
             </select>
           </div>
         </div>
         <div className="journey-table">
-          <div className="journey-row journey-row-head">
-            <span>Workflow</span>
-            <span>Owner</span>
-            <span>Stages</span>
-            <span>Last updated</span>
-            <span>Status</span>
+          <div className="journey-row journey-row-head journey-row-wide">
+            <SortableColumnHeader as="span" label="Routes" {...workflowSort.getHeaderProps("routes")} />
+            <SortableColumnHeader as="span" label="Owner" {...workflowSort.getHeaderProps("owner")} />
+            <SortableColumnHeader as="span" label="Route" {...workflowSort.getHeaderProps("route")} />
+            <SortableColumnHeader as="span" label="Stops" {...workflowSort.getHeaderProps("stops")} />
+            <SortableColumnHeader as="span" label="Scheduled" {...workflowSort.getHeaderProps("scheduled")} />
+            <SortableColumnHeader as="span" label="Status" {...workflowSort.getHeaderProps("status")} />
             <span>Actions</span>
           </div>
-          {filtered.length === 0 ? (
-            <div className="journey-empty">No workflows match your filters.</div>
+          {loading ? (
+            <VTLoader compact label="Loading routes" />
+          ) : workflowSort.sortedRows.length === 0 ? (
+            <div className="journey-empty">
+              No routes yet. Create a route in Libraries, then schedule it here.
+            </div>
           ) : (
-            filtered.map((row) => (
-              <div key={row.id} className="journey-row">
+            workflowSort.sortedRows.map(({ row, displayStatus }) => (
+              <div key={row.id} className="journey-row journey-row-wide">
                 <span className="journey-name">{row.name}</span>
-                <span>{row.owner}</span>
-                <span>{row.stageCount}</span>
-                <span>{row.lastUpdated}</span>
-                <span className={`journey-pill ${row.status}`}>{row.status}</span>
+                <span>{row.owner || "—"}</span>
+                <span>
+                  {row.origin || "—"} → {row.destination || "—"}
+                </span>
+                <span>{row.stops.length}</span>
+                <span>{formatRouteSchedule(row.scheduledFor)}</span>
+                <span className={`journey-pill ${displayStatus}`}>{displayStatus}</span>
                 <span className="journey-actions-col">
-                  <button type="button" className="journey-action">Open</button>
-                  <button type="button" className="journey-action ghost">Duplicate</button>
+                  {displayStatus === "draft" || displayStatus === "scheduled" ? (
+                    <button type="button" className="journey-action" onClick={() => openSchedule(row)}>
+                      {displayStatus === "draft" ? "Schedule" : "Reschedule"}
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    className="journey-action"
+                    onClick={() => navigate("/Track/routes/resource-allocation")}
+                  >
+                    Assign
+                  </button>
+                  <button
+                    type="button"
+                    className="journey-action ghost"
+                    onClick={() => navigate("/Track/routes/Tracking")}
+                  >
+                    Track
+                  </button>
                 </span>
               </div>
             ))
           )}
         </div>
+        <div className="journey-footer-hint">
+          Open routes awaiting schedule: {routes.filter((row) => row.status === "open").length}. Closed routes stay in
+          Libraries forever and can be used as a base for a new run.
+        </div>
       </section>
+
+      {showSchedule && (
+        <div
+          className="journey-modal-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Schedule route"
+          onClick={(event) => {
+            if (event.target === event.currentTarget) setShowSchedule(false);
+          }}
+        >
+          <div className="journey-modal journey-modal--create-route">
+            <header className="journey-modal-head">
+              <div>
+                <div className="journey-modal-kicker">Workflow · Schedule</div>
+                <h2>Schedule route</h2>
+              </div>
+              <div className="journey-modal-head-actions">
+                <button
+                  type="button"
+                  className="journey-btn ghost journey-modal-close-btn"
+                  onClick={() => setShowSchedule(false)}
+                >
+                  Close
+                </button>
+                <button
+                  type="button"
+                  className="journey-modal-close"
+                  onClick={() => setShowSchedule(false)}
+                  aria-label="Close"
+                >
+                  ×
+                </button>
+              </div>
+            </header>
+            <div className="journey-create-body">
+              <label className="journey-create-field">
+                <span>Route from Libraries</span>
+                <select
+                  value={form.routeId}
+                  onChange={(event) => {
+                    const selected = routes.find((row) => row.id === event.target.value);
+                    setForm((current) => ({
+                      ...current,
+                      routeId: event.target.value,
+                      owner: selected?.owner || current.owner || "Dispatch"
+                    }));
+                  }}
+                >
+                  <option value="">Select a saved route…</option>
+                  {schedulable.map((row) => (
+                    <option key={row.id} value={row.id}>
+                      {row.name} ({row.status}) — {row.origin} → {row.destination}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <div className="journey-create-grid">
+                <label className="journey-create-field">
+                  <span>Owner</span>
+                  <input
+                    value={form.owner}
+                    onChange={(event) => setForm((current) => ({ ...current, owner: event.target.value }))}
+                    placeholder="Dispatch"
+                  />
+                </label>
+                <label className="journey-create-field">
+                  <span>Start time</span>
+                  <input
+                    type="datetime-local"
+                    value={form.scheduledFor}
+                    onChange={(event) => setForm((current) => ({ ...current, scheduledFor: event.target.value }))}
+                  />
+                </label>
+              </div>
+              <div className="journey-create-actions">
+                <button
+                  type="button"
+                  className="journey-btn ghost"
+                  onClick={() => setShowSchedule(false)}
+                  disabled={saving}
+                >
+                  Cancel
+                </button>
+                <button type="button" className="journey-btn" onClick={() => void saveSchedule()} disabled={saving}>
+                  {saving ? "Scheduling…" : "Save schedule"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

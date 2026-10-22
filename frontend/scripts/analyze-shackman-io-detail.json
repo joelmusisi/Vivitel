@@ -1,0 +1,969 @@
+{
+  "window": {
+    "from": "2026-08-15T23:37:52.861Z",
+    "to": "2026-09-14T23:37:52.861Z",
+    "points": 66232
+  },
+  "device": {
+    "id": 20,
+    "name": "UA 822EC",
+    "uniqueId": "350612078533583",
+    "catalogImeiHint": "350612078333583",
+    "fuelAnalog": null,
+    "tank": null,
+    "mvMin": null,
+    "mvMax": null,
+    "calibrationKeys": []
+  },
+  "matches": [
+    {
+      "id": 13,
+      "name": "350612078056197",
+      "uniqueId": "350612078056197",
+      "attrs": [
+        "registration",
+        "assetDescription",
+        "site",
+        "viviLocationBindingId",
+        "viviLocationBindingName",
+        "viviLocationBindingSite",
+        "viviLocationSettings"
+      ]
+    },
+    {
+      "id": 8,
+      "name": "350612078068549",
+      "uniqueId": "350612078068549",
+      "attrs": [
+        "registration",
+        "assetDescription",
+        "site",
+        "viviLocationBindingId",
+        "viviLocationBindingName",
+        "viviLocationBindingSite",
+        "viviLocationSettings"
+      ]
+    },
+    {
+      "id": 12,
+      "name": "350612078242094",
+      "uniqueId": "350612078242094",
+      "attrs": [
+        "registration",
+        "assetDescription",
+        "site",
+        "viviLocationBindingId",
+        "viviLocationBindingName",
+        "viviLocationBindingSite",
+        "viviLocationSettings"
+      ]
+    },
+    {
+      "id": 3,
+      "name": "UA 2334 RT",
+      "uniqueId": "350612078038633",
+      "attrs": [
+        "registration",
+        "assetDescription",
+        "site",
+        "viviLocationBindingId",
+        "viviLocationBindingName",
+        "viviLocationBindingSite",
+        "viviLocationSettings"
+      ]
+    },
+    {
+      "id": 23,
+      "name": "UA 427EC",
+      "uniqueId": "350612078242011",
+      "attrs": [
+        "viviLocationBindingId",
+        "viviLocationBindingName",
+        "viviLocationBindingSite",
+        "viviLocationSettings"
+      ]
+    },
+    {
+      "id": 24,
+      "name": "UA 432EC",
+      "uniqueId": "350612078060249",
+      "attrs": [
+        "viviLocationBindingId",
+        "viviLocationBindingName",
+        "viviLocationBindingSite",
+        "viviLocationSettings"
+      ]
+    },
+    {
+      "id": 25,
+      "name": "UA 591EC",
+      "uniqueId": "350612078232921",
+      "attrs": [
+        "viviLocationBindingId",
+        "viviLocationBindingName",
+        "viviLocationBindingSite",
+        "viviLocationSettings"
+      ]
+    },
+    {
+      "id": 22,
+      "name": "UA 633EC",
+      "uniqueId": "350612078259932",
+      "attrs": [
+        "viviLocationBindingId",
+        "viviLocationBindingName",
+        "viviLocationBindingSite",
+        "viviLocationSettings"
+      ]
+    },
+    {
+      "id": 9,
+      "name": "UA 813EC",
+      "uniqueId": "350612078045174",
+      "attrs": [
+        "registration",
+        "assetDescription",
+        "site",
+        "viviLocationBindingId",
+        "viviLocationBindingName",
+        "viviLocationBindingSite",
+        "viviLocationSettings"
+      ]
+    },
+    {
+      "id": 10,
+      "name": "UA 814EC",
+      "uniqueId": "350612078052964",
+      "attrs": [
+        "registration",
+        "assetDescription",
+        "site",
+        "viviLocationBindingId",
+        "viviLocationBindingName",
+        "viviLocationBindingSite",
+        "viviLocationSettings"
+      ]
+    },
+    {
+      "id": 21,
+      "name": "UA 815EC",
+      "uniqueId": "350612078064555",
+      "attrs": [
+        "viviLocationBindingId",
+        "viviLocationBindingName",
+        "viviLocationBindingSite",
+        "viviLocationSettings"
+      ]
+    },
+    {
+      "id": 11,
+      "name": "UA 817EC",
+      "uniqueId": "350612078056353",
+      "attrs": [
+        "registration",
+        "assetDescription",
+        "site",
+        "viviLocationBindingId",
+        "viviLocationBindingName",
+        "viviLocationBindingSite",
+        "viviLocationSettings"
+      ]
+    },
+    {
+      "id": 20,
+      "name": "UA 822EC",
+      "uniqueId": "350612078533583",
+      "attrs": [
+        "viviLocationBindingId",
+        "viviLocationBindingName",
+        "viviLocationBindingSite",
+        "viviLocationSettings"
+      ]
+    },
+    {
+      "id": 34,
+      "name": "UA 956EW",
+      "uniqueId": "350612078038625",
+      "attrs": []
+    },
+    {
+      "id": 15,
+      "name": "UBS 524 G",
+      "uniqueId": "350612078067251",
+      "attrs": [
+        "registration",
+        "assetDescription",
+        "site",
+        "viviLocationBindingId",
+        "viviLocationBindingName",
+        "viviLocationBindingSite",
+        "viviLocationSettings"
+      ]
+    }
+  ],
+  "presentLines": {
+    "io6": 66232,
+    "io9": 0,
+    "fuel": 57077,
+    "io113": 66232,
+    "io12": 66232
+  },
+  "io6": {
+    "p05": 2276,
+    "p10": 2618,
+    "p50": 2830,
+    "p90": 2958,
+    "p95": 2988,
+    "min": 174,
+    "max": 3206,
+    "floorUsedMv": 1964,
+    "buckets": {
+      "0-500": 1205,
+      "500-1500": 1543,
+      "1500-2200": 277,
+      "2200-2600": 2641,
+      "2600-3000": 58145,
+      "3000+": 2421
+    },
+    "parked": {
+      "n": 3789,
+      "min": 174,
+      "max": 3201,
+      "mean": 2044,
+      "median": 2792,
+      "stdev": 1161,
+      "jumps": 1866,
+      "jumpPct": 49.3
+    },
+    "moving": {
+      "n": 62443,
+      "min": 174,
+      "max": 3206,
+      "mean": 2767,
+      "median": 2832,
+      "stdev": 333,
+      "jumps": 4730,
+      "jumpPct": 7.6
+    },
+    "ignitionOn": {
+      "n": 62436,
+      "min": 174,
+      "max": 3206,
+      "mean": 2767,
+      "median": 2832,
+      "stdev": 333,
+      "jumps": 4728,
+      "jumpPct": 7.6
+    },
+    "ignitionOff": {
+      "n": 3796,
+      "min": 174,
+      "max": 3201,
+      "mean": 2045,
+      "median": 2792,
+      "stdev": 1160,
+      "jumps": 1869,
+      "jumpPct": 49.2
+    },
+    "powerOk": {
+      "n": 66231,
+      "min": 174,
+      "max": 3206,
+      "mean": 2726,
+      "median": 2830,
+      "stdev": 458,
+      "jumps": 5741,
+      "jumpPct": 8.7
+    },
+    "powerLow": {
+      "n": 1,
+      "min": 174,
+      "max": 174,
+      "mean": 174,
+      "median": 174,
+      "stdev": 0,
+      "jumps": 0,
+      "jumpPct": 0
+    }
+  },
+  "io113": {
+    "n": 66232,
+    "min": 0,
+    "median": 100,
+    "max": 100,
+    "pctAt100": 100
+  },
+  "fuelVsIo6Correlation": 1,
+  "dropouts": {
+    "eventCount": 923,
+    "recoveredCount": 625,
+    "longCount": 261,
+    "mostlyMoving": 566,
+    "withLowPower": 1,
+    "medianMinutes": 3,
+    "sample": [
+      {
+        "from": "2026-08-16T01:02:01.000Z",
+        "to": "2026-08-16T01:18:57.020Z",
+        "minutes": 17,
+        "points": 4,
+        "minMv": 174,
+        "maxMv": 1005,
+        "movingHits": 2,
+        "ignOffHits": 2,
+        "powerLowHits": 0,
+        "recovered": false,
+        "beforeMv": 2771,
+        "afterMv": 2122
+      },
+      {
+        "from": "2026-08-16T03:00:50.000Z",
+        "to": "2026-08-16T03:05:43.000Z",
+        "minutes": 5,
+        "points": 2,
+        "minMv": 174,
+        "maxMv": 969,
+        "movingHits": 0,
+        "ignOffHits": 2,
+        "powerLowHits": 0,
+        "recovered": false,
+        "beforeMv": 2871,
+        "afterMv": 2209
+      },
+      {
+        "from": "2026-08-16T03:36:20.000Z",
+        "to": "2026-08-16T03:49:00.020Z",
+        "minutes": 13,
+        "points": 4,
+        "minMv": 174,
+        "maxMv": 275,
+        "movingHits": 2,
+        "ignOffHits": 2,
+        "powerLowHits": 0,
+        "recovered": true,
+        "beforeMv": 2747,
+        "afterMv": 2873
+      },
+      {
+        "from": "2026-08-16T05:27:41.000Z",
+        "to": "2026-08-16T05:34:57.020Z",
+        "minutes": 7,
+        "points": 4,
+        "minMv": 174,
+        "maxMv": 981,
+        "movingHits": 2,
+        "ignOffHits": 2,
+        "powerLowHits": 0,
+        "recovered": false,
+        "beforeMv": 2850,
+        "afterMv": 2265
+      },
+      {
+        "from": "2026-08-16T06:22:52.000Z",
+        "to": "2026-08-16T06:27:51.010Z",
+        "minutes": 5,
+        "points": 3,
+        "minMv": 174,
+        "maxMv": 1120,
+        "movingHits": 2,
+        "ignOffHits": 1,
+        "powerLowHits": 0,
+        "recovered": true,
+        "beforeMv": 2799,
+        "afterMv": 2922
+      },
+      {
+        "from": "2026-08-16T06:30:38.000Z",
+        "to": "2026-08-16T06:30:38.010Z",
+        "minutes": 0,
+        "points": 2,
+        "minMv": 873,
+        "maxMv": 873,
+        "movingHits": 2,
+        "ignOffHits": 0,
+        "powerLowHits": 0,
+        "recovered": true,
+        "beforeMv": 2828,
+        "afterMv": 2892
+      },
+      {
+        "from": "2026-08-16T06:31:53.000Z",
+        "to": "2026-08-16T06:36:45.010Z",
+        "minutes": 5,
+        "points": 3,
+        "minMv": 174,
+        "maxMv": 1355,
+        "movingHits": 2,
+        "ignOffHits": 1,
+        "powerLowHits": 0,
+        "recovered": false,
+        "beforeMv": 2892,
+        "afterMv": 2238
+      },
+      {
+        "from": "2026-08-16T06:44:27.000Z",
+        "to": "2026-08-16T06:48:57.010Z",
+        "minutes": 5,
+        "points": 3,
+        "minMv": 174,
+        "maxMv": 1048,
+        "movingHits": 2,
+        "ignOffHits": 1,
+        "powerLowHits": 0,
+        "recovered": true,
+        "beforeMv": 2956,
+        "afterMv": 2800
+      },
+      {
+        "from": "2026-08-16T06:52:23.000Z",
+        "to": "2026-08-16T06:55:56.020Z",
+        "minutes": 4,
+        "points": 4,
+        "minMv": 174,
+        "maxMv": 782,
+        "movingHits": 2,
+        "ignOffHits": 2,
+        "powerLowHits": 0,
+        "recovered": false,
+        "beforeMv": 2791,
+        "afterMv": 2197
+      },
+      {
+        "from": "2026-08-16T07:45:02.000Z",
+        "to": "2026-08-16T08:07:31.000Z",
+        "minutes": 22,
+        "points": 2,
+        "minMv": 174,
+        "maxMv": 174,
+        "movingHits": 0,
+        "ignOffHits": 2,
+        "powerLowHits": 0,
+        "recovered": false,
+        "beforeMv": 2914,
+        "afterMv": 2288
+      },
+      {
+        "from": "2026-08-16T08:10:36.000Z",
+        "to": "2026-08-16T08:21:00.000Z",
+        "minutes": 10,
+        "points": 2,
+        "minMv": 174,
+        "maxMv": 1630,
+        "movingHits": 0,
+        "ignOffHits": 2,
+        "powerLowHits": 0,
+        "recovered": false,
+        "beforeMv": 2871,
+        "afterMv": 2301
+      },
+      {
+        "from": "2026-08-16T09:35:20.000Z",
+        "to": "2026-08-16T09:48:48.010Z",
+        "minutes": 13,
+        "points": 3,
+        "minMv": 174,
+        "maxMv": 600,
+        "movingHits": 2,
+        "ignOffHits": 1,
+        "powerLowHits": 0,
+        "recovered": true,
+        "beforeMv": 2893,
+        "afterMv": 2887
+      },
+      {
+        "from": "2026-08-16T11:07:51.000Z",
+        "to": "2026-08-16T11:16:23.020Z",
+        "minutes": 9,
+        "points": 4,
+        "minMv": 174,
+        "maxMv": 174,
+        "movingHits": 2,
+        "ignOffHits": 2,
+        "powerLowHits": 0,
+        "recovered": true,
+        "beforeMv": 3004,
+        "afterMv": 2800
+      },
+      {
+        "from": "2026-08-16T11:30:50.000Z",
+        "to": "2026-08-16T11:55:49.020Z",
+        "minutes": 25,
+        "points": 4,
+        "minMv": 174,
+        "maxMv": 1467,
+        "movingHits": 2,
+        "ignOffHits": 2,
+        "powerLowHits": 0,
+        "recovered": true,
+        "beforeMv": 3058,
+        "afterMv": 2988
+      },
+      {
+        "from": "2026-08-16T12:02:08.000Z",
+        "to": "2026-08-16T12:06:42.010Z",
+        "minutes": 5,
+        "points": 4,
+        "minMv": 174,
+        "maxMv": 808,
+        "movingHits": 2,
+        "ignOffHits": 2,
+        "powerLowHits": 0,
+        "recovered": false,
+        "beforeMv": 2982,
+        "afterMv": 2308
+      },
+      {
+        "from": "2026-08-16T12:46:37.000Z",
+        "to": "2026-08-16T12:50:39.020Z",
+        "minutes": 4,
+        "points": 4,
+        "minMv": 174,
+        "maxMv": 906,
+        "movingHits": 2,
+        "ignOffHits": 2,
+        "powerLowHits": 0,
+        "recovered": true,
+        "beforeMv": 2902,
+        "afterMv": 2953
+      },
+      {
+        "from": "2026-08-16T13:18:03.000Z",
+        "to": "2026-08-16T13:50:44.010Z",
+        "minutes": 33,
+        "points": 3,
+        "minMv": 174,
+        "maxMv": 1007,
+        "movingHits": 2,
+        "ignOffHits": 1,
+        "powerLowHits": 0,
+        "recovered": false,
+        "beforeMv": 2899,
+        "afterMv": 2300
+      },
+      {
+        "from": "2026-08-16T13:54:44.000Z",
+        "to": "2026-08-16T14:03:57.020Z",
+        "minutes": 9,
+        "points": 4,
+        "minMv": 174,
+        "maxMv": 1566,
+        "movingHits": 2,
+        "ignOffHits": 2,
+        "powerLowHits": 0,
+        "recovered": true,
+        "beforeMv": 3007,
+        "afterMv": 2869
+      },
+      {
+        "from": "2026-08-16T15:03:23.000Z",
+        "to": "2026-08-16T15:14:37.020Z",
+        "minutes": 11,
+        "points": 4,
+        "minMv": 174,
+        "maxMv": 1431,
+        "movingHits": 2,
+        "ignOffHits": 2,
+        "powerLowHits": 0,
+        "recovered": true,
+        "beforeMv": 2799,
+        "afterMv": 2683
+      },
+      {
+        "from": "2026-08-16T15:18:23.000Z",
+        "to": "2026-08-16T15:18:23.010Z",
+        "minutes": 0,
+        "points": 2,
+        "minMv": 492,
+        "maxMv": 492,
+        "movingHits": 2,
+        "ignOffHits": 0,
+        "powerLowHits": 0,
+        "recovered": true,
+        "beforeMv": 2981,
+        "afterMv": 2789
+      },
+      {
+        "from": "2026-08-16T17:38:14.000Z",
+        "to": "2026-08-16T17:49:10.020Z",
+        "minutes": 11,
+        "points": 4,
+        "minMv": 174,
+        "maxMv": 685,
+        "movingHits": 3,
+        "ignOffHits": 1,
+        "powerLowHits": 0,
+        "recovered": false,
+        "beforeMv": 2833,
+        "afterMv": 2228
+      },
+      {
+        "from": "2026-08-16T17:52:33.000Z",
+        "to": "2026-08-16T18:01:18.020Z",
+        "minutes": 9,
+        "points": 4,
+        "minMv": 174,
+        "maxMv": 1091,
+        "movingHits": 2,
+        "ignOffHits": 2,
+        "powerLowHits": 0,
+        "recovered": true,
+        "beforeMv": 2833,
+        "afterMv": 2995
+      },
+      {
+        "from": "2026-08-16T18:06:39.000Z",
+        "to": "2026-08-16T18:06:39.020Z",
+        "minutes": 0,
+        "points": 3,
+        "minMv": 174,
+        "maxMv": 1392,
+        "movingHits": 2,
+        "ignOffHits": 1,
+        "powerLowHits": 0,
+        "recovered": false,
+        "beforeMv": 2995,
+        "afterMv": 2272
+      },
+      {
+        "from": "2026-08-16T18:18:39.000Z",
+        "to": "2026-08-16T18:18:39.020Z",
+        "minutes": 0,
+        "points": 3,
+        "minMv": 846,
+        "maxMv": 1009,
+        "movingHits": 2,
+        "ignOffHits": 1,
+        "powerLowHits": 0,
+        "recovered": false,
+        "beforeMv": 2272,
+        "afterMv": 2890
+      },
+      {
+        "from": "2026-08-16T20:41:56.000Z",
+        "to": "2026-08-16T20:41:56.010Z",
+        "minutes": 0,
+        "points": 2,
+        "minMv": 1355,
+        "maxMv": 1355,
+        "movingHits": 2,
+        "ignOffHits": 0,
+        "powerLowHits": 0,
+        "recovered": true,
+        "beforeMv": 2868,
+        "afterMv": 2886
+      }
+    ]
+  },
+  "daily": [
+    {
+      "day": "2026-08-15",
+      "n": 56,
+      "min": 2546,
+      "p10": 2567,
+      "median": 2669,
+      "p90": 2764,
+      "max": 2852,
+      "dropoutPct": 0
+    },
+    {
+      "day": "2026-08-16",
+      "n": 2797,
+      "min": 174,
+      "p10": 2611,
+      "median": 2812,
+      "p90": 2950,
+      "max": 3124,
+      "dropoutPct": 3.2
+    },
+    {
+      "day": "2026-08-17",
+      "n": 1710,
+      "min": 174,
+      "p10": 2622,
+      "median": 2842,
+      "p90": 2961,
+      "max": 3147,
+      "dropoutPct": 5.6
+    },
+    {
+      "day": "2026-08-18",
+      "n": 2233,
+      "min": 174,
+      "p10": 2622,
+      "median": 2847,
+      "p90": 2964,
+      "max": 3167,
+      "dropoutPct": 2.9
+    },
+    {
+      "day": "2026-08-19",
+      "n": 2411,
+      "min": 174,
+      "p10": 2615,
+      "median": 2817,
+      "p90": 2954,
+      "max": 3151,
+      "dropoutPct": 4.9
+    },
+    {
+      "day": "2026-08-20",
+      "n": 2224,
+      "min": 174,
+      "p10": 2632,
+      "median": 2849,
+      "p90": 2961,
+      "max": 3148,
+      "dropoutPct": 4.2
+    },
+    {
+      "day": "2026-08-21",
+      "n": 2339,
+      "min": 174,
+      "p10": 2615,
+      "median": 2828,
+      "p90": 2962,
+      "max": 3165,
+      "dropoutPct": 3
+    },
+    {
+      "day": "2026-08-22",
+      "n": 2596,
+      "min": 174,
+      "p10": 2584,
+      "median": 2786,
+      "p90": 2954,
+      "max": 3097,
+      "dropoutPct": 3.5
+    },
+    {
+      "day": "2026-08-23",
+      "n": 2389,
+      "min": 174,
+      "p10": 2589,
+      "median": 2803,
+      "p90": 2944,
+      "max": 3174,
+      "dropoutPct": 4.5
+    },
+    {
+      "day": "2026-08-24",
+      "n": 2600,
+      "min": 174,
+      "p10": 2595,
+      "median": 2793,
+      "p90": 2947,
+      "max": 3108,
+      "dropoutPct": 3.5
+    },
+    {
+      "day": "2026-08-25",
+      "n": 2646,
+      "min": 174,
+      "p10": 2646,
+      "median": 2829,
+      "p90": 2954,
+      "max": 3094,
+      "dropoutPct": 3.7
+    },
+    {
+      "day": "2026-08-26",
+      "n": 2652,
+      "min": 174,
+      "p10": 2600,
+      "median": 2815,
+      "p90": 2956,
+      "max": 3141,
+      "dropoutPct": 4
+    },
+    {
+      "day": "2026-08-27",
+      "n": 2035,
+      "min": 174,
+      "p10": 2604,
+      "median": 2851,
+      "p90": 2971,
+      "max": 3178,
+      "dropoutPct": 3.7
+    },
+    {
+      "day": "2026-08-28",
+      "n": 2497,
+      "min": 174,
+      "p10": 2644,
+      "median": 2855,
+      "p90": 2973,
+      "max": 3139,
+      "dropoutPct": 2.2
+    },
+    {
+      "day": "2026-08-29",
+      "n": 1985,
+      "min": 174,
+      "p10": 2612,
+      "median": 2826,
+      "p90": 2964,
+      "max": 3119,
+      "dropoutPct": 3.7
+    },
+    {
+      "day": "2026-08-30",
+      "n": 2015,
+      "min": 174,
+      "p10": 2583,
+      "median": 2809,
+      "p90": 2956,
+      "max": 3094,
+      "dropoutPct": 5.7
+    },
+    {
+      "day": "2026-08-31",
+      "n": 1254,
+      "min": 174,
+      "p10": 2607,
+      "median": 2792,
+      "p90": 2923,
+      "max": 3201,
+      "dropoutPct": 5.9
+    },
+    {
+      "day": "2026-09-01",
+      "n": 1439,
+      "min": 174,
+      "p10": 2583,
+      "median": 2805,
+      "p90": 2948,
+      "max": 3120,
+      "dropoutPct": 5.5
+    },
+    {
+      "day": "2026-09-02",
+      "n": 2313,
+      "min": 174,
+      "p10": 2628,
+      "median": 2825,
+      "p90": 2951,
+      "max": 3135,
+      "dropoutPct": 3.6
+    },
+    {
+      "day": "2026-09-03",
+      "n": 2213,
+      "min": 174,
+      "p10": 2643,
+      "median": 2848,
+      "p90": 2964,
+      "max": 3130,
+      "dropoutPct": 4.4
+    },
+    {
+      "day": "2026-09-04",
+      "n": 2860,
+      "min": 174,
+      "p10": 2675,
+      "median": 2850,
+      "p90": 2962,
+      "max": 3154,
+      "dropoutPct": 2
+    },
+    {
+      "day": "2026-09-05",
+      "n": 2168,
+      "min": 174,
+      "p10": 2615,
+      "median": 2809,
+      "p90": 2950,
+      "max": 3086,
+      "dropoutPct": 3.9
+    },
+    {
+      "day": "2026-09-06",
+      "n": 1547,
+      "min": 174,
+      "p10": 2801,
+      "median": 2899,
+      "p90": 2991,
+      "max": 3121,
+      "dropoutPct": 3
+    },
+    {
+      "day": "2026-09-07",
+      "n": 2112,
+      "min": 174,
+      "p10": 2648,
+      "median": 2835,
+      "p90": 2957,
+      "max": 3164,
+      "dropoutPct": 6.1
+    },
+    {
+      "day": "2026-09-08",
+      "n": 1704,
+      "min": 174,
+      "p10": 2342,
+      "median": 2825,
+      "p90": 2947,
+      "max": 3126,
+      "dropoutPct": 7.3
+    },
+    {
+      "day": "2026-09-09",
+      "n": 2639,
+      "min": 174,
+      "p10": 2602,
+      "median": 2837,
+      "p90": 2962,
+      "max": 3116,
+      "dropoutPct": 6.2
+    },
+    {
+      "day": "2026-09-10",
+      "n": 2228,
+      "min": 174,
+      "p10": 2667,
+      "median": 2840,
+      "p90": 2955,
+      "max": 3140,
+      "dropoutPct": 5.6
+    },
+    {
+      "day": "2026-09-11",
+      "n": 1934,
+      "min": 174,
+      "p10": 2615,
+      "median": 2836,
+      "p90": 2962,
+      "max": 3156,
+      "dropoutPct": 5.4
+    },
+    {
+      "day": "2026-09-12",
+      "n": 1729,
+      "min": 174,
+      "p10": 2647,
+      "median": 2821,
+      "p90": 2941,
+      "max": 3086,
+      "dropoutPct": 5
+    },
+    {
+      "day": "2026-09-13",
+      "n": 2689,
+      "min": 174,
+      "p10": 2613,
+      "median": 2828,
+      "p90": 2955,
+      "max": 3134,
+      "dropoutPct": 7.6
+    },
+    {
+      "day": "2026-09-14",
+      "n": 2218,
+      "min": 174,
+      "p10": 2619,
+      "median": 2827,
+      "p90": 2956,
+      "max": 3206,
+      "dropoutPct": 5.3
+    }
+  ]
+}

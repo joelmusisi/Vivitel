@@ -1,0 +1,56 @@
+groups:
+  - name: vivi-vps-alerts
+    rules:
+      - alert: ViviVpsDown
+        expr: up{job="vivi-vps"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Vivitel VPS metrics endpoint is unreachable"
+          description: "Prometheus cannot scrape {{ $labels.instance }} — check systemd service and firewall."
+
+      - alert: ViviSqliteMemoryFallback
+        expr: vivi_storage_sqlite == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "VPS running without persistent SQLite"
+          description: "REQUIRE_PERSISTENT_DB may be misconfigured; data loss risk on restart."
+
+      - alert: ViviPostgresMirrorLag
+        expr: vivi_postgres_mirror_lag_events > 500
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Postgres telemetry mirror is behind SQLite"
+          description: "Lag is {{ $value }} events. Check PG_MIRROR_DATABASE_URL and mirror health."
+
+      - alert: ViviWorkerForwardFailures
+        expr: rate(vivi_worker_forward_failed_total[5m]) > 0.2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Worker telemetry forward failures elevated"
+          description: "VPS → Worker pipeline is failing. Check WORKER_TELEMETRY_FORWARD_URL and API key."
+
+      - alert: ViviHttp429Spike
+        expr: rate(vivi_http_requests_total{status="429"}[5m]) > 1
+        for: 3m
+        labels:
+          severity: warning
+        annotations:
+          summary: "HTTP 429 rate-limit responses spiking"
+          description: "Clients are being throttled — review VPS_RATE_LIMIT_MAX or fleet ingest volume."
+
+      - alert: ViviTraccarOutboxBacklog
+        expr: vivi_traccar_outbox_pending > 50
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Traccar outbox queue backlog"
+          description: "{{ $value }} jobs pending. Check Traccar connectivity."

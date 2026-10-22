@@ -1,0 +1,1 @@
+export const TRAIL_POINT_INTERVAL_MS = 20_000;

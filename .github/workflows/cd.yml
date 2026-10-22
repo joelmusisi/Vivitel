@@ -1,0 +1,160 @@
+name: CD
+
+# Recommended Vivitel pipeline:
+#   CI (typecheck/test/build) → CD (Worker + Pages + VPS image + optional K8s)
+# Cloudflare stays the browser edge; Kubernetes hosts the four VPS module services.
+
+on:
+  workflow_dispatch:
+    inputs:
+      deploy_worker:
+        description: Deploy Cloudflare Worker
+        type: boolean
+        default: true
+      deploy_pages:
+        description: Deploy Cloudflare Pages frontend
+        type: boolean
+        default: true
+      deploy_k8s:
+        description: Build/push VPS image and apply Kubernetes manifests
+        type: boolean
+        default: false
+      image_tag:
+        description: Container image tag
+        type: string
+        default: latest
+  push:
+    branches: [main, master]
+    paths:
+      - "backend/**"
+      - "frontend/**"
+      - "deploy/k8s/**"
+      - ".github/workflows/**"
+
+concurrency:
+  group: cd-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+
+jobs:
+  ci-gate:
+    name: CI gate
+    uses: ./.github/workflows/ci.yml
+
+  deploy-worker:
+    name: Deploy Worker (edge API)
+    needs: ci-gate
+    if: github.event_name == 'workflow_dispatch' && inputs.deploy_worker
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+      - run: npm ci
+      - name: Deploy Wrangler Worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: npx wrangler deploy
+
+  deploy-pages:
+    name: Deploy Pages (frontend)
+    needs: ci-gate
+    if: github.event_name == 'workflow_dispatch' && inputs.deploy_pages
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm run build
+      - name: Publish Cloudflare Pages
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: npx wrangler pages deploy dist --project-name=vivi-telematics
+
+  build-vps-image:
+    name: Build VPS image (Track/Control/Analyse/Deliver)
+    needs: ci-gate
+    if: >
+      github.event_name == 'push' ||
+      (github.event_name == 'workflow_dispatch' && inputs.deploy_k8s)
+    runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.meta.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Image metadata
+        id: meta
+        run: |
+          OWNER=$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')
+          REGISTRY="ghcr.io/${OWNER}"
+          IMAGE="${REGISTRY}/vivitel-vps"
+          TAG="${{ github.event.inputs.image_tag || github.sha }}"
+          echo "image=${IMAGE}:${TAG}" >> "$GITHUB_OUTPUT"
+          echo "image_latest=${IMAGE}:latest" >> "$GITHUB_OUTPUT"
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: backend
+          file: backend/Dockerfile
+          push: true
+          tags: |
+            ${{ steps.meta.outputs.image }}
+            ${{ steps.meta.outputs.image_latest }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy-k8s:
+    name: Deploy Kubernetes modules
+    needs: build-vps-image
+    if: github.event_name == 'workflow_dispatch' && inputs.deploy_k8s
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v4
+      - name: Configure cluster
+        run: |
+          mkdir -p ~/.kube
+          echo "${{ secrets.KUBE_CONFIG }}" | base64 -d > ~/.kube/config
+          chmod 600 ~/.kube/config
+      - name: Apply manifests
+        run: |
+          kubectl apply -f deploy/k8s/00-namespace.yaml
+          kubectl apply -f deploy/k8s/01-shared-data.yaml
+          kubectl apply -f deploy/k8s/02-services.yaml
+          kubectl apply -f deploy/k8s/03-ingress.yaml
+          for dep in vivitel-track vivitel-control vivitel-analyse vivitel-deliver; do
+            kubectl -n vivitel set image "deployment/${dep}" "*=${{ needs.build-vps-image.outputs.image }}" || true
+            kubectl -n vivitel rollout status "deployment/${dep}" --timeout=180s || true
+          done
+      - name: Smoke health
+        run: |
+          kubectl -n vivitel get pods,svc,ingress
+          kubectl -n vivitel get deploy -l 'vivitel.io/service'

@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <script>
+      (function () {
+        var host = window.location.hostname.toLowerCase();
+        var canonical = "us.vivitelematics.ca";
+        var legacyHosts = {
+          "vivitelematics.ca": 1,
+          "www.vivitelematics.ca": 1
+        };
+        var typoHosts = {
+          "us.vivitelematic.ca": 1,
+          "us.vivitelemantics.ca": 1
+        };
+        if (legacyHosts[host] || typoHosts[host]) {
+          window.location.replace(
+            "https://" + canonical + window.location.pathname + window.location.search + window.location.hash
+          );
+        }
+      })();
+    </script>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#080808" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <title>Vivi Telematics</title>
+    <meta name="x-build" content="pages-deploy" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link rel="dns-prefetch" href="https://api.vivitelematics.ca" />
+    <link rel="icon" type="image/svg+xml" href="/logo-vivi-telematics.svg?v=1" />
+    <link rel="apple-touch-icon" href="/logo-vivi-telematics.png?v=1" />
+    <style>
+      html, body, #root { height: 100%; margin: 0; }
+      body { background: #f6f9fa; font-family: system-ui, -apple-system, sans-serif; }
+      #app-boot {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 100dvh;
+        font-weight: 800;
+        font-size: clamp(54px, 8vw, 104px);
+        letter-spacing: 3px;
+        color: #8a929b;
+        animation: app-boot-pulse 1.8s ease-in-out infinite;
+      }
+      @keyframes app-boot-pulse {
+        0%, 100% { opacity: 0.55; transform: scale(0.98); }
+        50% { opacity: 1; transform: scale(1); }
+      }
+    </style>
+    <script type="module" crossorigin src="/static/index-BMWP0Qt1.js"></script>
+    <link rel="modulepreload" crossorigin href="/static/vendor-DI8IOWOi.js">
+    <link rel="modulepreload" crossorigin href="/static/export-vendor-CvilIvnO.js">
+    <link rel="modulepreload" crossorigin href="/static/react-vendor-CEo2GruJ.js">
+    <link rel="modulepreload" crossorigin href="/static/module-analyze-B7G1wXXc.js">
+    <link rel="modulepreload" crossorigin href="/static/module-auth-BV-fM5q_.js">
+    <link rel="modulepreload" crossorigin href="/static/module-control-CE2i9qjE.js">
+    <link rel="modulepreload" crossorigin href="/static/module-deliver-C053wI9w.js">
+    <link rel="modulepreload" crossorigin href="/static/module-home-D--k5ixX.js">
+    <link rel="modulepreload" crossorigin href="/static/module-marketing-CUhv6xZp.js">
+    <link rel="modulepreload" crossorigin href="/static/module-mobile-C0D7gPfo.js">
+    <link rel="modulepreload" crossorigin href="/static/module-track-Dyx-BBhP.js">
+    <link rel="stylesheet" crossorigin href="/static/index-DCGfgct1.css">
+  </head>
+  <body>
+    <div id="root"><div id="app-boot" aria-hidden="true">VT</div></div>
+  </body>
+</html>

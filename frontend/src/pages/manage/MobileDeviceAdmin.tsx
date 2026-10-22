@@ -1,4 +1,8 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { downloadAuthenticatedFile, getBindings } from "../../utils/api";
+import { bindingMatchesSite } from "../../utils/notificationLibraryStore";
+import { readActiveSiteName } from "../../utils/tenantContext";
+import { showToast } from "../../utils/toast";
 import "../../index.css";
 
 type DeviceRow = {
@@ -13,72 +17,67 @@ type DeviceRow = {
   assignedAssets: number;
 };
 
-const devices: DeviceRow[] = [
-  {
-    id: "dev-1",
-    name: "Vivi4000 - CPP TZ",
-    vendor: "Vivi",
-    model: "Vivi4000 Pro",
-    firmware: "v3.2.1",
-    lastSeen: "2 min ago",
-    status: "active",
-    imeiCount: 124,
-    assignedAssets: 98
-  },
-  {
-    id: "dev-2",
-    name: "Teltonika FMX",
-    vendor: "Teltonika",
-    model: "FMX 130",
-    firmware: "v2.9.0",
-    lastSeen: "18 min ago",
-    status: "active",
-    imeiCount: 68,
-    assignedAssets: 52
-  },
-  {
-    id: "dev-3",
-    name: "Mix4000 Standard",
-    vendor: "MiX",
-    model: "MiX4000",
-    firmware: "v5.1.4",
-    lastSeen: "3 hrs ago",
-    status: "maintenance",
-    imeiCount: 210,
-    assignedAssets: 190
-  },
-  {
-    id: "dev-4",
-    name: "Streamax 2CH",
-    vendor: "Streamax",
-    model: "ADX-200",
-    firmware: "v1.8.2",
-    lastSeen: "Yesterday",
-    status: "offline",
-    imeiCount: 36,
-    assignedAssets: 24
-  },
-  {
-    id: "dev-5",
-    name: "ATrack QA Batch",
-    vendor: "ATrack",
-    model: "AT5",
-    firmware: "v4.0.0",
-    lastSeen: "Just now",
-    status: "staging",
-    imeiCount: 12,
-    assignedAssets: 0
-  }
-];
+type DeviceBindingRecord = {
+  id?: string;
+  name?: string;
+  site?: string;
+  deviceType?: string;
+  firmware?: string;
+  status?: string;
+};
 
 export default function MobileDeviceAdmin() {
+  const [devices, setDevices] = useState<DeviceRow[]>([]);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [vendorFilter, setVendorFilter] = useState("all");
   const [modelFilter, setModelFilter] = useState("all");
 
-  const vendors = Array.from(new Set(devices.map((d) => d.vendor)));
-  const models = Array.from(new Set(devices.map((d) => d.model)));
+  useEffect(() => {
+    let mounted = true;
+    const loadDevices = async () => {
+      const bindings = await getBindings<DeviceBindingRecord>("devices").catch(() => []);
+      if (!mounted) return;
+      const activeSite = readActiveSiteName();
+      const rows = bindings
+        .filter((binding) => bindingMatchesSite(binding, activeSite))
+        .map((binding, index) => {
+          const name = String(binding.name ?? "").trim() || `Device ${index + 1}`;
+          const deviceType = String(binding.deviceType ?? "").trim();
+          const statusRaw = String(binding.status ?? "active").trim().toLowerCase();
+          const status: DeviceRow["status"] =
+            statusRaw === "offline" || statusRaw === "maintenance" || statusRaw === "staging"
+              ? statusRaw
+              : "active";
+          return {
+            id: String(binding.id ?? `dev-${index + 1}`),
+            name,
+            vendor: deviceType || "—",
+            model: deviceType || "—",
+            firmware: String(binding.firmware ?? "").trim() || "—",
+            lastSeen: "—",
+            status,
+            imeiCount: 0,
+            assignedAssets: 0
+          } satisfies DeviceRow;
+        });
+      setDevices(rows);
+    };
+    void loadDevices();
+    const handleOrgChange = () => {
+      void loadDevices();
+    };
+    window.addEventListener("vivi:orgchange", handleOrgChange);
+    window.addEventListener("vivi:bindingschange", handleOrgChange);
+    return () => {
+      mounted = false;
+      window.removeEventListener("vivi:orgchange", handleOrgChange);
+      window.removeEventListener("vivi:bindingschange", handleOrgChange);
+    };
+  }, []);
+
+  const vendors = useMemo(() => Array.from(new Set(devices.map((d) => d.vendor).filter((v) => v !== "—"))), [devices]);
+  const models = useMemo(() => Array.from(new Set(devices.map((d) => d.model).filter((v) => v !== "—"))), [devices]);
 
   const filteredDevices = useMemo(() => {
     const query = search.trim().toLowerCase();
@@ -94,53 +93,41 @@ export default function MobileDeviceAdmin() {
       const matchesModel = modelFilter === "all" || device.model === modelFilter;
       return matchesQuery && matchesStatus && matchesVendor && matchesModel;
     });
-  }, [search, statusFilter, vendorFilter, modelFilter]);
+  }, [devices, search, statusFilter, vendorFilter, modelFilter]);
 
-  const summary = useMemo(() => {
-    const total = devices.length;
-    const active = devices.filter((d) => d.status === "active").length;
-    const offline = devices.filter((d) => d.status === "offline").length;
-    const staging = devices.filter((d) => d.status === "staging").length;
-    return { total, active, offline, staging };
-  }, []);
+  const hasActiveFilters =
+    search.trim().length > 0 || statusFilter !== "all" || vendorFilter !== "all" || modelFilter !== "all";
+
+  const handleDownloadMitacSoftware = async () => {
+    const result = await downloadAuthenticatedFile("/downloads/mitac-software", "Vivitel_Mitac_Pack.zip");
+    if (!result.ok) {
+      showToast(result.error ?? "Download failed.", "error");
+      return;
+    }
+    showToast("Mitac software download started.", "success");
+  };
 
   return (
     <div className="page device-admin-page">
       <div className="device-admin-topbar">
         <div>
           <div className="device-admin-title">Mobile Device Admin</div>
-          <div className="device-admin-path">EA-Transfleet Services-… / Africa - MiXEA - Transfleet Services - EAC</div>
+          <div className="device-admin-path">Control / Mobile Device Admin</div>
         </div>
         <div className="device-admin-actions">
           <button
             type="button"
             className="device-admin-btn ghost"
-            data-nav="/measure/insights/reports?category=List%20Reports&report=Current%20Mobile%20Status%20Report"
+            data-nav="/Analyze/insights/reports?category=List%20Reports&report=Current%20Mobile%20Status%20Report"
           >
             View device reports
+          </button>
+          <button type="button" className="device-admin-btn ghost" onClick={() => void handleDownloadMitacSoftware()}>
+            Download Mitac software
           </button>
           <button type="button" className="device-admin-btn ghost">Import list</button>
           <button type="button" className="device-admin-btn">Upload firmware</button>
           <button type="button" className="device-admin-btn primary">Add device</button>
-        </div>
-      </div>
-
-      <div className="device-admin-summary">
-        <div className="device-admin-card">
-          <div className="device-admin-label">Total devices</div>
-          <div className="device-admin-value">{summary.total}</div>
-        </div>
-        <div className="device-admin-card">
-          <div className="device-admin-label">Active</div>
-          <div className="device-admin-value">{summary.active}</div>
-        </div>
-        <div className="device-admin-card">
-          <div className="device-admin-label">Offline</div>
-          <div className="device-admin-value">{summary.offline}</div>
-        </div>
-        <div className="device-admin-card">
-          <div className="device-admin-label">Staging</div>
-          <div className="device-admin-value">{summary.staging}</div>
         </div>
       </div>
 
@@ -207,7 +194,11 @@ export default function MobileDeviceAdmin() {
               </div>
             </div>
           ))}
-          {filteredDevices.length === 0 && <div className="device-admin-empty">No devices match this filter.</div>}
+          {filteredDevices.length === 0 && (
+            <div className="device-admin-empty">
+              {hasActiveFilters ? "No devices match this filter." : "No records yet."}
+            </div>
+          )}
         </div>
       </section>
     </div>
