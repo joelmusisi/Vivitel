@@ -1,0 +1,25 @@
+# Local secrets for `wrangler dev`. Copy to backend/.dev.vars (gitignored) and fill in.
+# In Cloudflare these are set with `wrangler secret put <NAME>`, not in wrangler.toml.
+# Non-secret settings (TRACCAR_BASE_URL, TRACCAR_USERNAME, ADMIN_EMAIL, ...) live in wrangler.toml [vars].
+
+# API access (server-to-server). Must NOT equal the frontend's public VITE_API_KEY.
+API_KEY=
+API_KEY_PERMANENT=
+ADMIN_API_KEY=
+
+# Admin bootstrap
+ADMIN_PASSWORD=
+ALLOW_ADMIN_BOOTSTRAP=false
+
+# Traccar (use a token, or username + password)
+TRACCAR_TOKEN=
+TRACCAR_PASSWORD=
+TRACCAR_WEBHOOK_SECRET=
+
+# CMS808 / CMSV6 video platform
+CMS808_ACCOUNT=
+CMS808_PASSWORD=
+
+# Email
+RESEND_API_KEY=
+DEMO_SUPPORT_NOTIFY_EMAILS=
