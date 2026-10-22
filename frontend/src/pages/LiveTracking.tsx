@@ -1939,6 +1939,22 @@ const formatDriverValue = (value: unknown): string => {
   return text;
 };
 
+/**
+ * Opt-in diagnostics: localStorage "vivi.debug.liveStatus" = "1" logs every status or
+ * position change on Live Tracking with the code path that made it ([vivi-live-status]).
+ */
+let lastRowWriter = "initial";
+const noteRowWriter = (source: string) => {
+  lastRowWriter = source;
+};
+const liveStatusTraceEnabled = () => {
+  try {
+    return typeof window !== "undefined" && window.localStorage.getItem("vivi.debug.liveStatus") === "1";
+  } catch {
+    return false;
+  }
+};
+
 /** While a vehicle has a Traccar fix this recent, the telemetry stream does not override it. */
 const TRACCAR_PRIMARY_WINDOW_MS = 10 * 60_000;
 
@@ -2378,6 +2394,7 @@ export default function LiveTracking() {
     byKey: new Map()
   });
   const assetRowsRef = useRef<AssetRow[]>([]);
+  const liveStatusTraceRef = useRef(new Map<string, { status: string; lat: number; lng: number }>());
   const selectedAssetsRef = useRef<Set<string>>(new Set());
   const traccarBaseUrlRef = useRef<string>("");
   const fuelChartSvgRef = useRef<SVGSVGElement | null>(null);
@@ -2545,6 +2562,7 @@ export default function LiveTracking() {
     if (body?.latest) {
       const lastSeen = body.latest.at ?? "";
       const speed = body.latest.speed ?? undefined;
+      noteRowWriter("diagnostics");
       setAssetRows((prev) => {
         const next = prev.map((r) => ({ ...r }));
         const idx = next.findIndex((r) => String(r.imei ?? "").trim() === imei);
@@ -2921,6 +2939,7 @@ export default function LiveTracking() {
                 let lastLat: number | null = null;
                 let lastLng: number | null = null;
                 let lastId: string | null = null;
+                noteRowWriter("telemetry-stream");
                 setAssetRows((prev) => {
                   const map = new Map(prev.map((r) => [r.id, { ...r }]));
                   const trailCandidates: Array<{ id: string; lat: number; lng: number; atMs: number }> = [];
@@ -3535,6 +3554,43 @@ export default function LiveTracking() {
   const [assetRows, setAssetRows] = useState<AssetRow[]>(() => readCachedAssetRows());
   assetRowsRef.current = assetRows;
 
+  // Opt-in trace (see liveStatusTraceEnabled): which code path changed status / position.
+  useEffect(() => {
+    const previous = liveStatusTraceRef.current;
+    const next = new Map<string, { status: string; lat: number; lng: number }>();
+    const changes: Array<Record<string, unknown>> = [];
+    for (const row of assetRows) {
+      const id = String(row.id ?? row.imei ?? "").trim();
+      if (!id) continue;
+      const entry = { status: resolveAssetDotStatus(row as any), lat: Number(row.lat), lng: Number(row.lng) };
+      next.set(id, entry);
+      const before = previous.get(id);
+      if (!before) continue;
+      const moved =
+        Number.isFinite(before.lat) && Number.isFinite(entry.lat)
+          ? Math.hypot(entry.lat - before.lat, entry.lng - before.lng) > 0.01
+          : before.lat !== entry.lat;
+      if (before.status !== entry.status || moved) {
+        changes.push({
+          asset: row.registration || row.assetDescription || id,
+          status: `${before.status}→${entry.status}`,
+          ...(moved ? { jumpedKm: Math.round(Math.hypot(entry.lat - before.lat, entry.lng - before.lng) * 111) } : {}),
+          speedKph: row.speedKph,
+          speed: row.speed,
+          liveSource: row.liveSource,
+          liveFixAt: row.liveFixAtMs ? new Date(row.liveFixAtMs).toISOString() : undefined
+        });
+      }
+    }
+    for (const id of previous.keys()) {
+      if (!next.has(id)) changes.push({ asset: id, status: "removed from list" });
+    }
+    liveStatusTraceRef.current = next;
+    if (changes.length && liveStatusTraceEnabled()) {
+      console.log(`[vivi-live-status] ${new Date().toISOString()} by ${lastRowWriter}: ${changes.length} change(s)`, changes);
+    }
+  }, [assetRows]);
+
   useEffect(() => {
     const tenantId = String(getTenantId() ?? "").trim();
     if (!tenantId || assetRows.length === 0) return;
@@ -3576,6 +3632,7 @@ export default function LiveTracking() {
   useEffect(() => {
     if (!assetRows.length) return;
     const refreshStatuses = () => {
+      noteRowWriter("status-timer");
       setAssetRows((prev) => {
         let changed = false;
         const next = prev.map((row) => {
@@ -3726,6 +3783,7 @@ export default function LiveTracking() {
         }
         if (!mounted) return rows;
         if (rows.length) {
+          noteRowWriter("cms808-paint");
           setAssetRows((current) => {
             const others = current.filter((row) => !isCms808LiveAsset(row));
             return [...rows, ...others];
@@ -3816,6 +3874,7 @@ export default function LiveTracking() {
             const pendingScopeSignature = pendingRefreshScopeRef.current || requestScopeSignature;
             const isNewScope = pendingScopeSignature !== lastSuccessfulScopeRef.current;
             if (isNewScope) {
+              noteRowWriter("scope-clear");
               setAssetRows([]);
               setSelectedAssets(new Set());
               if (mounted && scopeRetryRef.current < 3) {
@@ -3934,6 +3993,7 @@ export default function LiveTracking() {
 
       const allMappedBase = mapped.filter(Boolean) as AssetRow[];
       if (allMappedBase.length) {
+        noteRowWriter("reload-stored");
         setAssetRows((current) => {
           const merged = mergeAssetRows(current, allMappedBase);
           // Keep live-only (808) rows until the full merge below so they don't vanish mid-refresh.
@@ -4041,6 +4101,7 @@ export default function LiveTracking() {
         if (next.size === current.size) return current;
         return next;
       });
+      noteRowWriter("reload-stored");
       setAssetRows((current) => mergeAssetRows(current, allMapped));
 
       const liveByImei = await fetchTraccarLiveSnapshotsByImei();
@@ -4063,6 +4124,7 @@ export default function LiveTracking() {
       scopeRetryRef.current = 0;
       lastSuccessfulScopeRef.current = requestScopeSignature;
 
+      noteRowWriter("reload-live");
       setAssetRows((current) => mergeAssetRows(current, withLive));
 
       // UK: when config → device binding has CAN library on C1/C2, pull GetCanBus into live rows.
@@ -4089,6 +4151,7 @@ export default function LiveTracking() {
             })
           );
           if (!mounted) return;
+          noteRowWriter("reload-can");
           setAssetRows((current) => mergeAssetRows(current, enriched));
         })();
       }
@@ -4135,6 +4198,7 @@ export default function LiveTracking() {
         )
       ).filter((row): row is AssetRow => Boolean(row));
       if (!cancelled && liveRows.length) {
+        noteRowWriter("cms808-poll");
         setAssetRows((prev) => {
           const used = new Set<string>();
           const next = prev.map((row) => {
@@ -4173,6 +4237,7 @@ export default function LiveTracking() {
       if (liveByImei.size) {
         await ensureBindingFuelCache(assetRowsRef.current);
         if (cancelled) return;
+        noteRowWriter("http-live-poll");
         setAssetRows((prev) =>
           prev.map((row) => {
             const imei = normalizeImeiCandidate(row.imei);
@@ -4226,6 +4291,7 @@ export default function LiveTracking() {
         const liveByImei = buildTraccarLiveSnapshotsFromRows(live);
         if (!liveByImei.size) return;
         void ensureBindingFuelCache(assetRowsRef.current).then(() => {
+          noteRowWriter("ws-live");
           setAssetRows((prev) =>
             prev.map((row) => {
               const imei = normalizeImeiCandidate(row.imei);
@@ -5403,6 +5469,7 @@ export default function LiveTracking() {
 
         if (typeof current.fuelLevel === "number" && Number.isFinite(current.fuelLevel)) {
           const litersLabel = formatFuelLiters(current.fuelLevel);
+          noteRowWriter("fuel");
           setAssetRows((rows) =>
             rows.map((row) =>
               row.id === asset.id || row.assetId === asset.assetId || row.imei === asset.imei
@@ -5786,6 +5853,7 @@ export default function LiveTracking() {
     if (!assetRows.length) return;
     const cache = reverseGeocodeCacheRef.current;
     if (!cache.size) return;
+    noteRowWriter("geocode");
     setAssetRows((prev) => {
       let changed = false;
       const next = prev.map((row) => {
@@ -5816,6 +5884,7 @@ export default function LiveTracking() {
     const cached = String(reverseGeocodeCacheRef.current.get(key) ?? "").trim();
     if (hasRealLocationLabel(cached)) {
       if (!hasRealLocationLabel(asset.location)) {
+        noteRowWriter("geocode");
         setAssetRows((prev) => {
           let changed = false;
           const next = prev.map((row) => {
@@ -5865,6 +5934,7 @@ export default function LiveTracking() {
 
         reverseGeocodeCacheRef.current.set(key, resolved);
         persistReverseGeocodeCache(reverseGeocodeCacheRef.current);
+        noteRowWriter("geocode");
         setAssetRows((prev) => {
           let changed = false;
           const next = prev.map((row) => {
@@ -6184,6 +6254,7 @@ export default function LiveTracking() {
         if (!resolvedByKey.size) return;
 
         persistReverseGeocodeCache(reverseGeocodeCacheRef.current);
+        noteRowWriter("geocode");
         setAssetRows((prev) =>
           prev.map((row) => {
             if (hasRealLocationLabel(row.location)) return row;

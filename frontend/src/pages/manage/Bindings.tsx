@@ -240,6 +240,8 @@ type AdvancedSettings = {
   buzzerOnIgnition: string;
   buzzerFrequency: number;
   buzzerVolume: string;
+  /** Let notification-library alerts pulse relay drive 1 (immobilizer) / 2. Off unless chosen. */
+  relayAlertsEnabled?: boolean;
   sendAvlsEnabled: boolean;
   sendAvlTripFrequency: { hours: number; minutes: number; seconds: number };
   sendAvlHeadingChange: number;
@@ -328,6 +330,7 @@ const createDefaultAdvancedSettings = (): AdvancedSettings => ({
   buzzerOnIgnition: "Sound the buzzer for 10 seconds",
   buzzerFrequency: 4000,
   buzzerVolume: "Full Volume",
+  relayAlertsEnabled: false,
   sendAvlsEnabled: true,
   sendAvlTripFrequency: { hours: 0, minutes: 0, seconds: 40 },
   sendAvlHeadingChange: 10,
@@ -3976,6 +3979,22 @@ export default function Bindings() {
                                 <option value="Engine revs only">Engine revs only</option>
                               </select>
                             </div>
+                          </div>
+
+                          <div className="bindings-advanced-section">
+                            <label className="bindings-advanced-toggle">
+                              <input
+                                type="checkbox"
+                                checked={Boolean(settings.relayAlertsEnabled)}
+                                onChange={(event) =>
+                                  updateAdvancedSettings(index, (current) => ({
+                                    ...current,
+                                    relayAlertsEnabled: event.target.checked
+                                  }))
+                                }
+                              />
+                              Allow alerts to switch relays (relay drive 1 is the immobilizer)
+                            </label>
                           </div>
 
                           <div className="bindings-advanced-section">

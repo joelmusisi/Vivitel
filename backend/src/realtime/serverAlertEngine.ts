@@ -15,11 +15,22 @@ import { bindingCoversSiteEvent } from "../shared/siteNotificationScope";
 import { resolveUserAlertDeliveryFromParameters } from "../shared/notificationAlertDelivery";
 import { bindingHasExplicitRecipients, type UserAlertDispatchEnv } from "../shared/userAlertDispatch";
 import { createVpsKvNamespace, routeOperationalD1ToVps } from "../shared/vpsWorkerStorage";
+import {
+  allowedDeviceActions,
+  createTraccarSender,
+  digitalOutputCommand,
+  libraryRowDeviceActions,
+  loadAssetDeviceBinding,
+  sendDeviceCommand,
+  type DeviceActionKind
+} from "../shared/alertDeviceActions";
 
 /** Asset/site lookup, site rules and bindings are re-read this often. */
 const CACHE_TTL_MS = 3 * 60_000;
 
-type AssetRef = { tenantId: string; site: string; label: string };
+type AssetRef = { tenantId: string; site: string; label: string; asset: Record<string, unknown> };
+/** Episode state plus which buzzer / relay actions already ran, and which are held on. */
+type EngineEpisode = RuleEpisodeState & { actionsDone?: DeviceActionKind[]; continuousOn?: DeviceActionKind[] };
 type SiteRules = { rows: ServerLibraryRow[]; catalog: ParameterCatalogRow[] };
 type Cached<T> = { at: number; value: Promise<T> };
 
@@ -54,7 +65,8 @@ export class ServerAlertEngine {
   private assets: Cached<Map<string, AssetRef[]>> | undefined;
   private siteRules = new Map<string, Cached<SiteRules>>();
   private bindings = new Map<string, Cached<any[]>>();
-  private episodes = new Map<string, RuleEpisodeState>();
+  private episodes = new Map<string, EngineEpisode>();
+  private deviceBindings = new Map<string, Promise<Set<DeviceActionKind>>>();
 
   private readonly env: UserAlertDispatchEnv;
 
@@ -70,14 +82,14 @@ export class ServerAlertEngine {
   }
 
   /** Restore episode state saved by the previous cron run. */
-  loadEpisodes(saved: Record<string, RuleEpisodeState> | null | undefined) {
+  loadEpisodes(saved: Record<string, EngineEpisode> | null | undefined) {
     for (const [episodeKey, state] of Object.entries(saved ?? {})) {
       if (state && typeof state === "object") this.episodes.set(episodeKey, state);
     }
   }
 
-  exportEpisodes(now = Date.now()): Record<string, RuleEpisodeState> {
-    const out: Record<string, RuleEpisodeState> = {};
+  exportEpisodes(now = Date.now()): Record<string, EngineEpisode> {
+    const out: Record<string, EngineEpisode> = {};
     for (const [episodeKey, state] of this.episodes) {
       if (now - Number(state.lastFixMs ?? 0) < EPISODE_MAX_AGE_MS) out[episodeKey] = state;
     }
@@ -103,7 +115,7 @@ export class ServerAlertEngine {
           const site = String(asset?.site ?? "").trim();
           if (!imei || !site) continue;
           const label = String(asset?.assetDescription ?? asset?.registration ?? asset?.name ?? imei).trim();
-          map.set(imei, [...(map.get(imei) ?? []), { tenantId, site, label }]);
+          map.set(imei, [...(map.get(imei) ?? []), { tenantId, site, label, asset: asset ?? {} }]);
         }
         return map;
       })
@@ -124,7 +136,7 @@ export class ServerAlertEngine {
     return value;
   }
 
-  /** Custom rules on this site that are monitored by an alert with people added. */
+  /** Custom rules on this site that an alert on the site monitors and that do something (send or act). */
   private loadSiteRules(tenantId: string, site: string): Promise<SiteRules> {
     const cacheKey = `${tenantId}|${site.toLowerCase()}`;
     const hit = this.siteRules.get(cacheKey);
@@ -138,16 +150,19 @@ export class ServerAlertEngine {
       .then(([libraryRaw, catalogRaw, bindings]) => {
         const library = parseJson<{ items?: ServerLibraryRow[] }>(libraryRaw)?.items ?? [];
         const catalog = parseJson<{ items?: ParameterCatalogRow[] }>(catalogRaw)?.items ?? [];
-        const watched = bindings.filter(
-          (binding) => siteScopesMatch(String(binding?.site ?? ""), site) && bindingHasExplicitRecipients(binding)
-        );
-        const rows = library.filter(
-          (row) =>
-            isServerEvaluatedLibraryRow(row)
-            // "Send active message" off (or no channel ticked) means the alert sends nothing.
-            && Boolean(resolveUserAlertDeliveryFromParameters((row.parameters ?? null) as Record<string, unknown> | null))
-            && watched.some((binding) => bindingCoversSiteEvent(binding, String(row.description ?? ""), site))
-        );
+        const onSite = bindings.filter((binding) => siteScopesMatch(String(binding?.site ?? ""), site));
+        const rows = library.filter((row) => {
+          if (!isServerEvaluatedLibraryRow(row)) return false;
+          const description = String(row.description ?? "");
+          // "Send active message" off (or no channel ticked) means no email / in-app / SMS.
+          const sends =
+            Boolean(resolveUserAlertDeliveryFromParameters((row.parameters ?? null) as Record<string, unknown> | null))
+            && onSite.some((binding) => bindingHasExplicitRecipients(binding) && bindingCoversSiteEvent(binding, description, site));
+          const acts =
+            libraryRowDeviceActions(row as any).length > 0
+            && onSite.some((binding) => bindingCoversSiteEvent(binding, description, site));
+          return sends || acts;
+        });
         return { rows, catalog };
       })
       .catch(() => ({ rows: [], catalog: [] }));
@@ -170,9 +185,20 @@ export class ServerAlertEngine {
         const description = String(row.description ?? "").trim();
         const episodeKey = `${deviceId}|${ref.tenantId}|${description.toLowerCase()}`;
         const matched = evaluateLibraryRow(row, position, catalog);
-        const step = advanceRuleEpisode(this.episodes.get(episodeKey), matched, fixMs, libraryRowDelayMs(row));
-        this.episodes.set(episodeKey, step.state);
+        const previous = this.episodes.get(episodeKey);
+        const step = advanceRuleEpisode(previous, matched, fixMs, libraryRowDelayMs(row));
+        const next: EngineEpisode = { ...step.state };
+        // Buzzer / relay actions keep their own progress within the same episode.
+        if (matched && previous && previous.since === step.state.since) {
+          next.actionsDone = previous.actionsDone;
+          next.continuousOn = previous.continuousOn;
+        } else if (!matched && previous?.continuousOn?.length) {
+          next.continuousOn = previous.continuousOn;
+        }
+        await this.runDeviceActions(ref, row, deviceId, matched, fixMs, next);
+        this.episodes.set(episodeKey, next);
         if (!step.fire) continue;
+        if (!resolveUserAlertDeliveryFromParameters((row.parameters ?? null) as Record<string, unknown> | null)) continue;
         fired += 1;
         await this.fire(ref.tenantId, description, position, fixMs).catch((error) =>
           console.warn("Server alert dispatch failed:", { tenantId: ref.tenantId, description, error })
@@ -180,6 +206,58 @@ export class ServerAlertEngine {
       }
     }
     return fired;
+  }
+
+  private allowedActionsFor(ref: AssetRef): Promise<Set<DeviceActionKind>> {
+    const key = `${ref.tenantId}|${String(ref.asset.id ?? ref.asset.imei ?? ref.label)}`;
+    let hit = this.deviceBindings.get(key);
+    if (!hit) {
+      hit = loadAssetDeviceBinding(this.env, ref.tenantId, ref.asset)
+        .then((binding) => allowedDeviceActions(binding))
+        .catch(() => new Set<DeviceActionKind>());
+      this.deviceBindings.set(key, hit);
+    }
+    return hit;
+  }
+
+  /**
+   * Buzzer / relay drive actions from the library row: each runs once per episode after its
+   * own delay; "continuously when the condition is true" stays on until the condition clears.
+   * Only actions the device binding allows are sent (buzzer master switch, relay opt-in).
+   */
+  private async runDeviceActions(
+    ref: AssetRef,
+    row: ServerLibraryRow,
+    deviceId: number,
+    matched: boolean,
+    fixMs: number,
+    episode: EngineEpisode
+  ) {
+    const actions = libraryRowDeviceActions(row as any);
+    if (!actions.length) return;
+    const send = createTraccarSender(this.env);
+    if (!matched) {
+      for (const kind of episode.continuousOn ?? []) {
+        const action = actions.find((item) => item.kind === kind);
+        if (action) await sendDeviceCommand(send, deviceId, digitalOutputCommand(action.output, false));
+      }
+      episode.continuousOn = undefined;
+      episode.actionsDone = undefined;
+      return;
+    }
+    if (episode.since == null) return;
+    const allowed = await this.allowedActionsFor(ref);
+    const done = new Set(episode.actionsDone ?? []);
+    const held = new Set(episode.continuousOn ?? []);
+    for (const action of actions) {
+      if (done.has(action.kind) || !allowed.has(action.kind)) continue;
+      if (fixMs - episode.since < action.delayMs) continue;
+      await sendDeviceCommand(send, deviceId, digitalOutputCommand(action.output, true, action.seconds));
+      done.add(action.kind);
+      if (action.seconds === null) held.add(action.kind);
+    }
+    episode.actionsDone = [...done];
+    episode.continuousOn = held.size ? [...held] : undefined;
   }
 
   private async fire(tenantId: string, description: string, position: any, fixMs: number) {
@@ -230,7 +308,7 @@ export async function runServerAlertRules(
 
   const engine = new ServerAlertEngine(env, { routeStorage: false });
   const savedRaw = await env.ViviTEL.get(EPISODES_KEY).catch(() => null);
-  engine.loadEpisodes(parseJson<Record<string, RuleEpisodeState>>(savedRaw));
+  engine.loadEpisodes(parseJson<Record<string, EngineEpisode>>(savedRaw));
   const before = JSON.stringify(engine.exportEpisodes());
 
   let fired = 0;

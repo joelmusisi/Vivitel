@@ -85,6 +85,9 @@ export type UserAlertDispatchEnv = {
   TRACCAR_USERNAME?: string;
   TRACCAR_PASSWORD?: string;
   GOOGLE_MAPS_API_KEY?: string;
+  AFRICASTALKING_USERNAME?: string;
+  AFRICASTALKING_API_KEY?: string;
+  AFRICASTALKING_SENDER_ID?: string;
 };
 
 type TraccarFetchResult = { ok: boolean; status: number; body: unknown };

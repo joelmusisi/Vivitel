@@ -131,3 +131,70 @@ describe("cron runner", () => {
     expect(dispatch).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("buzzer / relay actions from rules", () => {
+  beforeEach(() => dispatch.mockClear());
+
+  it("sounds the buzzer after its delay, holds it while true, switches it off when cleared", async () => {
+    const sent: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init?: RequestInit) => {
+        sent.push(JSON.parse(String(init?.body ?? "{}"))?.attributes?.data);
+        return new Response("{}", { status: 200 });
+      })
+    );
+    const rule = {
+      ...overSpeed,
+      parameters: {
+        ...overSpeed.parameters,
+        actions: {
+          buzzer: { enabled: true, delay: { hours: "0", minutes: "0", seconds: "30" }, duration: "Sound buzzer continuously when the condition is true" },
+          relayOne: { enabled: true, delay: { hours: "0", minutes: "0", seconds: "0" }, duration: "Turn the relay drive on for 2 seconds" }
+        }
+      }
+    };
+    const rows: Record<string, unknown[]> = {
+      assets: [{ imei: IMEI, site: SITE, configGroup: "Trucks" }],
+      notifications: watching,
+      devices: [{ name: "FMB", site: SITE, advancedSettings: { buzzerEnabled: true } }],
+      configuration_groups: [{ name: "Trucks", site: SITE, deviceBinding: "FMB" }]
+    };
+    const db = {
+      prepare: (sql: string) => {
+        let args: unknown[] = [];
+        const statement = {
+          bind: (...values: unknown[]) => {
+            args = values;
+            return statement;
+          },
+          all: async () => {
+            const key = /FROM assets/.test(sql) ? "assets" : /configuration_groups/.test(sql) ? "configuration_groups" : String(args[1]);
+            const list = rows[key] ?? [];
+            return { results: list.map((row) => (key === "assets" ? { tenantId: TENANT, data: JSON.stringify(row) } : { data: JSON.stringify(row) })) };
+          }
+        };
+        return statement;
+      }
+    } as unknown as D1Database;
+    const engine = new ServerAlertEngine(
+      {
+        ViviTEL: kvWith({ [buildScopedKvKey("libraries:notification", TENANT, SITE)]: JSON.stringify({ items: [rule] }) }),
+        VIVI_D1: db,
+        TRACCAR_BASE_URL: "https://traccar.test",
+        TRACCAR_TOKEN: "t"
+      } as any,
+      { routeStorage: false }
+    );
+    const device = { uniqueId: IMEI };
+    await engine.onPosition(at(0, 100), device);
+    await engine.onPosition(at(20, 100), device);
+    await engine.onPosition(at(40, 100), device);
+    await engine.onPosition(at(50, 100), device);
+    await engine.onPosition(at(60, 30), device);
+
+    // Relay 1 is not allowed by this binding (no relay opt-in); the buzzer is.
+    expect(sent).toEqual(["setdigout ?1", "setdigout ?0"]);
+    vi.unstubAllGlobals();
+  });
+});

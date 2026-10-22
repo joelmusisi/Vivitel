@@ -7,6 +7,16 @@ import {
 } from "./alertEmailDelivery";
 import { buildAlertMapAttachment } from "./alertMapImage";
 import {
+  CONTINUOUS_FALLBACK_SECONDS,
+  allowedDeviceActions,
+  createTraccarSender,
+  digitalOutputCommand,
+  libraryRowDeviceActions,
+  loadAssetDeviceBinding,
+  sendDeviceCommand
+} from "./alertDeviceActions";
+import { buildAlertSmsText, sendAlertSmsOnce } from "./alertSms";
+import {
   buildAlertMapImageUrl,
   buildDeviceAlertEmailHtml,
   buildDeviceAlertEmailSubject,
@@ -372,6 +382,9 @@ export async function dispatchDeviceAlertEmailsForTraccarEvent(
   const resolveEmail = createRecipientEmailResolver(env);
   const eventKey = alertEmailEventKey({ ...input.traccarEvent, type: eventType });
   const emailTooOld = isAlertTooOldToEmail(eventTime);
+  const textedNumbers = new Set<string>();
+  const actedAssets = new Set<string>();
+  const traccarSend = createTraccarSender(env);
   for (const { binding, asset, notificationName } of matches) {
     const assetSite = String(asset.site ?? "").trim();
     const siteLibrary = libraryBySite.get(assetSite) ?? [];
@@ -381,11 +394,14 @@ export async function dispatchDeviceAlertEmailsForTraccarEvent(
     const libraryRow = siteLibrary.find(
       (row) => String(row.description ?? "").trim().toLowerCase() === notificationName.toLowerCase()
     );
-    const delivery = resolveUserAlertDeliveryFromParameters(
+    const resolvedDelivery = resolveUserAlertDeliveryFromParameters(
       (libraryRow?.parameters ?? null) as Record<string, unknown> | null,
       { locationAlert: isGeofence }
     );
-    if (!delivery || (!delivery.email && !delivery.inApp)) continue;
+    const hasDeviceActions = Boolean(libraryRow && libraryRowDeviceActions(libraryRow as any).length);
+    // Nothing to do: no channel ticked and no buzzer / relay action on the alert.
+    if (!resolvedDelivery && !hasDeviceActions) continue;
+    const delivery = resolvedDelivery ?? { email: false, inApp: false, sms: false };
 
     const emailEvent = buildEmailEventFromContext({
       asset,
@@ -431,6 +447,40 @@ export async function dispatchDeviceAlertEmailsForTraccarEvent(
         // Continue with other recipients; this one is retried on the next poll.
         retryableEmailFailures.push(error);
         console.warn("Device alert email failed:", email, error);
+      }
+    }
+
+    // SMS (library "SMS" tick) to every person on the alert with a mobile number.
+    if (delivery.sms && !emailTooOld) {
+      const smsText = buildAlertSmsText({
+        notificationName,
+        assetLabel: emailEvent.assetDescription || "Asset",
+        eventTime: emailEvent.eventDateTime,
+        location: emailEvent.locationName,
+        speedKph: Number.parseFloat(String(emailEvent.actualSpeed ?? ""))
+      });
+      const people = [...(binding.emailRecipients ?? []), ...(binding.pushRecipients ?? [])];
+      for (const person of people) {
+        const mobile = String(person?.mobile ?? "").trim();
+        if (!mobile || textedNumbers.has(mobile)) continue;
+        textedNumbers.add(mobile);
+        await sendAlertSmsOnce(env, { tenantId, eventKey, to: mobile, message: smsText });
+      }
+    }
+
+    // Buzzer / relay actions for events Traccar raises (Vivitel's own rules time these
+    // themselves, with their delays). Gated by the device binding's master switches.
+    if (!serverRule && !emailTooOld && libraryRow && !actedAssets.has(String(asset.id ?? asset.imei ?? ""))) {
+      actedAssets.add(String(asset.id ?? asset.imei ?? ""));
+      const deviceBinding = await loadAssetDeviceBinding(env, tenantId, asset).catch(() => null);
+      const allowed = allowedDeviceActions(deviceBinding);
+      for (const action of libraryRowDeviceActions(libraryRow as any)) {
+        if (!allowed.has(action.kind) || action.delayMs > 0) continue;
+        await sendDeviceCommand(
+          traccarSend,
+          deviceId,
+          digitalOutputCommand(action.output, true, action.seconds ?? CONTINUOUS_FALLBACK_SECONDS)
+        );
       }
     }
 
