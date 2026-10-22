@@ -136,6 +136,16 @@ describe("buildComputedAttributeExpressionFromLibrary", () => {
     expect(expression).toContain("speed * 1.852");
     expect(expression).toContain("speedKph - maxSpeedKph");
   });
+
+  it("keeps the row's other conditions in the overspeed excess", () => {
+    const expression = buildOverSpeedExcessJexlExpression([
+      { id: 1, field: "Speed", operator: ">", value: "80", join: "and" },
+      { id: 2, field: "Ignition", operator: "is", value: "true" }
+    ]);
+    expect(expression).toBe(
+      "var maxSpeedKph = 80; var speedKph = speed * 1.852; (ignition == true) && speedKph > maxSpeedKph ? speedKph - maxSpeedKph : null"
+    );
+  });
 });
 
 describe("resolveExpressionParameterName", () => {

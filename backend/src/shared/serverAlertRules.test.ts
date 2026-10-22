@@ -87,3 +87,40 @@ describe("firing", () => {
     expect(advanceRuleEpisode({ ...first.state, fired: false }, true, 50_000, 0).fire).toBe(false);
   });
 });
+
+describe("demo Over Speeding row (all settings filled in)", () => {
+  // Same row the library editor saves: Speed > 80 AND Ignition is true, 30 s delay.
+  const demo = {
+    description: "Over Speeding",
+    type: "Custom",
+    availability: "Available",
+    parameters: {
+      conditions: [
+        { field: "Speed", operator: ">", value: "80", join: "and" },
+        { field: "Ignition", operator: "is", value: "true" }
+      ],
+      returnValue: { param: "No return value", mode: "None" },
+      record: { event: true, delay: { hours: "0", minutes: "0", seconds: "30" }, recordingType: "Alert" },
+      active: { enabled: true, userAlerts: { email: true, inApp: true, sms: false } }
+    }
+  };
+
+  it("is evaluated by Vivitel, needs both conditions, and waits for the delay", () => {
+    expect(isServerEvaluatedLibraryRow(demo)).toBe(true);
+    expect(libraryRowDelayMs(demo)).toBe(30_000);
+    expect(evaluateLibraryRow(demo, position(95, { ignition: false }))).toBe(false);
+    expect(evaluateLibraryRow(demo, position(79, { ignition: true }))).toBe(false);
+    expect(evaluateLibraryRow(demo, position(95, { ignition: true }))).toBe(true);
+
+    let state;
+    const fireAt = (second: number, speed: number) => {
+      const step = advanceRuleEpisode(state, evaluateLibraryRow(demo, position(speed, { ignition: true })), second * 1000, 30_000);
+      state = step.state;
+      return step.fire;
+    };
+    expect(fireAt(0, 95)).toBe(false);
+    expect(fireAt(20, 96)).toBe(false);
+    expect(fireAt(35, 97)).toBe(true);
+    expect(fireAt(60, 99)).toBe(false);
+  });
+});

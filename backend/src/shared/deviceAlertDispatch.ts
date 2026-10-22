@@ -28,6 +28,7 @@ import {
   type ServerLibraryRow
 } from "./serverAlertRules";
 import { libraryNotificationIsAvailable, bindingCoversSiteEvent } from "./siteNotificationScope";
+import { resolveUserAlertDeliveryFromParameters } from "./notificationAlertDelivery";
 import {
   alertDedupeKey,
   appendInAppAlert,
@@ -373,7 +374,18 @@ export async function dispatchDeviceAlertEmailsForTraccarEvent(
   const emailTooOld = isAlertTooOldToEmail(eventTime);
   for (const { binding, asset, notificationName } of matches) {
     const assetSite = String(asset.site ?? "").trim();
-    if (!libraryNotificationIsAvailable(libraryBySite.get(assetSite) ?? [], notificationName)) continue;
+    const siteLibrary = libraryBySite.get(assetSite) ?? [];
+    if (!libraryNotificationIsAvailable(siteLibrary, notificationName)) continue;
+    // The library row decides the channels: "Send active message" must be on, and only
+    // the ticked channels are used (location alerts use Record → Alert). Same rule as user alerts.
+    const libraryRow = siteLibrary.find(
+      (row) => String(row.description ?? "").trim().toLowerCase() === notificationName.toLowerCase()
+    );
+    const delivery = resolveUserAlertDeliveryFromParameters(
+      (libraryRow?.parameters ?? null) as Record<string, unknown> | null,
+      { locationAlert: isGeofence }
+    );
+    if (!delivery || (!delivery.email && !delivery.inApp)) continue;
 
     const emailEvent = buildEmailEventFromContext({
       asset,
@@ -401,7 +413,7 @@ export async function dispatchDeviceAlertEmailsForTraccarEvent(
     const text = buildDeviceAlertEmailText(emailEvent, emailOptions);
     const html = buildDeviceAlertEmailHtml(emailEvent, emailOptions);
 
-    for (const recipient of emailTooOld ? [] : readBindingEmailRecipients(binding)) {
+    for (const recipient of emailTooOld || !delivery.email ? [] : readBindingEmailRecipients(binding)) {
       const email = await resolveEmail(recipient);
       if (!email || emailedRecipients.has(email)) continue;
       try {
@@ -422,7 +434,7 @@ export async function dispatchDeviceAlertEmailsForTraccarEvent(
       }
     }
 
-    for (const recipient of binding.pushRecipients ?? []) {
+    for (const recipient of delivery.inApp ? binding.pushRecipients ?? [] : []) {
       const userId = String(recipient.id ?? "").trim();
       if (!userId || userId.startsWith("contact-") || userId.includes("@") || notifiedUsers.has(userId)) continue;
       notifiedUsers.add(userId);

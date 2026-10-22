@@ -12,6 +12,7 @@ import {
   type ServerLibraryRow
 } from "../shared/serverAlertRules";
 import { bindingCoversSiteEvent } from "../shared/siteNotificationScope";
+import { resolveUserAlertDeliveryFromParameters } from "../shared/notificationAlertDelivery";
 import { bindingHasExplicitRecipients, type UserAlertDispatchEnv } from "../shared/userAlertDispatch";
 import { createVpsKvNamespace, routeOperationalD1ToVps } from "../shared/vpsWorkerStorage";
 
@@ -143,6 +144,8 @@ export class ServerAlertEngine {
         const rows = library.filter(
           (row) =>
             isServerEvaluatedLibraryRow(row)
+            // "Send active message" off (or no channel ticked) means the alert sends nothing.
+            && Boolean(resolveUserAlertDeliveryFromParameters((row.parameters ?? null) as Record<string, unknown> | null))
             && watched.some((binding) => bindingCoversSiteEvent(binding, String(row.description ?? ""), site))
         );
         return { rows, catalog };

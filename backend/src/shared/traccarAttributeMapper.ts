@@ -117,7 +117,15 @@ export function buildOverSpeedExcessJexlExpression(
   const maxSpeedKph = readSpeedThresholdKphFromConditions(conditions, catalog);
   if (maxSpeedKph == null) return "null";
   // Library thresholds are km/h; Traccar position `speed` is knots. Return excess in km/h.
-  return `var maxSpeedKph = ${maxSpeedKph}; var speedKph = speed * 1.852; speedKph > maxSpeedKph ? speedKph - maxSpeedKph : null`;
+  // Other conditions on the row (e.g. "Ignition is true") still apply; they used to be dropped.
+  const others = (conditions ?? []).filter((row) => {
+    const fieldExpr = mapParameterFieldToJexl(String(row.field ?? ""), catalog);
+    const op = String(row.operator ?? "").trim();
+    return !(fieldExpr === "speed" && (op === ">" || op === ">="));
+  });
+  const guard = others.length ? buildJexlExpressionFromConditions(others, catalog) : "null";
+  const overLimit = guard !== "null" ? `(${guard}) && speedKph > maxSpeedKph` : "speedKph > maxSpeedKph";
+  return `var maxSpeedKph = ${maxSpeedKph}; var speedKph = speed * 1.852; ${overLimit} ? speedKph - maxSpeedKph : null`;
 }
 
 function escapeJexlString(value: string): string {

@@ -27,7 +27,10 @@ const d1With = (tables: { assets: Array<Record<string, unknown>>; bindings: Arra
 const overSpeed = {
   description: "Mulu Over Speeding",
   availability: "Available",
-  parameters: { conditions: [{ field: "Speed", operator: ">", value: "80" }] }
+  parameters: {
+    conditions: [{ field: "Speed", operator: ">", value: "80" }],
+    active: { enabled: true, userAlerts: { email: true, inApp: true } }
+  }
 };
 
 const engineFor = (library: unknown[], bindings: Array<Record<string, unknown>>) =>
@@ -69,6 +72,13 @@ describe("server alert engine", () => {
       notificationName: "Mulu Over Speeding",
       traccarEvent: { deviceId: 7, attributes: { alarm: "Mulu Over Speeding", speedKph: 95 } }
     });
+  });
+
+  it("sends nothing when the row's active message is off", async () => {
+    const silent = { ...overSpeed, parameters: { ...overSpeed.parameters, active: { enabled: false } } };
+    const engine = engineFor([silent], watching);
+    await engine.onPosition(at(0, 120), { uniqueId: IMEI });
+    expect(dispatch).not.toHaveBeenCalled();
   });
 
   it("does nothing when no alert with people added watches the rule", async () => {
