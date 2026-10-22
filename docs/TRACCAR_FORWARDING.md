@@ -54,11 +54,14 @@ Once an alert is set in the app (library row **Available** + an alert on the sit
 people added), Vivitel sends it. Nothing has to be synced to Traccar for it to work.
 
 - **Custom alerts (rows with conditions)**, e.g. "Speed > 80", "IO3 is true",
-  "Power < 9": evaluated by `ServerAlertEngine` on every live position, with the
-  same field and operator rules as the library editor and the row's Delay. One
-  email per episode; it re-arms when the condition clears.
+  "Power < 9": evaluated by `ServerAlertEngine` in the 2-minute cron on each
+  device's latest position, with the same field and operator rules as the library
+  editor and the row's Delay. One email per episode; it re-arms when the condition
+  clears. Alerts arrive within about 2 minutes.
 - **Built-in events** (ignition on/off, geofence enter/exit, speed limit exceeded,
   status online/offline, device alarms such as SOS): Traccar raises these; Vivitel
   matches them to the site's library by name and emails the alert's people. They
   arrive through the 2-minute poll, or immediately with `event.forward.url`.
-- The cron keeps the live feed connected for alerts even when nobody has a map open.
+- Cost: nothing here writes to Cloudflare D1, KV or Durable Object storage. Rule state,
+  email "sent" markers and poll windows live in VPS storage; the cron only reads
+  Traccar (your own server) once per run.

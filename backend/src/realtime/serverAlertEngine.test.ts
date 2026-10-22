@@ -88,3 +88,36 @@ describe("server alert engine", () => {
     expect(dispatch).not.toHaveBeenCalled();
   });
 });
+
+describe("cron runner", () => {
+  beforeEach(() => dispatch.mockClear());
+
+  it("keeps episode state between runs, fires once, and only writes when it changes", async () => {
+    const { runServerAlertRules } = await import("./serverAlertEngine");
+    const stored: Record<string, string> = {
+      [buildScopedKvKey("libraries:notification", TENANT, SITE)]: JSON.stringify({ items: [overSpeed] })
+    };
+    let writes = 0;
+    const env = {
+      ViviTEL: {
+        get: async (key: string) => stored[key] ?? null,
+        put: async (key: string, value: string) => {
+          writes += 1;
+          stored[key] = value;
+        }
+      } as unknown as KVNamespace,
+      VIVI_D1: d1With({ assets: [{ imei: IMEI, site: SITE }], bindings: watching })
+    };
+    const traccarAt = (second: number, speedKph: number) => async (path: string) =>
+      path.startsWith("/api/devices")
+        ? { ok: true, body: [{ id: 7, uniqueId: IMEI }] }
+        : { ok: true, body: [at(second, speedKph)] };
+
+    expect((await runServerAlertRules(env, traccarAt(0, 100))).fired).toBe(1);
+    expect((await runServerAlertRules(env, traccarAt(120, 110))).fired).toBe(0);
+    const writesAfterStillSpeeding = writes;
+    expect((await runServerAlertRules(env, traccarAt(120, 110))).fired).toBe(0);
+    expect(writes).toBe(writesAfterStillSpeeding);
+    expect(dispatch).toHaveBeenCalledTimes(1);
+  });
+});

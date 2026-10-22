@@ -195,10 +195,10 @@ import {
   TraccarSocketBridge,
   fetchTraccarLiveFromBridge,
   forwardTraccarPayloadToBridge,
-  keepTraccarFeedAliveForAlerts,
   readDeviceTelemetryFromBridge
 } from "./realtime/TraccarSocketBridge";
 import { normalizeTraccarForwardPayload } from "./realtime/traccarForward";
+import { runServerAlertRules } from "./realtime/serverAlertEngine";
 import { buildTraccarLivePayload, type TraccarLivePayload } from "./realtime/traccarLivePayload";
 import {
   gpsIotLiveCacheKey,
@@ -7623,8 +7623,13 @@ export default {
     ctx.waitUntil(processDeviceSyncJobs(usEnv, { limit: 3 }));
     if (regionUsesTraccar(DEFAULT_REGION) && String(usEnv.TRACCAR_BASE_URL ?? "").trim()) {
       ctx.waitUntil(pollTraccarUserAlertsForAllTenants(usEnv, env.ViviTEL));
-      // Custom alert rules run on the live feed; keep it connected between page visits.
-      ctx.waitUntil(keepTraccarFeedAliveForAlerts(env));
+      // Custom alert rules: latest positions from Traccar, evaluated here every 2 minutes.
+      // No always-on Durable Object and no Cloudflare storage writes (state is on the VPS).
+      ctx.waitUntil(
+        runServerAlertRules(env, (path) => traccarFetch(usEnv, path)).catch((error) =>
+          console.warn("Server alert rules failed:", error)
+        )
+      );
     }
     const zaEnv: Env = {
       ...env,
