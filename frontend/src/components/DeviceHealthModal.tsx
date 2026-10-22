@@ -1,5 +1,4 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { fetchJson } from "../utils/api";
 import {
   DEVICE_HEALTH_COLUMNS,
   DEVICE_HEALTH_REFRESH_MS,
@@ -8,6 +7,7 @@ import {
   type DeviceHealthResponse,
   type DeviceHealthRow
 } from "../utils/deviceHealth";
+import { loadDeviceHealth } from "../utils/deviceHealthApi";
 import "./DeviceHealthModal.css";
 
 type Props = {
@@ -38,7 +38,7 @@ const formatAge = (ms: number | null) => {
  */
 export default function DeviceHealthModal({ assetLabel, deviceId, imei, onClose }: Props) {
   const [rows, setRows] = useState<DeviceHealthRow[]>([]);
-  const [meta, setMeta] = useState<Pick<DeviceHealthResponse, "device" | "feed"> | null>(null);
+  const [meta, setMeta] = useState<Pick<DeviceHealthResponse, "device" | "feed" | "via"> | null>(null);
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
   const [error, setError] = useState("");
   const [nextRefreshAt, setNextRefreshAt] = useState(Date.now() + DEVICE_HEALTH_REFRESH_MS);
@@ -50,19 +50,13 @@ export default function DeviceHealthModal({ assetLabel, deviceId, imei, onClose 
     if (inFlight.current) return;
     inFlight.current = true;
     try {
-      const query = new URLSearchParams();
-      if (deviceId != null && String(deviceId).trim()) query.set("deviceId", String(deviceId));
-      if (imei) query.set("imei", imei);
-      const result = await fetchJson<DeviceHealthResponse>(`/api/device-health?${query.toString()}`);
-      if (!result || result.ok === false) {
+      const result = await loadDeviceHealth({ deviceId, imei });
+      if (result.ok === false) {
         setStatus("error");
-        setError(
-          String(result?.error ?? "").trim()
-          || "Live telemetry could not be loaded. You need an Admin or Own Support account."
-        );
+        setError(String(result.error ?? "").trim() || "Live telemetry could not be loaded. Try Refresh now.");
         return;
       }
-      setMeta({ device: result.device, feed: result.feed });
+      setMeta({ device: result.device, feed: result.feed, via: result.via });
       setRows((current) => mergeDeviceHealthRows(current, result.history ?? []));
       setStatus("ready");
       setError("");

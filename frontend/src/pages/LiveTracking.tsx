@@ -205,6 +205,8 @@ type AssetRow = {
   mobileDeviceType: string;
   device?: string;
   speed: string;
+  /** Live speed in km/h. Status reads this before `speed`, so live updates must set it. */
+  speedKph?: number | string;
   movement?: string;
   timeInIgnition: string;
   driverIdentified?: string;
@@ -939,6 +941,9 @@ const mergeTraccarLiveSnapshotIntoAssetRow = (
     ? formatTimestampForSite(snapshot.fixTime, row.site, siteTimeZones)
     : row.lastPosition;
   const nextSpeed = snapshot.speedKph || row.speed;
+  // Status reads speedKph before speed, so the live value must land in speedKph too;
+  // otherwise a stored speedKph from the asset list kept deciding Moving / Stationary.
+  const liveSpeedKph = String(snapshot.speedKph ?? "").trim() ? Number(snapshot.speedKph) : Number.NaN;
   const nextHeading = snapshot.heading || row.heading;
   const nextFuel = snapshot.fuelReading || row.fuelReading;
   const nextSatellites = snapshot.satellites || row.satellites;
@@ -990,6 +995,7 @@ const mergeTraccarLiveSnapshotIntoAssetRow = (
         ? `${nextLat.toFixed(6)}, ${nextLng.toFixed(6)}`
         : row.gps,
     speed: applyTimestamp ? nextSpeed : row.speed,
+    speedKph: applyTimestamp && Number.isFinite(liveSpeedKph) ? liveSpeedKph : row.speedKph,
     heading: applyTimestamp ? nextHeading : row.heading,
     fuelReading: applyTimestamp ? nextFuel : row.fuelReading,
     fuelAttributes: applyTimestamp ? nextFuelAttributes : row.fuelAttributes,
@@ -1014,6 +1020,7 @@ const mergeTraccarLiveSnapshotIntoAssetRow = (
       lastPosition: applyTimestamp && snapshot.fixTime ? shownAt : row.lastPosition,
       lastTrip: row.lastPosition,
       speed: applyTimestamp ? nextSpeed : row.speed,
+      speedKph: applyTimestamp && Number.isFinite(liveSpeedKph) ? liveSpeedKph : row.speedKph,
       lat: nextLat,
       lng: nextLng,
       lastMoveAtMs,
@@ -1795,9 +1802,25 @@ const mergeAssetRows = (current: AssetRow[], incoming: AssetRow[]): AssetRow[] =
       mergedRegistration ||
       "Unnamed asset";
 
+    // The row on screen already has newer (or equal) live telemetry: keep its motion
+    // fields. A list reload spreading older stored speed / movement over every row at
+    // once is what flipped the whole fleet's status dots together.
+    const liveFields = keepPreviousDisplay
+      ? {
+          speed: previous.speed,
+          speedKph: previous.speedKph,
+          movement: previous.movement,
+          heading: previous.heading,
+          ignition: previous.ignition,
+          status: previous.status,
+          lastSeen: (previous as any).lastSeen ?? (asset as any).lastSeen
+        }
+      : {};
+
     return {
       ...previous,
       ...asset,
+      ...liveFields,
       // Never let Traccar/live refreshes replace plate names with IMEI stubs or Make+Plate.
       assetDescription: displayDescription,
       registration: mergedRegistration || displayDescription,

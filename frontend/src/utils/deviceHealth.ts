@@ -44,6 +44,8 @@ export type DeviceHealthResponse = {
   } | null;
   history?: DeviceHealthPosition[];
   feed?: { socket?: boolean; lastSocketAt?: string | null; lastForwardAt?: string | null; error?: string };
+  /** Where the rows came from: the backend push feed, or a direct Traccar read. */
+  via?: "feed" | "traccar";
 };
 
 const num = (value: unknown): number | undefined => {
@@ -149,7 +151,7 @@ export type DeviceHealthSummary = {
 /** Headline checks for the newest report: reporting, GPS, power, signal, report interval. */
 export function summarizeDeviceHealth(
   rows: DeviceHealthRow[],
-  meta: Pick<DeviceHealthResponse, "device" | "feed"> | null,
+  meta: Pick<DeviceHealthResponse, "device" | "feed" | "via"> | null,
   now = Date.now()
 ): DeviceHealthSummary {
   const latest = rows[0];
@@ -206,7 +208,9 @@ export function summarizeDeviceHealth(
   ];
 
   const feed = meta?.feed;
-  const feedLabel = feed?.lastForwardAt
+  const feedLabel = meta?.via === "traccar"
+    ? "Read from the tracking server every 30 s (push feed not available on this server yet)"
+    : feed?.lastForwardAt
     ? `Traccar forwarding (last ${new Date(feed.lastForwardAt).toLocaleTimeString("en-GB")})`
     : feed?.socket
       ? "Live socket"
