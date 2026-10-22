@@ -8,6 +8,7 @@ import {
   AlertEmailRetryableError,
   alertEmailEventKey,
   createRecipientEmailResolver,
+  isAlertTooOldToEmail,
   sendAlertEmailOnce
 } from "./alertEmailDelivery";
 import { buildAlertMapAttachment } from "./alertMapImage";
@@ -936,7 +937,7 @@ export async function dispatchViviUserAlertsForTraccarEvent(
         read: false
       });
     }),
-    ...[...emailTo.keys()].map(async (email) => {
+    ...(isAlertTooOldToEmail(eventTime) ? [] : [...emailTo.keys()]).map(async (email) => {
       try {
         await sendAlertEmailOnce(env, {
           tenantId,

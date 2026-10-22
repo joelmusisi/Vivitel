@@ -89,6 +89,51 @@ function normalizeSqlParams(params: unknown[]): unknown[] {
   return params.map((value) => (value === undefined ? null : value));
 }
 
+/**
+ * The VPS runs better-sqlite3, which rejects numbered placeholders (`?1`, `?2`) when values
+ * are passed positionally ("Too many parameter values were provided"). D1 accepts them,
+ * and much of the Worker's SQL is written that way. Rewrite to plain `?` and expand the
+ * values in placeholder order (a repeated `?1` gets its value repeated). String literals,
+ * quoted identifiers and comments are left alone.
+ */
+export function toPositionalSql(sql: string, params: unknown[]): { sql: string; params: unknown[] } {
+  if (!/\?\d/.test(sql)) return { sql, params };
+  let out = "";
+  const values: unknown[] = [];
+  let largest = 0;
+  let index = 0;
+  while (index < sql.length) {
+    const ch = sql[index];
+    if (ch === "'" || ch === '"' || ch === "`") {
+      const end = sql.indexOf(ch, index + 1);
+      const stop = end === -1 ? sql.length : end + 1;
+      out += sql.slice(index, stop);
+      index = stop;
+      continue;
+    }
+    if (ch === "-" && sql[index + 1] === "-") {
+      const end = sql.indexOf(String.fromCharCode(10), index);
+      const stop = end === -1 ? sql.length : end;
+      out += sql.slice(index, stop);
+      index = stop;
+      continue;
+    }
+    if (ch === "?") {
+      const match = /^\?(\d+)/.exec(sql.slice(index));
+      // SQLite: a bare `?` takes the number after the largest one used so far.
+      const number = match ? Number(match[1]) : largest + 1;
+      largest = Math.max(largest, number);
+      values.push(params[number - 1] ?? null);
+      out += "?";
+      index += match ? match[0].length : 1;
+      continue;
+    }
+    out += ch;
+    index += 1;
+  }
+  return { sql: out, params: values };
+}
+
 async function postWorkerStorage<T>(
   env: WorkerStorageEnv,
   pathname: string,
@@ -177,12 +222,14 @@ function createRoutedStatement(
   const useD1 = statementUsesCredentials(sql);
   if (useD1) native = d1.prepare(sql);
 
-  const remote = async (operation: SqlOperation) =>
-    postWorkerStorage<any>(env, "/operational/sql", {
-      sql,
-      params: normalizeSqlParams(params),
+  const remote = async (operation: SqlOperation) => {
+    const positional = toPositionalSql(sql, normalizeSqlParams(params));
+    return postWorkerStorage<any>(env, "/operational/sql", {
+      sql: positional.sql,
+      params: positional.params,
       operation
     });
+  };
 
   const statement = {
     [statementMarker]: { sql, params, operation: "all" as SqlOperation },
@@ -256,7 +303,10 @@ export function routeOperationalD1ToVps(db: WorkerD1Database, env: WorkerStorage
         throw new Error("A D1 batch cannot mix credentials with VPS operational data.");
       }
       const result = await postWorkerStorage<{ results?: WorkerD1Result[] }>(env, "/operational/sql/batch", {
-        statements: routedStatements
+        statements: routedStatements.map((statement) => ({
+          ...statement,
+          ...toPositionalSql(statement.sql, statement.params)
+        }))
       });
       return result.results ?? [];
     },

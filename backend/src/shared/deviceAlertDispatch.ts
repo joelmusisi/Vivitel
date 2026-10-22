@@ -2,6 +2,7 @@ import {
   AlertEmailRetryableError,
   alertEmailEventKey,
   createRecipientEmailResolver,
+  isAlertTooOldToEmail,
   sendAlertEmailOnce
 } from "./alertEmailDelivery";
 import { buildAlertMapAttachment } from "./alertMapImage";
@@ -369,6 +370,7 @@ export async function dispatchDeviceAlertEmailsForTraccarEvent(
   const retryableEmailFailures: unknown[] = [];
   const resolveEmail = createRecipientEmailResolver(env);
   const eventKey = alertEmailEventKey({ ...input.traccarEvent, type: eventType });
+  const emailTooOld = isAlertTooOldToEmail(eventTime);
   for (const { binding, asset, notificationName } of matches) {
     const assetSite = String(asset.site ?? "").trim();
     if (!libraryNotificationIsAvailable(libraryBySite.get(assetSite) ?? [], notificationName)) continue;
@@ -399,7 +401,7 @@ export async function dispatchDeviceAlertEmailsForTraccarEvent(
     const text = buildDeviceAlertEmailText(emailEvent, emailOptions);
     const html = buildDeviceAlertEmailHtml(emailEvent, emailOptions);
 
-    for (const recipient of readBindingEmailRecipients(binding)) {
+    for (const recipient of emailTooOld ? [] : readBindingEmailRecipients(binding)) {
       const email = await resolveEmail(recipient);
       if (!email || emailedRecipients.has(email)) continue;
       try {

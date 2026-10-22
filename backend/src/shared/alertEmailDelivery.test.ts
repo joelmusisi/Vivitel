@@ -113,3 +113,13 @@ describe("device alert notification names", () => {
     expect(deviceAlertNotificationNames({ eventType: "alarm", rules })).toEqual(["alarm"]);
   });
 });
+
+describe("late alerts", () => {
+  it("does not email events older than an hour", async () => {
+    const { isAlertTooOldToEmail } = await import("./alertEmailDelivery");
+    const now = Date.parse("2026-10-22T12:00:00Z");
+    expect(isAlertTooOldToEmail("2026-10-22T11:30:00Z", now)).toBe(false);
+    expect(isAlertTooOldToEmail("2026-10-22T10:30:00Z", now)).toBe(true);
+    expect(isAlertTooOldToEmail(undefined, now)).toBe(false);
+  });
+});

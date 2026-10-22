@@ -25,6 +25,13 @@ export class AlertEmailRetryableError extends Error {}
 export type AlertEmailResult = "sent" | "already-sent" | "rejected";
 
 const SENT_TTL_SEC = 60 * 60 * 24 * 14;
+/** Events older than this are not emailed (a late backlog would flood inboxes); in-app still records them. */
+export const ALERT_EMAIL_MAX_AGE_MS = 60 * 60_000;
+
+export function isAlertTooOldToEmail(eventTime: string | undefined, now = Date.now()): boolean {
+  const at = Date.parse(String(eventTime ?? ""));
+  return Number.isFinite(at) && now - at > ALERT_EMAIL_MAX_AGE_MS;
+}
 
 const sentKey = (tenantId: string, eventKey: string, email: string) =>
   `vivi:alert-email:${tenantId}:${eventKey}:${email}`;
