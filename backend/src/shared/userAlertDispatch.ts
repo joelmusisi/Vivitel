@@ -30,6 +30,7 @@ import { createRegionScopedKv, isTraccarStorageTenant } from "./regionStorage";
 import { DEFAULT_REGION, isRegionId, type RegionId } from "./regionServers";
 import { siteScopesMatch } from "./scopeIsolation";
 import { buildScopedKvKey } from "./scopeIsolation";
+import { isServerEvaluatedLibraryRow, type ServerLibraryRow } from "./serverAlertRules";
 import { bindingCoversSiteEvent, libraryNotificationIsAvailable, siteMonitorsNotification } from "./siteNotificationScope";
 
 export type ViviUserAlertActionDecision = "yes" | "no";
@@ -828,8 +829,16 @@ export async function dispatchViviUserAlertsForTraccarEvent(
   const speedKph = telemetry.speedKph;
   const distanceKm = telemetry.distanceKm;
   const library = await loadSiteNotificationLibrary(env, tenantId, site);
+  // Custom (condition) alerts are evaluated and sent by ServerAlertEngine; one source per alert.
+  const serverOwned = new Set(
+    (library as ServerLibraryRow[])
+      .filter(isServerEvaluatedLibraryRow)
+      .map((row) => String(row.description ?? "").trim().toLowerCase())
+  );
   const ready = scoped.filter(
-    (rule) => isLocationAlertType(rule.traccarType) || libraryNotificationIsAvailable(library, rule.description)
+    (rule) =>
+      !serverOwned.has(String(rule.description ?? "").trim().toLowerCase())
+      && (isLocationAlertType(rule.traccarType) || libraryNotificationIsAvailable(library, rule.description))
   );
   if (!ready.length) return { dispatched: false, reason: "notification is not set" };
 

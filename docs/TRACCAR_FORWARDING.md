@@ -47,3 +47,18 @@ Feed column shows "Forwarded".
   backend instead, which has no per-request cost.
 - **Event forwarding is low volume** (only real events) and also drives alert emails
   immediately instead of on the 2-minute poll. Turn this one on in any case.
+
+## Alert emails are evaluated by Vivitel
+
+Once an alert is set in the app (library row **Available** + an alert on the site with
+people added), Vivitel sends it. Nothing has to be synced to Traccar for it to work.
+
+- **Custom alerts (rows with conditions)**, e.g. "Speed > 80", "IO3 is true",
+  "Power < 9": evaluated by `ServerAlertEngine` on every live position, with the
+  same field and operator rules as the library editor and the row's Delay. One
+  email per episode; it re-arms when the condition clears.
+- **Built-in events** (ignition on/off, geofence enter/exit, speed limit exceeded,
+  status online/offline, device alarms such as SOS): Traccar raises these; Vivitel
+  matches them to the site's library by name and emails the alert's people. They
+  arrive through the 2-minute poll, or immediately with `event.forward.url`.
+- The cron keeps the live feed connected for alerts even when nobody has a map open.

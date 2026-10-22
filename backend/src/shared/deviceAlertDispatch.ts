@@ -21,6 +21,11 @@ import {
   type DeviceAlertEmailEvent,
   type SiteTimeZoneSettings
 } from "./deviceAlertEmail";
+import {
+  isServerEvaluatedLibraryRow,
+  nativeTraccarTypeForLibraryRow,
+  type ServerLibraryRow
+} from "./serverAlertRules";
 import { libraryNotificationIsAvailable, bindingCoversSiteEvent } from "./siteNotificationScope";
 import {
   alertDedupeKey,
@@ -268,6 +273,8 @@ export async function dispatchDeviceAlertEmailsForTraccarEvent(
     traccarEvent: { id?: number; type?: string; eventTime?: string; deviceId?: number; attributes?: Record<string, unknown> };
     notificationName?: string;
     rules?: ViviNotificationRule[];
+    /** Fired by Vivitel's own rule evaluation (ServerAlertEngine), not by a Traccar event. */
+    serverRule?: boolean;
   }
 ): Promise<{ dispatched: boolean; emailed: number; reason?: string }> {
   const tenantId = String(input.tenantId ?? "").trim();
@@ -291,14 +298,39 @@ export async function dispatchDeviceAlertEmailsForTraccarEvent(
   const assets = await findAssetsByImei(env, tenantId, imei);
   const attrs = (input.traccarEvent.attributes ?? {}) as Record<string, unknown>;
   const eventType = String(input.traccarEvent.type ?? "").trim();
-  const rules = input.rules ?? (await loadViviNotificationRules(env).catch(() => [] as ViviNotificationRule[]));
-  const candidateNames = deviceAlertNotificationNames({
-    eventType,
-    attributes: attrs,
-    rules,
-    explicitName: input.notificationName
-  });
+  const serverRule = input.serverRule === true;
+  const rules = serverRule
+    ? []
+    : input.rules ?? (await loadViviNotificationRules(env).catch(() => [] as ViviNotificationRule[]));
+  const candidateNames = serverRule
+    ? [String(input.notificationName ?? "").trim()].filter(Boolean)
+    : deviceAlertNotificationNames({ eventType, attributes: attrs, rules, explicitName: input.notificationName });
   if (!candidateNames.length) return { dispatched: false, emailed: 0, reason: "missing notification name" };
+
+  // The site's saved library, so built-in events match without Traccar notification rules.
+  const libraryBySite = new Map<string, ServerLibraryRow[]>();
+  for (const asset of assets) {
+    const assetSite = String(asset.site ?? "").trim();
+    if (!libraryBySite.has(assetSite)) {
+      libraryBySite.set(assetSite, (await loadSiteNotificationLibrary(env, tenantId, assetSite)) as ServerLibraryRow[]);
+    }
+  }
+  const namesForSite = (assetSite: string): string[] => {
+    if (serverRule) return candidateNames;
+    const library = libraryBySite.get(assetSite) ?? [];
+    const serverOwned = new Set(
+      library.filter(isServerEvaluatedLibraryRow).map((row) => String(row.description ?? "").trim().toLowerCase())
+    );
+    const native = library
+      .filter((row) => nativeTraccarTypeForLibraryRow(row) === eventType)
+      .map((row) => String(row.description ?? "").trim());
+    // Custom (condition) alerts are evaluated by ServerAlertEngine; skipping them here
+    // keeps one source per alert, so nobody is emailed twice.
+    return [...candidateNames, ...native].filter(
+      (name, index, all) =>
+        name && !serverOwned.has(name.toLowerCase()) && all.findIndex((other) => other.toLowerCase() === name.toLowerCase()) === index
+    );
+  };
 
   const matches = (assets.length ? assets : []).flatMap((asset) => {
     const assetSite = String(asset.site ?? "").trim();
@@ -306,8 +338,9 @@ export async function dispatchDeviceAlertEmailsForTraccarEvent(
       asset.assetDescription ?? asset.description ?? asset.registration ?? asset.name ?? device?.name ?? "Asset"
     ).trim();
     const driverName = String(asset.driverName ?? asset.driver ?? asset.assignedDriver ?? "Unknown").trim() || "Unknown";
+    const names = namesForSite(assetSite);
     return bindings.flatMap((binding) => {
-      const notificationName = candidateNames.find((name) =>
+      const notificationName = names.find((name) =>
         bindingMatchesEvent(binding, name, assetLabel, driverName, assetSite)
       );
       return notificationName ? [{ binding, asset, assetLabel, driverName, notificationName }] : [];
@@ -324,11 +357,11 @@ export async function dispatchDeviceAlertEmailsForTraccarEvent(
     return { dispatched: false, emailed: 0, reason: "event does not name one site notification" };
   }
 
-  const positionResp = await traccarFetch(
-    env,
-    `/api/positions?deviceId=${encodeURIComponent(String(deviceId))}&limit=1`
-  );
-  const position = Array.isArray(positionResp.body) ? (positionResp.body[0] as Record<string, unknown>) : undefined;
+  // A server rule already carries the position that triggered it.
+  const positionResp = serverRule
+    ? null
+    : await traccarFetch(env, `/api/positions?deviceId=${encodeURIComponent(String(deviceId))}&limit=1`);
+  const position = Array.isArray(positionResp?.body) ? (positionResp!.body[0] as Record<string, unknown>) : undefined;
   const timeZoneSettings = await loadSiteTimeZoneSettings(env.ViviTEL, tenantId);
 
   const emailedRecipients = new Set<string>();
@@ -336,12 +369,8 @@ export async function dispatchDeviceAlertEmailsForTraccarEvent(
   const retryableEmailFailures: unknown[] = [];
   const resolveEmail = createRecipientEmailResolver(env);
   const eventKey = alertEmailEventKey({ ...input.traccarEvent, type: eventType });
-  const libraryBySite = new Map<string, Array<{ description?: string; availability?: string }>>();
   for (const { binding, asset, notificationName } of matches) {
     const assetSite = String(asset.site ?? "").trim();
-    if (!libraryBySite.has(assetSite)) {
-      libraryBySite.set(assetSite, await loadSiteNotificationLibrary(env, tenantId, assetSite));
-    }
     if (!libraryNotificationIsAvailable(libraryBySite.get(assetSite) ?? [], notificationName)) continue;
 
     const emailEvent = buildEmailEventFromContext({

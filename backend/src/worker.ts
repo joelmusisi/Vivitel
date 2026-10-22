@@ -195,6 +195,7 @@ import {
   TraccarSocketBridge,
   fetchTraccarLiveFromBridge,
   forwardTraccarPayloadToBridge,
+  keepTraccarFeedAliveForAlerts,
   readDeviceTelemetryFromBridge
 } from "./realtime/TraccarSocketBridge";
 import { normalizeTraccarForwardPayload } from "./realtime/traccarForward";
@@ -7622,6 +7623,8 @@ export default {
     ctx.waitUntil(processDeviceSyncJobs(usEnv, { limit: 3 }));
     if (regionUsesTraccar(DEFAULT_REGION) && String(usEnv.TRACCAR_BASE_URL ?? "").trim()) {
       ctx.waitUntil(pollTraccarUserAlertsForAllTenants(usEnv, env.ViviTEL));
+      // Custom alert rules run on the live feed; keep it connected between page visits.
+      ctx.waitUntil(keepTraccarFeedAliveForAlerts(env));
     }
     const zaEnv: Env = {
       ...env,

@@ -9,6 +9,8 @@ import {
   type RealtimeEnv
 } from "./realtimeSources";
 import { normalizeTraccarForwardPayload } from "./traccarForward";
+import { ServerAlertEngine } from "./serverAlertEngine";
+import type { UserAlertDispatchEnv } from "../shared/userAlertDispatch";
 import { buildTraccarLivePayload, type TraccarLivePayload } from "./traccarLivePayload";
 
 const BRIDGE_NAME = "__traccar_socket_bridge__";
@@ -63,6 +65,10 @@ export class TraccarSocketBridge implements DurableObject {
   private lastSocketAt = "";
   private lastForwardAt = "";
   private fanOutTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Server-side alert rules run on every new position while the feed is open. */
+  private alertEngine: ServerAlertEngine;
+  /** Kept open for alerts by the cron, even when no page is watching. */
+  private alertsKeepAliveUntil = 0;
 
   constructor(
     private readonly state: DurableObjectState,
@@ -72,7 +78,9 @@ export class TraccarSocketBridge implements DurableObject {
       this.cookie = String((await this.state.storage.get<string>("cookie")) ?? "").trim();
       this.interested = ((await this.state.storage.get<InterestMap>("interested")) ?? {}) as InterestMap;
       this.lastPayload = ((await this.state.storage.get<TraccarLivePayload>("lastPayload")) ?? null) as TraccarLivePayload | null;
+      this.alertsKeepAliveUntil = Number((await this.state.storage.get<number>("alertsKeepAliveUntil")) ?? 0);
     });
+    this.alertEngine = new ServerAlertEngine(this.env as unknown as UserAlertDispatchEnv);
   }
 
   private async ensureAlarm(ms = RECONNECT_ALARM_MS) {
@@ -205,6 +213,12 @@ export class TraccarSocketBridge implements DurableObject {
       list.push({ ...position, __receivedAt: new Date().toISOString(), __source: source });
       if (list.length > HISTORY_MAX) list.splice(0, list.length - HISTORY_MAX);
       this.history.set(id, list);
+      // Live reports only: back-filled history must not fire alerts for the past.
+      if (source !== "http") {
+        void this.alertEngine
+          .onPosition(position, this.devices.get(id))
+          .catch((error) => console.warn("Server alert evaluation failed:", error));
+      }
     }
     return true;
   }
@@ -468,6 +482,16 @@ export class TraccarSocketBridge implements DurableObject {
       });
     }
 
+    if ((path.endsWith("/keepalive") || path === "/keepalive") && request.method === "POST") {
+      this.alertsKeepAliveUntil = Date.now() + INTEREST_TTL_MS;
+      await this.state.storage.put("alertsKeepAliveUntil", this.alertsKeepAliveUntil);
+      await this.connectSocket();
+      await this.ensureAlarm();
+      return new Response(JSON.stringify({ ok: true, socket: Boolean(this.socket) }), {
+        headers: { "content-type": "application/json" }
+      });
+    }
+
     if ((path.endsWith("/forward") || path === "/forward") && request.method === "POST") {
       let body: unknown = null;
       try {
@@ -555,7 +579,7 @@ export class TraccarSocketBridge implements DurableObject {
   async alarm(): Promise<void> {
     try {
       if (this.pruneInterest()) await this.persistInterest();
-      const hasInterest = Object.keys(this.interested).length > 0;
+      const hasInterest = Object.keys(this.interested).length > 0 || this.alertsKeepAliveUntil > Date.now();
       if (!hasInterest) {
         try {
           this.socket?.close();
@@ -572,7 +596,7 @@ export class TraccarSocketBridge implements DurableObject {
         await this.fanOutLive();
       }
     } finally {
-      if (Object.keys(this.interested).length > 0) {
+      if (Object.keys(this.interested).length > 0 || this.alertsKeepAliveUntil > Date.now()) {
         await this.state.storage.setAlarm(Date.now() + RECONNECT_ALARM_MS);
       }
     }
@@ -649,5 +673,17 @@ export async function readDeviceTelemetryFromBridge(
     return { status: res.status, body: await res.json() };
   } catch {
     return { status: 502, body: { ok: false, error: "Live telemetry bridge unavailable" } };
+  }
+}
+
+/** Keep the Traccar feed connected so server-side alert rules see every position. Called by the cron. */
+export async function keepTraccarFeedAliveForAlerts(env: { TRACCAR_SOCKET_BRIDGE?: DurableObjectNamespace }) {
+  const ns = env.TRACCAR_SOCKET_BRIDGE;
+  if (!ns) return;
+  try {
+    const stub = ns.get(ns.idFromName(BRIDGE_NAME));
+    await stub.fetch("https://traccar-bridge/keepalive", { method: "POST" });
+  } catch {
+    // best-effort; the next cron run retries
   }
 }
