@@ -1,4 +1,5 @@
 import ExcelJS from "exceljs";
+import { reportLogoSize } from "./brandLogo";
 
 const BORDER_COLOR = { argb: "FFD1D5DB" };
 const THIN_BORDER: Partial<ExcelJS.Border> = { style: "thin", color: BORDER_COLOR };
@@ -7,6 +8,14 @@ export const REPORT_BRAND_LABEL = "VIVI Telematics";
 export const REPORT_HEADER_FILL = "FFD8ECE2";
 export const REPORT_SECTION_FILL = "FFE6F2EB";
 export const REPORT_SUBSECTION_FILL = "FFEEF7F1";
+/** Every other data row, as in the MiX sample. */
+export const REPORT_BAND_FILL = "FFEDEDED";
+
+const fillRow = (row: ExcelJS.Row, columnCount: number, argb: string) => {
+  for (let col = 1; col <= columnCount; col += 1) {
+    row.getCell(col).fill = { type: "pattern", pattern: "solid", fgColor: { argb } };
+  }
+};
 
 export const applyWorksheetTableBorders = (
   worksheet: ExcelJS.Worksheet,
@@ -149,8 +158,8 @@ export const addReportBrandBlock = (
   const labelEndCol = options.labelEndCol ?? labelStartCol + 2;
   const labelStartRow = options.labelStartRow ?? 3;
   const labelEndRow = options.labelEndRow ?? 4;
-  const logoWidth = options.logoWidth ?? 140;
-  const logoHeight = options.logoHeight ?? 44;
+  const logoHeight = options.logoHeight ?? 64;
+  const logoWidth = options.logoWidth ?? reportLogoSize(logoHeight).width;
   const showLabel = options.showLabel !== false;
 
   if (logoDataUrl) {
@@ -247,13 +256,15 @@ const writeSectionedBody = (
     styleHeaderRowCells(worksheet, headerRow, colCount);
     rowNumber += 1;
 
-    section.rows.forEach((row) => {
+    section.rows.forEach((row, rowIndex) => {
       const worksheetRow = worksheet.getRow(rowNumber);
       worksheetRow.values = row;
       worksheetRow.font = { name: "Arial", size: 10 };
       worksheetRow.alignment = { vertical: "middle", horizontal: "left", wrapText: true };
       if (row[0] === "Totals" || row[0] === "Averages") {
         styleSummaryRowCells(worksheetRow, colCount, REPORT_SUBSECTION_FILL);
+      } else if (rowIndex % 2 === 1) {
+        fillRow(worksheetRow, colCount, REPORT_BAND_FILL);
       }
       rowNumber += 1;
     });
@@ -320,8 +331,8 @@ export const buildDetailReportExcelWorkbook = async (params: {
     labelEndCol: colCount,
     labelStartRow: 2,
     labelEndRow: 3,
-    logoWidth: 168,
-    logoHeight: 42,
+    // Rows 1-6 are about 114 px tall; keep the logo inside them at its own proportions.
+    logoHeight: 96,
     showLabel: false
   });
   worksheet.getRow(1).height = 24;
@@ -345,6 +356,7 @@ export const buildDetailReportExcelWorkbook = async (params: {
   worksheet.getRow(headerRowNumber).values = headers;
   styleHeaderRowCells(worksheet, headerRowNumber, headers.length);
 
+  let dataRowIndex = 0;
   body.forEach((row, index) => {
     const rowNumber = headerRowNumber + 1 + index;
     const worksheetRow = worksheet.getRow(rowNumber);
@@ -357,6 +369,10 @@ export const buildDetailReportExcelWorkbook = async (params: {
     if (isSection || isSummary) {
       const color = isSection ? REPORT_SECTION_FILL : REPORT_SUBSECTION_FILL;
       styleSummaryRowCells(worksheetRow, headers.length, color);
+      if (isSection) dataRowIndex = 0;
+    } else {
+      if (dataRowIndex % 2 === 1) fillRow(worksheetRow, headers.length, REPORT_BAND_FILL);
+      dataRowIndex += 1;
     }
   });
 

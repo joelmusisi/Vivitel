@@ -2561,7 +2561,7 @@ button,
 }
 
 .movement-preview-table tbody tr:nth-child(even) {
-  background: #fafafa;
+  background: #ededed;
 }
 
 .movement-preview-section-row td {

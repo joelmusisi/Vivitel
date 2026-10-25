@@ -32,7 +32,7 @@ import { loadBoundNotificationOptionsForSite, loadNotificationLibraryItems } fro
 import ViviLogo from "../../components/ViviLogo";
 import VTLoader from "../../components/VTLoader";
 import ReportTrendSparkline from "../../components/ReportTrendSparkline";
-import { brandLogoToDataUrl } from "../../utils/brandLogo";
+import { brandLogoToDataUrl, REPORT_LOGO_VARIANT, reportLogoSize } from "../../utils/brandLogo";
 import { readScopeNaming, readStoredSelectionScope } from "../../utils/selectionScope";
 import { resolveAssetDriverName, resolveTripDriverName } from "../../utils/assetDriver";
 import {
@@ -2316,7 +2316,7 @@ export default function Reports() {
   const getReportLogoDataUrl = async (): Promise<string | null> => {
     if (reportLogoDataUrlRef.current) return reportLogoDataUrlRef.current;
     try {
-      const dataUrl = (await brandLogoToDataUrl("raster")) ?? (await brandLogoToDataUrl("light"));
+      const dataUrl = (await brandLogoToDataUrl(REPORT_LOGO_VARIANT)) ?? (await brandLogoToDataUrl("raster"));
       reportLogoDataUrlRef.current = dataUrl;
       return dataUrl;
     } catch {
@@ -2340,7 +2340,9 @@ export default function Reports() {
   const applyPdfBrandBlock = (pdf: jsPDF, logoDataUrl: string | null) => {
     const pageWidth = pdf.internal.pageSize.getWidth();
     if (logoDataUrl) {
-      pdf.addImage(logoDataUrl, logoDataUrl.includes("image/png") ? "PNG" : "JPEG", pageWidth - 62, 8, 48, 12);
+      // Size in mm from the logo's own proportions so it is not squashed.
+      const logo = reportLogoSize(18);
+      pdf.addImage(logoDataUrl, logoDataUrl.includes("image/png") ? "PNG" : "JPEG", pageWidth - 14 - logo.width, 6, logo.width, logo.height);
       return;
     }
     pdf.setFontSize(11);
@@ -2478,6 +2480,8 @@ export default function Reports() {
         lineColor: [229, 231, 235],
         lineWidth: 0.15
       },
+      // Alternating bands, as in the MiX sample.
+      alternateRowStyles: { fillColor: [237, 237, 237] },
       tableLineWidth: 0.15,
       tableLineColor: [229, 231, 235],
       didParseCell: (hookData) => {
@@ -5064,18 +5068,32 @@ export default function Reports() {
       return { variant: "location", columns: [...LOCATION_TO_LOCATION_COLUMNS], sections, ...previewMeta };
     }
 
-    const geocodeBudget = { remaining: 40 };
+    // Place names: points are rounded to ~100 m so a parked vehicle's arrival and next
+    // departure share one lookup; the cap only guards very large fleets.
+    const geocodeBudget = { remaining: 600 };
+    const geocodeByPoint = new Map<string, Promise<string>>();
     const geocodeWithinBudget = async (lat: unknown, lng: unknown) => {
-      if (geocodeBudget.remaining <= 0) {
-        const parsedLat = Number(lat);
-        const parsedLng = Number(lng);
-        if (Number.isFinite(parsedLat) && Number.isFinite(parsedLng)) {
-          return `${parsedLat.toFixed(5)}, ${parsedLng.toFixed(5)}`;
-        }
-        return "";
-      }
+      const parsedLat = Number(lat);
+      const parsedLng = Number(lng);
+      if (!Number.isFinite(parsedLat) || !Number.isFinite(parsedLng)) return "";
+      const roundedLat = Math.round(parsedLat * 1000) / 1000;
+      const roundedLng = Math.round(parsedLng * 1000) / 1000;
+      const pointKey = `${roundedLat},${roundedLng}`;
+      const existing = geocodeByPoint.get(pointKey);
+      if (existing) return existing;
+      if (geocodeBudget.remaining <= 0) return `${parsedLat.toFixed(5)}, ${parsedLng.toFixed(5)}`;
       geocodeBudget.remaining -= 1;
-      return fetchReverseGeocodeLabel(lat, lng);
+      const lookup = fetchReverseGeocodeLabel(roundedLat, roundedLng)
+        .then((label) => label || `${parsedLat.toFixed(5)}, ${parsedLng.toFixed(5)}`);
+      geocodeByPoint.set(pointKey, lookup);
+      return lookup;
+    };
+    const pointsWithinMeters = (lat1: unknown, lng1: unknown, lat2: unknown, lng2: unknown, meters: number) => {
+      const a = [Number(lat1), Number(lng1), Number(lat2), Number(lng2)];
+      if (a.some((value) => !Number.isFinite(value))) return false;
+      const dLat = (a[2] - a[0]) * 111_320;
+      const dLng = (a[3] - a[1]) * 111_320 * Math.cos((a[0] * Math.PI) / 180);
+      return Math.hypot(dLat, dLng) <= meters;
     };
     const gpsBundle = isGpsIotServer()
       ? await getGpsIotMovementBundle({
@@ -5228,6 +5246,12 @@ export default function Reports() {
         section.rows = locationRows;
       } else {
         const metrics: Array<{ drivingMs: number; distanceKm: number; standingMs: number }> = [];
+        const departureLabels = await Promise.all(sortedTrips.map((trip) => resolveAddressFromTripTime(
+          trip.startAddress,
+          trip.startTime,
+          trip.startLat,
+          trip.startLon
+        )));
         const detailedRows = await Promise.all(sortedTrips.map(async (trip, index) => {
           const startTime = new Date(String(trip.startTime ?? ""));
           const endTime = new Date(String(trip.endTime ?? ""));
@@ -5259,18 +5283,13 @@ export default function Reports() {
 
           metrics.push({ drivingMs: durationMs, distanceKm, standingMs });
 
-          const departedFrom = await resolveAddressFromTripTime(
-            trip.startAddress,
-            trip.startTime,
-            trip.startLat,
-            trip.startLon
-          );
-          const arrivedAt = await resolveAddressFromTripTime(
-            trip.endAddress,
-            trip.endTime,
-            trip.endLat,
-            trip.endLon
-          );
+          const departedFrom = departureLabels[index];
+          // Arrival is usually where the next trip departs: reuse that name before looking it up.
+          const arrivedAt = formatLocationLabel(trip.endAddress, "")
+            || (nextTrip && pointsWithinMeters(trip.endLat, trip.endLon, nextTrip.startLat, nextTrip.startLon, 300)
+              && departureLabels[index + 1] && !looksLikeCoordinates(departureLabels[index + 1])
+              ? departureLabels[index + 1]
+              : await resolveAddressFromTripTime(trip.endAddress, trip.endTime, trip.endLat, trip.endLon));
 
           const driverName = resolveTripDriverName(trip.driverName, assetData) || "Unknown";
           const timeZone = formatTripTimeZoneLabel(startTime, section.siteName, siteTimeZones);
@@ -5418,13 +5437,17 @@ export default function Reports() {
     }));
 
     // Addresses: Traccar's own first, then a bounded reverse-geocode, then coordinates.
-    const geocodeBudget = { remaining: 24 };
+    const geocodeBudget = { remaining: 600 };
     const resolveTripLocation = async (address: unknown, lat: unknown, lng: unknown) => {
       const direct = formatLocationLabel(address, "");
       if (direct) return direct;
-      if (geocodeBudget.remaining > 0) {
+      if (geocodeBudget.remaining > 0 && Number.isFinite(Number(lat)) && Number.isFinite(Number(lng))) {
         geocodeBudget.remaining -= 1;
-        const resolved = await fetchReverseGeocodeLabel(lat, lng);
+        // Rounded to ~100 m so repeat stops share one cached lookup.
+        const resolved = await fetchReverseGeocodeLabel(
+          Math.round(Number(lat) * 1000) / 1000,
+          Math.round(Number(lng) * 1000) / 1000
+        );
         if (resolved) return resolved;
       }
       return formatCoordinateLabel(lat, lng) || "—";

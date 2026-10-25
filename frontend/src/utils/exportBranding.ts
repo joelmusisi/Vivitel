@@ -1,6 +1,6 @@
 import type ExcelJS from "exceljs";
 import { getHierarchy } from "./api";
-import { brandLogoToDataUrl } from "./brandLogo";
+import { brandLogoToDataUrl, REPORT_LOGO_VARIANT, reportLogoSize } from "./brandLogo";
 import { stripEmptyCellBorders } from "./reportExcelStyles";
 
 export type ExportScope = { database: string; site: string; account: string };
@@ -35,7 +35,7 @@ export async function resolveExportScope(siteName?: string): Promise<ExportScope
 
 export async function loadExportLogo(): Promise<string | null> {
   try {
-    return (await brandLogoToDataUrl("raster")) ?? (await brandLogoToDataUrl("light"));
+    return (await brandLogoToDataUrl(REPORT_LOGO_VARIANT)) ?? (await brandLogoToDataUrl("raster"));
   } catch {
     return null;
   }
@@ -75,7 +75,7 @@ export function addBrandedSheetHeader(
       base64: logoDataUrl,
       extension: logoDataUrl.includes("image/png") ? "png" : "jpeg"
     });
-    sheet.addImage(imageId, { tl: { col: leftSpan + 0.1, row: 0.15 }, ext: { width: 168, height: 42 } });
+    sheet.addImage(imageId, { tl: { col: leftSpan + 0.1, row: 0.15 }, ext: reportLogoSize(80) });
   }
   return lines.length + 2;
 }

@@ -7,6 +7,11 @@ export const BRAND_LOGO = {
 
 export type BrandLogoVariant = keyof typeof BRAND_LOGO;
 
+/** Downloaded reports use the transparent wordmark (800 × 437) at its own proportions. */
+export const REPORT_LOGO_VARIANT: BrandLogoVariant = "light";
+export const REPORT_LOGO_ASPECT = 800 / 437;
+export const reportLogoSize = (height: number) => ({ width: Math.round(height * REPORT_LOGO_ASPECT), height });
+
 export function brandLogoSrc(variant: Exclude<BrandLogoVariant, "raster"> = "default"): string {
   return BRAND_LOGO[variant];
 }
