@@ -12378,6 +12378,7 @@ label.vivi-required-missing select,
     36px
     40px
     minmax(140px, 1.4fr)
+    minmax(140px, 1.2fr)
     minmax(80px, 0.7fr)
     minmax(110px, 0.9fr)
     minmax(90px, 0.8fr)
@@ -12387,7 +12388,13 @@ label.vivi-required-missing select,
     minmax(130px, 1fr)
     minmax(120px, 1fr)
     48px;
-  min-width: 1180px;
+  min-width: 1320px;
+}
+
+.config-groups-col-menu {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .config-groups-check-col,

@@ -1,4 +1,9 @@
 import ExcelJS from "exceljs";
+import {
+  resolveMonitoredEventDescription,
+  toCanonicalNotificationDescription
+} from "../data/notificationLibrary";
+import { resolveBindingByRef } from "./bindingResolve";
 
 export type ConfigGroupAssetCompileOutcome = {
   assetKey: string;
@@ -16,6 +21,8 @@ export type ConfigGroupSourceSnapshot = {
   locationBinding?: string;
   deviceBinding?: string;
   capturedAt?: string;
+  /** Hash of everything compiled to the device (bindings + monitored notification parameters). */
+  fingerprint?: string;
 };
 
 export type ConfigGroupCompileAcceptance = {
@@ -56,6 +63,8 @@ export type ConfigGroupChangeInput = {
   updatedAt?: string;
   /** Latest known update time of linked bindings / library rows. */
   linkedSourceUpdatedAt?: string;
+  /** Fingerprint of the group's current binding sources; compared with sourceSnapshot.fingerprint. */
+  currentSourceFingerprint?: string;
   compileAcceptance?: ConfigGroupCompileAcceptance;
 };
 
@@ -145,17 +154,147 @@ export function configurationStatusCellLabel(
 
 const normalizeBindingRef = (value: unknown) => String(value ?? "").trim().toLowerCase();
 
-export function buildConfigGroupSourceSnapshot(group: {
-  notificationBinding?: string;
-  locationBinding?: string;
-  deviceBinding?: string;
-}): ConfigGroupSourceSnapshot {
+export function buildConfigGroupSourceSnapshot(
+  group: {
+    notificationBinding?: string;
+    locationBinding?: string;
+    deviceBinding?: string;
+  },
+  fingerprint?: string
+): ConfigGroupSourceSnapshot {
   return {
     notificationBinding: String(group.notificationBinding ?? "").trim(),
     locationBinding: String(group.locationBinding ?? "").trim(),
     deviceBinding: String(group.deviceBinding ?? "").trim(),
-    capturedAt: new Date().toISOString()
+    capturedAt: new Date().toISOString(),
+    ...(fingerprint ? { fingerprint } : {})
   };
+}
+
+type SourceBindingRow = { id?: string; name?: string; site?: string; [key: string]: unknown };
+
+/** Binding + notification library rows a group's compile reads from. */
+export type ConfigGroupSourceRecords = {
+  notificationBindings: SourceBindingRow[];
+  locationBindings: SourceBindingRow[];
+  deviceBindings: SourceBindingRow[];
+  /** Notification library rows for the group's site. */
+  libraryItems: Array<{ description?: string; type?: string; [key: string]: unknown }>;
+};
+
+/** Bookkeeping fields that never reach the device (ids, counts, timestamps, Traccar caches). */
+const FINGERPRINT_IGNORED_KEYS = new Set([
+  "id",
+  "site",
+  "tenantId",
+  "tenant_id",
+  "updatedAt",
+  "updated_at",
+  "createdAt",
+  "created_at",
+  "assetCount",
+  "groupCount",
+  "advancedConfirmed",
+  "eventId",
+  "traccarNotificationId",
+  "traccarComputedAttributeId"
+]);
+
+/** Canonical value: sorted keys, primitives as strings, empty values dropped. */
+const canonicalFingerprintValue = (value: unknown): unknown => {
+  if (value == null) return undefined;
+  if (Array.isArray(value)) {
+    const items = value.map(canonicalFingerprintValue).filter((item) => item !== undefined);
+    return items.length ? items : undefined;
+  }
+  if (typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const key of Object.keys(value as Record<string, unknown>).sort()) {
+      if (FINGERPRINT_IGNORED_KEYS.has(key)) continue;
+      const next = canonicalFingerprintValue((value as Record<string, unknown>)[key]);
+      if (next !== undefined) out[key] = next;
+    }
+    return Object.keys(out).length ? out : undefined;
+  }
+  const text = String(value).trim();
+  return text ? text : undefined;
+};
+
+/** cyrb53 - short, stable, non-cryptographic hash. */
+const hashFingerprintText = (text: string): string => {
+  let h1 = 0xdeadbeef;
+  let h2 = 0x41c6ce57;
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text.charCodeAt(i);
+    h1 = Math.imul(h1 ^ ch, 2654435761);
+    h2 = Math.imul(h2 ^ ch, 1597334677);
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36);
+};
+
+const findSourceLibraryItem = (items: ConfigGroupSourceRecords["libraryItems"], description: string) => {
+  const resolved = resolveMonitoredEventDescription(items, description);
+  if (resolved) return items.find((row) => String(row.description ?? "").trim() === resolved) ?? null;
+  const key = normalizeBindingRef(toCanonicalNotificationDescription(description));
+  return (
+    items.find(
+      (row) => normalizeBindingRef(toCanonicalNotificationDescription(String(row.description ?? ""))) === key
+    ) ?? null
+  );
+};
+
+/**
+ * Stable fingerprint of everything a configuration group compiles to its devices:
+ * binding names, device/location parameters, and each monitored notification's library parameters.
+ * Missing bindings fingerprint as their ref so attaching / detaching / renaming always changes it.
+ */
+export function buildConfigGroupSourceFingerprint(
+  group: { site?: string; notificationBinding?: string; locationBinding?: string; deviceBinding?: string },
+  sources: ConfigGroupSourceRecords
+): string {
+  const site = String(group.site ?? "").trim();
+  const resolve = (rows: SourceBindingRow[], ref: unknown) => {
+    const needle = String(ref ?? "").trim();
+    if (!needle) return null;
+    const binding = resolveBindingByRef(rows ?? [], needle, site);
+    return binding ? canonicalFingerprintValue(binding) ?? {} : { missing: normalizeBindingRef(needle) };
+  };
+
+  let notification: unknown = null;
+  const notificationRef = String(group.notificationBinding ?? "").trim();
+  if (notificationRef) {
+    const binding = resolveBindingByRef(sources.notificationBindings ?? [], notificationRef, site);
+    if (!binding) {
+      notification = { missing: normalizeBindingRef(notificationRef) };
+    } else {
+      const monitored = Array.isArray(binding.monitoredEvents) ? (binding.monitoredEvents as unknown[]) : [];
+      const byKey = new Map<string, unknown>();
+      for (const raw of monitored) {
+        const description = String(raw ?? "").trim();
+        if (!description) continue;
+        const item = findSourceLibraryItem(sources.libraryItems ?? [], description);
+        const key = item
+          ? String(item.description ?? "").trim()
+          : `missing:${normalizeBindingRef(toCanonicalNotificationDescription(description))}`;
+        byKey.set(key, item ? canonicalFingerprintValue(item) ?? {} : { missing: key });
+      }
+      const { monitoredEvents: _monitored, ...rest } = binding;
+      notification = {
+        binding: canonicalFingerprintValue(rest) ?? {},
+        notifications: [...byKey.keys()].sort().map((key) => byKey.get(key))
+      };
+    }
+  }
+
+  const payload = {
+    site: normalizeBindingRef(site),
+    notification,
+    location: resolve(sources.locationBindings, group.locationBinding),
+    device: resolve(sources.deviceBindings, group.deviceBinding)
+  };
+  return hashFingerprintText(JSON.stringify(payload));
 }
 
 /** True when linked bindings/libraries changed after the last compile snapshot. */
@@ -166,6 +305,11 @@ export function hasConfigurationSourceChanged(group: ConfigGroupChangeInput): bo
   const updatedAtMs = Date.parse(String(group.updatedAt ?? ""));
   const linkedMs = Date.parse(String(group.linkedSourceUpdatedAt ?? ""));
 
+  // Content fingerprint is authoritative: it catches renames, parameter edits and notification
+  // list changes, and ignores saves that changed nothing (unlike updatedAt timestamps).
+  const currentFingerprint = String(group.currentSourceFingerprint ?? "").trim();
+  const snapshotFingerprint = String(snapshot?.fingerprint ?? "").trim();
+
   if (snapshot) {
     const notificationChanged =
       normalizeBindingRef(group.notificationBinding) !== normalizeBindingRef(snapshot.notificationBinding);
@@ -174,6 +318,11 @@ export function hasConfigurationSourceChanged(group: ConfigGroupChangeInput): bo
     const deviceChanged =
       normalizeBindingRef(group.deviceBinding) !== normalizeBindingRef(snapshot.deviceBinding);
     if (notificationChanged || locationChanged || deviceChanged) return true;
+  }
+
+  if (snapshotFingerprint) {
+    // Sources not loaded yet: wait for them rather than guessing from timestamps.
+    return Boolean(currentFingerprint) && currentFingerprint !== snapshotFingerprint;
   }
 
   if (Number.isFinite(compiledAtMs)) {

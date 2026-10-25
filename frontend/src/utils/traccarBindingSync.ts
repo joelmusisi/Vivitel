@@ -97,6 +97,7 @@ export type ConfigGroupCompileAcceptanceRecord = {
     locationBinding?: string;
     deviceBinding?: string;
     capturedAt?: string;
+    fingerprint?: string;
   };
 };
 

@@ -15,6 +15,8 @@ import {
 } from "../../utils/api";
 import {
   assetConfigurationStatus,
+  buildConfigGroupSourceFingerprint,
+  buildConfigGroupSourceSnapshot,
   configurationChangeLabel,
   configurationDateLabel,
   configurationStatusCellLabel,
@@ -23,7 +25,8 @@ import {
   CONFIGURATION_CHANGE,
   CONFIGURATION_RECEIVED_NOTE,
   CONFIGURATION_STATUS,
-  type ConfigGroupCompileAcceptance
+  type ConfigGroupCompileAcceptance,
+  type ConfigGroupSourceRecords
 } from "../../utils/configGroupCompileStatus";
 import {
   compileConfigurationGroupAssetToTraccar,
@@ -41,7 +44,12 @@ import {
   isUserNotificationBinding,
   readActiveSiteName
 } from "../../utils/notificationLibraryStore";
-import { configGroupsCacheKey, filterForSiteScope, filterRecordsForActiveSelection } from "../../utils/scopeStorage";
+import {
+  configGroupsCacheKey,
+  filterForSiteScope,
+  filterRecordsForActiveSelection,
+  loadScopedFromApi
+} from "../../utils/scopeStorage";
 import { loadSharedAdminRows, saveSharedAdminRows } from "../../utils/sharedRecords";
 import { readStoredSelectionScope } from "../../utils/selectionScope";
 import {
@@ -50,6 +58,8 @@ import {
   purgeMockConfigurationGroupsFromLocalStorage
 } from "../../utils/configGroupMocks";
 import { showToast } from "../../utils/toast";
+import { siteScopeToken } from "../../utils/scopeIsolation";
+import { readUserPrefJson, writeUserPrefJson } from "../../utils/userAppPrefs";
 import { formatAssetDescription } from "../../utils/hierarchyDisplay";
 import "../../index.css";
 
@@ -256,10 +266,15 @@ const persistConfigGroupAssetAssignments = async (
   return { ok: errors.length === 0, updated, errors };
 };
 
+type ConfigGroupChangeSource = {
+  linkedSourceUpdatedAt?: string;
+  currentSourceFingerprint?: string;
+};
+
 const buildConfigGroupAdminRow = (
   group: ConfigGroupRecord,
   assetCountsByRef: Map<string, number>,
-  linkedSourceUpdatedAt?: string
+  changeSource?: ConfigGroupChangeSource
 ): AdminRow => {
   const liveCount =
     assetCountsByRef.get(normalizeConfigGroupKey(group.id))
@@ -272,7 +287,7 @@ const buildConfigGroupAdminRow = (
     locationBinding: group.locationBinding,
     deviceBinding: group.deviceBinding,
     updatedAt: group.updatedAt,
-    linkedSourceUpdatedAt,
+    ...changeSource,
     compileAcceptance: acceptance
   };
   const statusLabel = configurationStatusCellLabel(acceptance, assetCount);
@@ -301,7 +316,7 @@ const buildConfigGroupAdminRow = (
 const buildConfigAssetDetailRows = (
   groups: ConfigGroupRecord[],
   assets: TenantAsset[],
-  linkedSourceUpdatedAtForGroup: (group: ConfigGroupRecord) => string | undefined
+  changeSourceForGroup: (group: ConfigGroupRecord) => ConfigGroupChangeSource
 ): ConfigAssetDetailRow[] => {
   const allGroups = groups;
   const rows: ConfigAssetDetailRow[] = [];
@@ -312,7 +327,7 @@ const buildConfigAssetDetailRows = (
       locationBinding: group.locationBinding,
       deviceBinding: group.deviceBinding,
       updatedAt: group.updatedAt,
-      linkedSourceUpdatedAt: linkedSourceUpdatedAtForGroup(group),
+      ...changeSourceForGroup(group),
       compileAcceptance: acceptance
     };
     const dateLabel = configurationDateLabel(changeInput);
@@ -461,6 +476,7 @@ const pageConfigs: Record<string, AdminPageConfig> = {
       "",
       "Flag",
       "Asset description",
+      "Configuration group",
       "Asset ID",
       "IMEI",
       "Site",
@@ -572,18 +588,60 @@ const buildCompileResultMessage = (result: ConfigurationGroupCompileResult) => {
   return CONFIGURATION_STATUS.FAILED;
 };
 
-const persistCompiledConfigGroup = async (
-  group: ConfigGroupRecord,
-  result: ConfigurationGroupCompileResult
-) => {
-  const payload: ConfigGroupRecord = {
-    ...group,
-    status: result.ok ? "configured" : group.status,
-    updatedAt: new Date().toISOString(),
-    compileAcceptance: result.compileAcceptance
-  };
-  await saveConfigurationGroup(payload);
+type ConfigGroupSourceState = {
+  bindings: Omit<ConfigGroupSourceRecords, "libraryItems">;
+  /** Stored notification library rows keyed by lower-case site; missing when the read failed. */
+  libraryItemsBySite: Record<string, ConfigGroupSourceRecords["libraryItems"]>;
+};
 
+/** Read-only load of everything a group compiles from (never writes library defaults). */
+const loadConfigGroupSourceState = async (sites: string[]): Promise<ConfigGroupSourceState> => {
+  const uniqueSites = dedupeStrings(sites);
+  const [notificationBindings, locationBindings, deviceBindings, libraries] = await Promise.all([
+    getBindings<ConfigGroupSourceRecords["notificationBindings"][number]>("notifications"),
+    getBindings<ConfigGroupSourceRecords["locationBindings"][number]>("locations"),
+    getBindings<ConfigGroupSourceRecords["deviceBindings"][number]>("devices"),
+    Promise.all(
+      uniqueSites.map((site) =>
+        loadScopedFromApi<{ items?: ConfigGroupSourceRecords["libraryItems"] }>("libraries:notification", site)
+          .then((stored) => (stored && typeof stored === "object" ? stored.items ?? [] : null))
+          .catch(() => null)
+      )
+    )
+  ]);
+  const libraryItemsBySite: ConfigGroupSourceState["libraryItemsBySite"] = {};
+  uniqueSites.forEach((site, index) => {
+    const items = libraries[index];
+    if (Array.isArray(items)) libraryItemsBySite[site.toLowerCase()] = items;
+  });
+  return { bindings: { notificationBindings, locationBindings, deviceBindings }, libraryItemsBySite };
+};
+
+const configGroupSourceFingerprint = (
+  group: ConfigGroupRecord,
+  state: ConfigGroupSourceState | null
+): string | undefined => {
+  if (!state) return undefined;
+  const libraryItems = state.libraryItemsBySite[String(group.site ?? "").trim().toLowerCase()];
+  if (!libraryItems) return undefined;
+  const { notificationBindings, locationBindings, deviceBindings } = state.bindings;
+  // An empty list for a referenced kind means the load failed — don't fingerprint a false "missing".
+  if (String(group.notificationBinding ?? "").trim() && !notificationBindings.length) return undefined;
+  if (String(group.locationBinding ?? "").trim() && !locationBindings.length) return undefined;
+  if (String(group.deviceBinding ?? "").trim() && !deviceBindings.length) return undefined;
+  return buildConfigGroupSourceFingerprint(group, { ...state.bindings, libraryItems });
+};
+
+/** Fingerprint of the group's binding sources right now — taken before compile / upload. */
+const captureConfigGroupSourceFingerprint = async (group: ConfigGroupRecord) => {
+  try {
+    return configGroupSourceFingerprint(group, await loadConfigGroupSourceState([String(group.site ?? "")]));
+  } catch {
+    return undefined;
+  }
+};
+
+const writeConfigGroupToCache = (payload: ConfigGroupRecord) => {
   const cacheKey = configGroupsCacheKey(String(payload.site ?? ""));
   const stored = window.localStorage.getItem(cacheKey);
   try {
@@ -594,7 +652,42 @@ const persistCompiledConfigGroup = async (
   } catch {
     window.localStorage.setItem(cacheKey, JSON.stringify([payload]));
   }
+};
 
+/** After a full upload, the devices hold the current sources — clear "Configurations Changed". */
+const persistConfigGroupSourceSnapshot = async (group: ConfigGroupRecord, sourceFingerprint?: string) => {
+  if (!group.compileAcceptance) return group;
+  const payload: ConfigGroupRecord = {
+    ...group,
+    compileAcceptance: {
+      ...group.compileAcceptance,
+      sourceSnapshot: buildConfigGroupSourceSnapshot(group, sourceFingerprint)
+    }
+  };
+  await saveConfigurationGroup(payload);
+  writeConfigGroupToCache(payload);
+  return payload;
+};
+
+const persistCompiledConfigGroup = async (
+  group: ConfigGroupRecord,
+  result: ConfigurationGroupCompileResult,
+  sourceFingerprint?: string
+) => {
+  const payload: ConfigGroupRecord = {
+    ...group,
+    status: result.ok ? "configured" : group.status,
+    updatedAt: new Date().toISOString(),
+    compileAcceptance: result.compileAcceptance
+      ? {
+          ...result.compileAcceptance,
+          // Group refs (not per-asset override refs) so the column compares like with like.
+          sourceSnapshot: buildConfigGroupSourceSnapshot(group, sourceFingerprint)
+        }
+      : result.compileAcceptance
+  };
+  await saveConfigurationGroup(payload);
+  writeConfigGroupToCache(payload);
   return payload;
 };
 
@@ -610,6 +703,37 @@ const readStoredConfigGroups = (tenantKey: string): ConfigGroupRecord[] => {
 };
 
 const BINDINGS_PAGE_PATH = "/Control/config/templates";
+
+/** Grid track per asset-table column (header label → width). */
+const CONFIG_ASSET_COLUMN_WIDTHS: Record<string, string> = {
+  "": "36px",
+  Flag: "40px",
+  "Asset description": "minmax(140px, 1.4fr)",
+  "Configuration group": "minmax(140px, 1.2fr)",
+  "Asset ID": "minmax(80px, 0.7fr)",
+  IMEI: "minmax(110px, 0.9fr)",
+  Site: "minmax(90px, 0.8fr)",
+  "Mobile Device Binding": "minmax(120px, 1fr)",
+  "Notification Binding": "minmax(120px, 1fr)",
+  "Configuration Date": "minmax(110px, 0.9fr)",
+  "Configuration status": "minmax(130px, 1fr)",
+  "Config Compile Status": "minmax(120px, 1fr)",
+  Actions: "48px"
+};
+
+/** Columns the chooser never hides (selection, identity, row menu). */
+const CONFIG_ASSET_FIXED_COLUMNS = new Set(["", "Asset description", "Actions"]);
+
+/** Per-account (user + tenant) and per-site key for the asset table's hidden columns. */
+const configAssetColumnPrefsKey = (site: string) =>
+  `vivi.configGroups.assetColumns:${siteScopeToken(site) || "all"}`;
+
+const readHiddenConfigAssetColumns = (site: string): string[] => {
+  const saved = readUserPrefJson<{ hidden?: unknown }>(configAssetColumnPrefsKey(site));
+  return Array.isArray(saved?.hidden)
+    ? saved!.hidden.map((col) => String(col)).filter((col) => !CONFIG_ASSET_FIXED_COLUMNS.has(col))
+    : [];
+};
 
 export default function ConfigAdmin() {
   const location = useLocation();
@@ -633,6 +757,8 @@ export default function ConfigAdmin() {
   const [deviceLocationMonitoringByName, setDeviceLocationMonitoringByName] = useState<Record<string, boolean>>({});
   /** Latest binding/library update times keyed by binding name (lower-case). */
   const [bindingSourceUpdatedAtByName, setBindingSourceUpdatedAtByName] = useState<Record<string, string>>({});
+  /** Current bindings + notification library, for comparing against each group's compile fingerprint. */
+  const [configGroupSources, setConfigGroupSources] = useState<ConfigGroupSourceState | null>(null);
   const [siteOptions, setSiteOptions] = useState<string[]>([]);
   const [tenantAssets, setTenantAssets] = useState<TenantAsset[]>([]);
   const [assignedAssetKeys, setAssignedAssetKeys] = useState<string[]>([]);
@@ -662,6 +788,47 @@ export default function ConfigAdmin() {
   } | null>(null);
   const [assetOverrideSaving, setAssetOverrideSaving] = useState(false);
   const openedGroupFromQueryRef = useRef("");
+  const [columnPrefsSite, setColumnPrefsSite] = useState(() => readActiveSiteName());
+  const [hiddenConfigAssetCols, setHiddenConfigAssetCols] = useState<string[]>(() =>
+    readHiddenConfigAssetColumns(readActiveSiteName())
+  );
+  const [assetColMenuPos, setAssetColMenuPos] = useState<{ top: number; left: number } | null>(null);
+  const assetColMenuRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const handleSiteChange = () => setColumnPrefsSite(readActiveSiteName());
+    window.addEventListener("vivi:orgchange", handleSiteChange);
+    window.addEventListener("vivi:contextchange", handleSiteChange);
+    return () => {
+      window.removeEventListener("vivi:orgchange", handleSiteChange);
+      window.removeEventListener("vivi:contextchange", handleSiteChange);
+    };
+  }, []);
+
+  useEffect(() => {
+    setHiddenConfigAssetCols(readHiddenConfigAssetColumns(columnPrefsSite));
+  }, [columnPrefsSite]);
+
+  useEffect(() => {
+    if (!assetColMenuPos) return;
+    const handlePointerDown = (event: MouseEvent) => {
+      if (assetColMenuRef.current?.contains(event.target as Node)) return;
+      setAssetColMenuPos(null);
+    };
+    document.addEventListener("mousedown", handlePointerDown);
+    return () => document.removeEventListener("mousedown", handlePointerDown);
+  }, [assetColMenuPos]);
+
+  const isConfigAssetColVisible = (col: string) => !hiddenConfigAssetCols.includes(col);
+
+  const toggleConfigAssetCol = (col: string) => {
+    if (CONFIG_ASSET_FIXED_COLUMNS.has(col)) return;
+    const next = hiddenConfigAssetCols.includes(col)
+      ? hiddenConfigAssetCols.filter((item) => item !== col)
+      : [...hiddenConfigAssetCols, col];
+    setHiddenConfigAssetCols(next);
+    writeUserPrefJson(configAssetColumnPrefsKey(columnPrefsSite), { hidden: next });
+  };
 
   const resolveLinkedSourceUpdatedAt = useCallback(
     (group: ConfigGroupRecord | undefined) => {
@@ -685,6 +852,17 @@ export default function ConfigAdmin() {
     },
     [bindingSourceUpdatedAtByName]
   );
+
+  const resolveChangeSource = useCallback(
+    (group: ConfigGroupRecord): ConfigGroupChangeSource => ({
+      linkedSourceUpdatedAt: resolveLinkedSourceUpdatedAt(group),
+      currentSourceFingerprint: configGroupSourceFingerprint(group, configGroupSources)
+    }),
+    [configGroupSources, resolveLinkedSourceUpdatedAt]
+  );
+  // Long-lived loaders (scope-change listeners) read the latest resolver through this ref.
+  const resolveChangeSourceRef = useRef(resolveChangeSource);
+  resolveChangeSourceRef.current = resolveChangeSource;
 
   const showCompileStartedBanner = (message: string) => {
     if (compileBannerTimerRef.current != null) {
@@ -979,7 +1157,7 @@ export default function ConfigAdmin() {
       const byId: Record<string, ConfigGroupRecord> = {};
       const rows: AdminRow[] = source.map((group) => {
         byId[group.id] = group;
-        return buildConfigGroupAdminRow(group, assetCountsByRef, resolveLinkedSourceUpdatedAt(group));
+        return buildConfigGroupAdminRow(group, assetCountsByRef, resolveChangeSourceRef.current(group));
       });
       setConfigGroups(byId);
       setRowsByPath((current) => ({ ...current, [configGroupPath]: rows }));
@@ -1114,6 +1292,55 @@ export default function ConfigAdmin() {
     };
   }, [location.pathname, formDraft["Site"]]);
 
+  const configGroupSitesKey = useMemo(
+    () =>
+      dedupeStrings([
+        readActiveSiteName(),
+        ...Object.values(configGroups).map((group) => String(group.site ?? ""))
+      ]).join("\n"),
+    [configGroups]
+  );
+
+  useEffect(() => {
+    if (location.pathname !== configGroupPath) return;
+    let mounted = true;
+    const sites = configGroupSitesKey ? configGroupSitesKey.split("\n") : [];
+    const reload = () => {
+      void loadConfigGroupSourceState(sites)
+        .then((state) => {
+          if (mounted) setConfigGroupSources(state);
+        })
+        .catch(() => {
+          // Keep the last known sources on transient failures.
+        });
+    };
+    reload();
+    const events = ["vivi:orgchange", "vivi:contextchange", "vivi:bindingschange", "vivi:notificationLibraryUpdated"];
+    for (const name of events) window.addEventListener(name, reload);
+    return () => {
+      mounted = false;
+      for (const name of events) window.removeEventListener(name, reload);
+    };
+  }, [location.pathname, configGroupSitesKey]);
+
+  useEffect(() => {
+    if (location.pathname !== configGroupPath) return;
+    const groups = Object.values(configGroups);
+    if (!groups.length) return;
+    const assetCountsByRef = countAssetsForConfigGroups(groups, tenantAssets);
+    setRowsByPath((current) => {
+      const rows = current[configGroupPath] ?? [];
+      return {
+        ...current,
+        [configGroupPath]: rows.map((row) => {
+          const group = configGroups[row.id];
+          return group ? buildConfigGroupAdminRow(group, assetCountsByRef, resolveChangeSource(group)) : row;
+        })
+      };
+    });
+    // Only re-derive when binding sources change; group/asset edits rebuild their own rows.
+  }, [resolveChangeSource]);
+
   const sidebarGroups = useMemo(() => {
     return Object.values(configGroups)
       .slice()
@@ -1122,8 +1349,8 @@ export default function ConfigAdmin() {
 
   const allConfigAssetRows = useMemo(() => {
     if (location.pathname !== configGroupPath) return [] as ConfigAssetDetailRow[];
-    return buildConfigAssetDetailRows(sidebarGroups, tenantAssets, resolveLinkedSourceUpdatedAt);
-  }, [location.pathname, resolveLinkedSourceUpdatedAt, sidebarGroups, tenantAssets]);
+    return buildConfigAssetDetailRows(sidebarGroups, tenantAssets, resolveChangeSource);
+  }, [location.pathname, resolveChangeSource, sidebarGroups, tenantAssets]);
 
   const configAssetRows = useMemo(() => {
     if (selectedSidebarGroupId === "all") return allConfigAssetRows;
@@ -1190,6 +1417,8 @@ export default function ConfigAdmin() {
         return row.flagged ? "1" : "0";
       case "Asset description":
         return row.description;
+      case "Configuration group":
+        return row.groupName;
       case "Asset ID":
         return row.assetId;
       case "IMEI":
@@ -1214,6 +1443,22 @@ export default function ConfigAdmin() {
     rows: filteredConfigAssetRows,
     getValue: getConfigAssetSortValue
   });
+  const configAssetVisibleColumns = useMemo(
+    () => pageConfigs[configGroupPath].columns.filter((col) => !hiddenConfigAssetCols.includes(col)),
+    [hiddenConfigAssetCols]
+  );
+  const configAssetGrid = configAssetVisibleColumns
+    .map((col) => CONFIG_ASSET_COLUMN_WIDTHS[col] ?? "minmax(100px, 1fr)")
+    .join(" ");
+  // Sum of track minimums (+ grid gaps) so hiding columns also narrows the scroll width.
+  const configAssetMinWidth = configAssetVisibleColumns.reduce((total, col) => {
+    const match = /(\d+)px/.exec(CONFIG_ASSET_COLUMN_WIDTHS[col] ?? "100px");
+    return total + Number(match?.[1] ?? 100) + 12;
+  }, 0);
+  const configAssetRowStyle: CSSProperties = {
+    gridTemplateColumns: configAssetGrid,
+    minWidth: `${configAssetMinWidth}px`
+  };
 
   const selectedSidebarGroup =
     selectedSidebarGroupId === "all" ? null : configGroups[selectedSidebarGroupId] ?? null;
@@ -1512,6 +1757,7 @@ export default function ConfigAdmin() {
     setUploadingGroupId(groupId);
     showCompileStartedBanner(`Uploading compiled configuration for ${group.name || "group"}…`);
     try {
+      const sourceFingerprint = await captureConfigGroupSourceFingerprint(group);
       const uploadedAt = new Date().toISOString();
       let uploaded = 0;
       for (const row of uploadRows) {
@@ -1530,6 +1776,10 @@ export default function ConfigAdmin() {
         // Re-push compiled settings for this asset using effective (override or group) bindings.
         const effectiveGroup = effectiveGroupForAsset(group, nextAsset);
         await compileConfigurationGroupAssetToTraccar(effectiveGroup, row.assetKey);
+      }
+      if (uploaded > 0 && uploaded === groupRows.length) {
+        const payload = await persistConfigGroupSourceSnapshot(group, sourceFingerprint);
+        updateConfigGroupRowAfterCompile(payload, tenantAssets);
       }
       showToast(
         uploaded
@@ -1551,7 +1801,7 @@ export default function ConfigAdmin() {
       ? allGroups.map((group) => (group.id === payload.id ? payload : group))
       : [...allGroups, payload];
     const assetCountsByRef = countAssetsForConfigGroups(withPayload, assets);
-    const nextRow = buildConfigGroupAdminRow(payload, assetCountsByRef);
+    const nextRow = buildConfigGroupAdminRow(payload, assetCountsByRef, resolveChangeSourceRef.current(payload));
     setConfigGroups((current) => ({ ...current, [payload.id]: payload }));
     setRowsByPath((current) => {
       const rows = current[configGroupPath] ?? [];
@@ -1598,6 +1848,7 @@ export default function ConfigAdmin() {
       [rowId]: { ...group, compileAcceptance: compilingPlaceholder }
     }));
     try {
+      const sourceFingerprint = await captureConfigGroupSourceFingerprint(group);
       const groupAssetRows = allConfigAssetRows.filter((row) => row.groupId === rowId);
       const flaggedKeys = groupAssetRows.filter((row) => row.flagged).map((row) => row.assetKey);
       const unflaggedKeys = groupAssetRows.filter((row) => !row.flagged).map((row) => row.assetKey);
@@ -1649,7 +1900,7 @@ export default function ConfigAdmin() {
           (await compileConfigurationGroupToTraccar(group));
       }
 
-      const payload = await persistCompiledConfigGroup(group, result);
+      const payload = await persistCompiledConfigGroup(group, result, sourceFingerprint);
       const assets = await getAssetsFromApi<TenantAsset>().catch(() => [] as TenantAsset[]);
       setTenantAssets(assets);
       updateConfigGroupRowAfterCompile(payload, assets);
@@ -1699,8 +1950,9 @@ export default function ConfigAdmin() {
     try {
       const asset = findTenantAssetByKey(key);
       const effectiveGroup = effectiveGroupForAsset(group, asset);
+      const sourceFingerprint = await captureConfigGroupSourceFingerprint(group);
       const result = await compileConfigurationGroupAssetToTraccar(effectiveGroup, key);
-      const payload = await persistCompiledConfigGroup(group, result);
+      const payload = await persistCompiledConfigGroup(group, result, sourceFingerprint);
       const assets = await getAssetsFromApi<TenantAsset>().catch(() => [] as TenantAsset[]);
       setTenantAssets(assets);
       updateConfigGroupRowAfterCompile(payload, assets);
@@ -1935,10 +2187,10 @@ export default function ConfigAdmin() {
 
             <div
               className="admin-table config-groups-asset-table"
-              style={{ "--admin-cols": String(page.columns.length) } as CSSProperties}
+              style={{ "--admin-cols": String(configAssetVisibleColumns.length) } as CSSProperties}
             >
-              <div className="admin-row admin-row-head">
-                {page.columns.map((col) => {
+              <div className="admin-row admin-row-head" style={configAssetRowStyle}>
+                {configAssetVisibleColumns.map((col) => {
                   if (col === "") {
                     const visibleIds = configAssetSort.sortedRows.map((row) => row.id);
                     const allSelected =
@@ -1965,8 +2217,43 @@ export default function ConfigAdmin() {
                   }
                   if (col === "Actions") {
                     return (
-                      <span key={col} className="admin-col-actions">
-                        {col}
+                      <span key={col} className="admin-col-actions config-groups-col-menu" ref={assetColMenuRef}>
+                        <button
+                          type="button"
+                          className="menu-icon-btn"
+                          aria-label="Choose columns"
+                          title="Choose columns"
+                          aria-expanded={Boolean(assetColMenuPos)}
+                          onClick={(event) => {
+                            const rect = event.currentTarget.getBoundingClientRect();
+                            setAssetColMenuPos((current) =>
+                              current ? null : { top: rect.bottom + 6, left: Math.max(8, rect.right - 220) }
+                            );
+                          }}
+                        >
+                          <span />
+                          <span />
+                          <span />
+                        </button>
+                        {assetColMenuPos && (
+                          <div
+                            className="assets-col-dropdown"
+                            style={{ top: assetColMenuPos.top, left: assetColMenuPos.left }}
+                          >
+                            {page.columns
+                              .filter((option) => !CONFIG_ASSET_FIXED_COLUMNS.has(option))
+                              .map((option) => (
+                                <label key={option} className="columns-option">
+                                  <input
+                                    type="checkbox"
+                                    checked={isConfigAssetColVisible(option)}
+                                    onChange={() => toggleConfigAssetCol(option)}
+                                  />
+                                  {option}
+                                </label>
+                              ))}
+                          </div>
+                        )}
                       </span>
                     );
                   }
@@ -1994,7 +2281,7 @@ export default function ConfigAdmin() {
                     || (compilingGroupId === row.groupId && !compilingAssetKey);
                   const menuOpen = openAssetMenuId === row.id;
                   return (
-                    <div key={row.id} className="admin-row">
+                    <div key={row.id} className="admin-row" style={configAssetRowStyle}>
                       <span className="config-groups-check-col">
                         <input
                           type="checkbox"
@@ -2003,9 +2290,11 @@ export default function ConfigAdmin() {
                           onChange={() => toggleAssetRowSelected(row.id)}
                         />
                       </span>
-                      <span className="config-groups-flag-col" title={row.flagged ? "Custom bindings" : ""}>
-                        {row.flagged ? <span className="config-groups-flag" aria-label="Flagged">⚑</span> : null}
-                      </span>
+                      {isConfigAssetColVisible("Flag") && (
+                        <span className="config-groups-flag-col" title={row.flagged ? "Custom bindings" : ""}>
+                          {row.flagged ? <span className="config-groups-flag" aria-label="Flagged">⚑</span> : null}
+                        </span>
+                      )}
                       <span className="config-groups-asset-cell">
                         <button
                           type="button"
@@ -2015,13 +2304,12 @@ export default function ConfigAdmin() {
                         >
                           {row.description}
                         </button>
-                        {selectedSidebarGroupId === "all" && (
-                          <span className="config-groups-asset-group">{row.groupName}</span>
-                        )}
                       </span>
-                      <span>{row.assetId || "—"}</span>
-                      <span>{row.imei || "—"}</span>
-                      <span>{row.site || "—"}</span>
+                      {isConfigAssetColVisible("Configuration group") && <span>{row.groupName || "—"}</span>}
+                      {isConfigAssetColVisible("Asset ID") && <span>{row.assetId || "—"}</span>}
+                      {isConfigAssetColVisible("IMEI") && <span>{row.imei || "—"}</span>}
+                      {isConfigAssetColVisible("Site") && <span>{row.site || "—"}</span>}
+                      {isConfigAssetColVisible("Mobile Device Binding") && (
                       <span>
                         {row.deviceBindingName ? (
                           <button
@@ -2036,6 +2324,8 @@ export default function ConfigAdmin() {
                           "—"
                         )}
                       </span>
+                      )}
+                      {isConfigAssetColVisible("Notification Binding") && (
                       <span>
                         {row.notificationBindingName ? (
                           <button
@@ -2052,7 +2342,9 @@ export default function ConfigAdmin() {
                           "—"
                         )}
                       </span>
-                      <span>{row.configurationDate || "—"}</span>
+                      )}
+                      {isConfigAssetColVisible("Configuration Date") && <span>{row.configurationDate || "—"}</span>}
+                      {isConfigAssetColVisible("Configuration status") && (
                       <span
                         className={`admin-configured-count${
                           row.statusKind === "accepted"
@@ -2064,6 +2356,8 @@ export default function ConfigAdmin() {
                       >
                         {isCompilingThisAsset ? "Compiling…" : row.configurationStatus}
                       </span>
+                      )}
+                      {isConfigAssetColVisible("Config Compile Status") && (
                       <span
                         className={
                           row.configurationChange
@@ -2079,6 +2373,7 @@ export default function ConfigAdmin() {
                       >
                         {row.configurationChange || ""}
                       </span>
+                      )}
                       <span className="admin-actions-col config-groups-row-actions">
                         <button
                           type="button"
@@ -2722,8 +3017,13 @@ export default function ConfigAdmin() {
 
                         let compileResult: ConfigurationGroupCompileResult | null = null;
                         if (assignedAssetKeys.length > 0) {
+                          const sourceFingerprint = await captureConfigGroupSourceFingerprint(payload);
                           compileResult = await compileConfigurationGroupToTraccar(payload);
-                          const compiledPayload = await persistCompiledConfigGroup(payload, compileResult);
+                          const compiledPayload = await persistCompiledConfigGroup(
+                            payload,
+                            compileResult,
+                            sourceFingerprint
+                          );
                           const assetsAfterCompile = await getAssetsFromApi<TenantAsset>().catch(
                             () => [] as TenantAsset[]
                           );
