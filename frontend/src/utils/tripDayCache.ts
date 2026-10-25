@@ -1,10 +1,10 @@
 /**
- * Day-split trip loading with a browser cache for finished days.
+ * Trip loading in small batches with a browser cache for finished time slices.
  *
- * A trips report over N days is split at UTC midnight. Whole days that ended a
- * few hours ago are settled: their trips are kept per device in memory and
- * IndexedDB and never fetched again. Only the partial head / tail of the range
- * (usually today) and days not seen before go to the tracking server.
+ * A trips request is cut into slices at UTC midnight. A slice that ended a few
+ * hours ago is settled: its trips are kept per vehicle in memory and IndexedDB
+ * and never fetched again. Only open slices (usually today) and slices not seen
+ * before go to the tracking server.
  */
 
 const DAY_MS = 86_400_000;
@@ -13,8 +13,16 @@ const SETTLE_LAG_MS = 3 * 60 * 60 * 1000;
 /** Settled days older than this are dropped from IndexedDB. */
 const KEEP_DAYS = 62;
 const DAY_FETCH_CONCURRENCY = 3;
+/**
+ * The Worker aborts a Traccar report at 60 s and a trips report costs roughly
+ * 6 s per vehicle-day, so requests stay small and a failed batch is retried
+ * vehicle by vehicle.
+ */
+const IDS_PER_REQUEST = 5;
+/** Trip requests in flight from this module (the browser proxy pool is 6, shared with live polls). */
+const REQUEST_CONCURRENCY = 4;
 
-const DB_NAME = "vivi-trip-days";
+const DB_NAME = "vivi-trip-slices";
 const STORE = "days";
 
 type DeviceTrip = { deviceId?: unknown };
@@ -29,6 +37,8 @@ const openDb = (): Promise<IDBDatabase | null> => {
   dbPromise = new Promise((resolve) => {
     try {
       if (typeof indexedDB === "undefined") return resolve(null);
+      // First version of this cache used whole-day keys; drop it.
+      indexedDB.deleteDatabase("vivi-trip-days");
       const request = indexedDB.open(DB_NAME, 1);
       request.onupgradeneeded = () => {
         const store = request.result.createObjectStore(STORE);
@@ -101,6 +111,51 @@ const pruneOldDays = async () => {
   }
 };
 
+let requestsInFlight = 0;
+const requestWaiters: Array<() => void> = [];
+
+const withRequestSlot = async <R>(work: () => Promise<R>): Promise<R> => {
+  if (requestsInFlight >= REQUEST_CONCURRENCY) {
+    await new Promise<void>((resolve) => requestWaiters.push(resolve));
+  }
+  requestsInFlight += 1;
+  try {
+    return await work();
+  } finally {
+    requestsInFlight -= 1;
+    requestWaiters.shift()?.();
+  }
+};
+
+/** Small batches, bounded concurrency, per-vehicle retry. Returns the ids that still failed. */
+async function fetchInBatches<T extends DeviceTrip>(
+  ids: string[],
+  fromIso: string,
+  toIso: string,
+  fetchRange: FetchRange<T>
+): Promise<{ trips: T[]; failedIds: Set<string> }> {
+  const trips: T[] = [];
+  const failedIds = new Set<string>();
+  const batches: string[][] = [];
+  for (let index = 0; index < ids.length; index += IDS_PER_REQUEST) {
+    batches.push(ids.slice(index, index + IDS_PER_REQUEST));
+  }
+  await Promise.all(batches.map(async (batch) => {
+    const result = await withRequestSlot(() => fetchRange(batch, fromIso, toIso)).catch(() => ({ ok: false, trips: [] as T[] }));
+    if (result.ok || batch.length === 1) {
+      trips.push(...result.trips);
+      if (!result.ok) batch.forEach((id) => failedIds.add(id));
+      return;
+    }
+    await Promise.all(batch.map(async (id) => {
+      const single = await withRequestSlot(() => fetchRange([id], fromIso, toIso)).catch(() => ({ ok: false, trips: [] as T[] }));
+      trips.push(...single.trips);
+      if (!single.ok) failedIds.add(id);
+    }));
+  }));
+  return { trips, failedIds };
+}
+
 async function mapPool<T>(items: T[], limit: number, worker: (item: T) => Promise<void>) {
   let cursor = 0;
   await Promise.all(
@@ -127,59 +182,62 @@ export async function loadTripsWithDayCache<T extends DeviceTrip>(
 ): Promise<{ ok: boolean; trips: T[] }> {
   const fromMs = Date.parse(fromIso);
   const toMs = Date.parse(toIso);
-  const settledBefore = Math.floor((Date.now() - SETTLE_LAG_MS) / DAY_MS) * DAY_MS;
-  const firstDay = Math.ceil(fromMs / DAY_MS) * DAY_MS;
-  const lastDayEnd = Math.min(Math.floor(toMs / DAY_MS) * DAY_MS, settledBefore);
-  if (!Number.isFinite(fromMs) || !Number.isFinite(toMs) || lastDayEnd - firstDay < DAY_MS || ids.length === 0) {
-    return fetchRange(ids, fromIso, toIso);
+  if (!Number.isFinite(fromMs) || !Number.isFinite(toMs) || toMs <= fromMs || ids.length === 0) {
+    const direct = await fetchInBatches(ids, fromIso, toIso, fetchRange);
+    return { ok: direct.failedIds.size === 0, trips: direct.trips };
   }
   void pruneOldDays();
 
-  const iso = (ms: number) => new Date(ms).toISOString();
-  const cacheKey = (id: string, dayMs: number) => `${scope}|${id}|${dayMs}`;
-  const days: number[] = [];
-  for (let day = firstDay; day < lastDayEnd; day += DAY_MS) days.push(day);
+  // Slices cut at UTC midnight. A slice that ended SETTLE_LAG_MS ago is settled and cached
+  // per vehicle under its exact bounds, so partial days (e.g. a site-local "Yesterday") cache too.
+  const settledBefore = Date.now() - SETTLE_LAG_MS;
+  const slices: Array<{ start: number; end: number; settled: boolean }> = [];
+  for (let start = fromMs; start < toMs;) {
+    const end = Math.min(toMs, (Math.floor(start / DAY_MS) + 1) * DAY_MS);
+    slices.push({ start, end, settled: end <= settledBefore });
+    start = end;
+  }
 
-  // Settled days already in memory or IndexedDB.
-  const allKeys = days.flatMap((day) => ids.map((id) => cacheKey(id, day)));
-  const missingFromMemory = allKeys.filter((key) => !memory.has(key));
-  const stored = await idbGetMany(missingFromMemory);
-  stored.forEach((trips, key) => memory.set(key, trips));
+  const iso = (ms: number) => new Date(ms).toISOString();
+  const cacheKey = (id: string, start: number, end: number) => `${scope}|${id}|${start}|${end}`;
+  const settledKeys = slices
+    .filter((slice) => slice.settled)
+    .flatMap((slice) => ids.map((id) => cacheKey(id, slice.start, slice.end)));
+  const stored = await idbGetMany(settledKeys.filter((key) => !memory.has(key)));
+  stored.forEach((list, key) => memory.set(key, list));
 
   let ok = true;
   const trips: T[] = [];
-  const edgeRanges: Array<[number, number]> = [];
-  if (firstDay > fromMs) edgeRanges.push([fromMs, firstDay]);
-  if (toMs > lastDayEnd) edgeRanges.push([lastDayEnd, toMs]);
-
-  const edgeWork = edgeRanges.map(async ([start, end]) => {
-    const result = await fetchRange(ids, iso(start), iso(end));
-    if (!result.ok) ok = false;
-    trips.push(...result.trips);
-  });
-
-  const dayWork = mapPool(days, DAY_FETCH_CONCURRENCY, async (day) => {
-    const missing = ids.filter((id) => !memory.has(cacheKey(id, day)));
+  await mapPool(slices, DAY_FETCH_CONCURRENCY, async ({ start, end, settled }) => {
+    const missing = settled ? ids.filter((id) => !memory.has(cacheKey(id, start, end))) : ids;
     if (missing.length > 0) {
-      const result = await fetchRange(missing, iso(day), iso(day + DAY_MS));
-      if (!result.ok) {
-        ok = false;
+      const result = await fetchInBatches(missing, iso(start), iso(end), fetchRange);
+      if (result.failedIds.size > 0) ok = false;
+      if (!settled) {
         trips.push(...result.trips);
       } else {
-        const byDevice = new Map<string, unknown[]>(missing.map((id) => [id, []]));
-        result.trips.forEach((trip) => byDevice.get(String(trip.deviceId ?? ""))?.push(trip));
-        const rows = [...byDevice.entries()].map(([id, list]) => ({ key: cacheKey(id, day), dayMs: day, trips: list }));
+        // Cache only vehicles whose request succeeded; failed ones are fetched again next run.
+        const byDevice = new Map<string, unknown[]>(
+          missing.filter((id) => !result.failedIds.has(id)).map((id) => [id, []])
+        );
+        result.trips.forEach((trip) => {
+          const list = byDevice.get(String(trip.deviceId ?? ""));
+          if (list) list.push(trip);
+          else trips.push(trip);
+        });
+        const rows = [...byDevice.entries()].map(([id, list]) => ({ key: cacheKey(id, start, end), dayMs: start, trips: list }));
         rows.forEach((row) => memory.set(row.key, row.trips));
         void idbPutMany(rows);
       }
     }
-    ids.forEach((id) => {
-      const cached = memory.get(cacheKey(id, day));
-      if (cached) trips.push(...(cached as T[]));
-    });
+    if (settled) {
+      ids.forEach((id) => {
+        const cached = memory.get(cacheKey(id, start, end));
+        if (cached) trips.push(...(cached as T[]));
+      });
+    }
   });
 
-  await Promise.all([...edgeWork, dayWork]);
   trips.sort((a, b) => Date.parse(String((a as any).startTime ?? "")) - Date.parse(String((b as any).startTime ?? "")));
   return { ok, trips };
 }

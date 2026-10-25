@@ -6727,9 +6727,11 @@ async function fetchTraccarTripsRangeRaw(
   for (let index = 0; index < ids.length; index += TRIPS_REQUEST_CHUNK) {
     const query = new URLSearchParams({ from, to });
     for (const id of ids.slice(index, index + TRIPS_REQUEST_CHUNK)) query.append("deviceId", id);
+    // One attempt: tripDayCache retries a failed batch vehicle by vehicle instead.
     const result = await traccarProxyRequest<TraccarTrip[] | { trips?: TraccarTrip[]; data?: TraccarTrip[] }>(
       `/reports/trips?${query.toString()}`,
-      { method: "GET" }
+      { method: "GET" },
+      { maxAttempts: 1 }
     );
     if (!result.ok || result.softFailed) ok = false;
     const body: any = result.ok ? result.body : null;
