@@ -208,14 +208,72 @@ export type DetailReportExportHeader = {
   site: string;
 };
 
+/** One asset block: labelled info rows (Asset Description, Registration Number, ...) above its own table. */
+export type DetailReportExportSection = {
+  info: Array<[string, string]>;
+  rows: string[][];
+};
+
+const writeSectionedBody = (
+  worksheet: ExcelJS.Worksheet,
+  startRow: number,
+  headers: string[],
+  sections: DetailReportExportSection[]
+) => {
+  const colCount = headers.length;
+  let rowNumber = startRow;
+  sections.forEach((section) => {
+    section.info.forEach(([label, value]) => {
+      worksheet.mergeCells(rowNumber, 1, rowNumber, Math.min(2, colCount));
+      if (colCount > 3) worksheet.mergeCells(rowNumber, 3, rowNumber, colCount);
+      const labelCell = worksheet.getCell(rowNumber, 1);
+      labelCell.value = label;
+      labelCell.font = { name: "Arial", size: 10, bold: true };
+      const valueCell = worksheet.getCell(rowNumber, Math.min(3, colCount));
+      valueCell.value = value || "—";
+      valueCell.font = { name: "Arial", size: 10, bold: true };
+      for (let col = 1; col <= colCount; col += 1) {
+        worksheet.getCell(rowNumber, col).fill = {
+          type: "pattern",
+          pattern: "solid",
+          fgColor: { argb: REPORT_SECTION_FILL }
+        };
+      }
+      rowNumber += 1;
+    });
+
+    const headerRow = rowNumber;
+    worksheet.getRow(headerRow).values = headers;
+    styleHeaderRowCells(worksheet, headerRow, colCount);
+    rowNumber += 1;
+
+    section.rows.forEach((row) => {
+      const worksheetRow = worksheet.getRow(rowNumber);
+      worksheetRow.values = row;
+      worksheetRow.font = { name: "Arial", size: 10 };
+      worksheetRow.alignment = { vertical: "middle", horizontal: "left", wrapText: true };
+      if (row[0] === "Totals" || row[0] === "Averages") {
+        styleSummaryRowCells(worksheetRow, colCount, REPORT_SUBSECTION_FILL);
+      }
+      rowNumber += 1;
+    });
+    if (section.rows.length > 0) {
+      applyWorksheetTableBorders(worksheet, headerRow, rowNumber - 1, 1, colCount);
+    }
+    rowNumber += 1;
+  });
+};
+
 export const buildDetailReportExcelWorkbook = async (params: {
   header: DetailReportExportHeader;
   headers: string[];
   body: string[][];
+  /** When set, the body is written per asset (info rows + header + rows) instead of one flat table. */
+  sections?: DetailReportExportSection[];
   sheetName: string;
   logoDataUrl: string | null;
 }) => {
-  const { header, headers, body, sheetName, logoDataUrl } = params;
+  const { header, headers, body, sections, sheetName, logoDataUrl } = params;
   const workbook = new ExcelJS.Workbook();
   const worksheet = workbook.addWorksheet(sheetName.slice(0, 31) || "Report", {
     views: [{ showGridLines: false }]
@@ -223,7 +281,9 @@ export const buildDetailReportExcelWorkbook = async (params: {
   const colCount = Math.max(headers.length, 4);
   worksheet.properties.defaultRowHeight = 20;
   worksheet.columns = Array.from({ length: colCount }, (_, index) => ({
-    width: index === 0 ? 22 : index < 4 ? 18 : 14
+    width: /location|departed from|arrived at/i.test(headers[index] ?? "")
+      ? 34
+      : index === 0 ? 22 : index < 4 ? 18 : 14
   }));
 
   const titleSpan = Math.max(1, colCount - 2);
@@ -277,6 +337,11 @@ export const buildDetailReportExcelWorkbook = async (params: {
   }
 
   const headerRowNumber = 8;
+  if (sections && sections.length > 0) {
+    writeSectionedBody(worksheet, headerRowNumber, headers, sections);
+    worksheet.views = [{ state: "frozen", ySplit: 7, showGridLines: false }];
+    return writeBrandedWorkbookBuffer(workbook);
+  }
   worksheet.getRow(headerRowNumber).values = headers;
   styleHeaderRowCells(worksheet, headerRowNumber, headers.length);
 

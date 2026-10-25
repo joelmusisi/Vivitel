@@ -4,7 +4,7 @@ import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 import { useSearchParams } from "react-router-dom";
 import ScheduleDateTimePicker from "../../components/ScheduleDateTimePicker";
-import { buildApiUrl, getApiKey, getAssetsFromApi, getGpsIotFuelInfo, getGpsIotMovementBundle, getHierarchy, getSiteTimeZoneSettings, getTraccarDevices, getTraccarEvents, getTraccarGeofences, getTraccarNotifications, getTraccarRoute, getTraccarStops, getTraccarSummary, getTraccarTrips, getUserAlertsFromApi, listGpsIotClientAlerts, listGpsIotEvents, listTraccarGeofenceDefinitions, formatTimestampForSite, resolveTimeZoneForSite, archiveReportRunToServer, getReportArchiveFromServer, listReportArchivesFromServer, type ReportArchiveSummary, type HierarchyRoot, type SiteTimeZoneSettings, type TraccarEvent, type TraccarSummary, type TraccarTrip } from "../../utils/api";
+import { buildApiUrl, getApiKey, getAssetsFromApi, getGpsIotFuelInfo, getGpsIotMovementBundle, getHierarchy, getSiteTimeZoneSettings, getTraccarDevices, getTraccarEvents, getTraccarReportFailureCount, resolveTraccarDeviceIdsByUniqueId, getTraccarGeofences, getTraccarNotifications, getTraccarRoute, getTraccarStops, getTraccarSummary, getTraccarTrips, getUserAlertsFromApi, listGpsIotClientAlerts, listGpsIotEvents, listTraccarGeofenceDefinitions, formatTimestampForSite, resolveTimeZoneForSite, archiveReportRunToServer, getReportArchiveFromServer, listReportArchivesFromServer, type ReportArchiveSummary, type HierarchyRoot, type SiteTimeZoneSettings, type TraccarEvent, type TraccarSummary, type TraccarTrip } from "../../utils/api";
 import { isCms808Server, isGpsIotServer } from "../../utils/regionServers";
 import {
   cms808HierarchyActive,
@@ -21,7 +21,8 @@ import {
   parseGpsIotFuelDateMs,
   resolveGpsIotFuelAssetId
 } from "../../utils/gpsiotFuel";
-import { loadLocationGeofences } from "../../utils/locationGeofences";
+import { loadLocationGeofences, type LocationGeofence } from "../../utils/locationGeofences";
+import { buildLocationToLocationLegs, resolveGeofenceShapes } from "../../utils/locationToLocation";
 import { formatDurationMs, loadHosFleetSnapshot, msToHours } from "../../utils/hos";
 import {
   isNotificationSummaryReportName,
@@ -50,7 +51,7 @@ import {
   createUtilisationDonutBase64
 } from "../../utils/reportUtilisationExcel";
 import { finishSampleTable, REPORT_NO_DATA_MESSAGE, writeSummaryTotalsRow } from "../../utils/reportSampleExcel";
-import { readUserScopedJson, writeUserScopedJson, readActiveUserId } from "../../utils/tenantContext";
+import { readUserScopedJson, writeUserScopedJson, readActiveUserId, readActiveTenantId } from "../../utils/tenantContext";
 import { computeTripUsedFuelLitres, extractFuelStartStopFromRoute, extractFuelTrendEventsFromRoute } from "../../utils/traccarFuel";
 import {
   fuelKindShowsTripTotals,
@@ -128,6 +129,12 @@ type ReportExportRow = {
   actionedByName?: string;
   actionedByEmail?: string;
   trendSeries?: number[];
+  /** Trip-backed rows: one row per trip ("tripDetail") or per asset ("tripSummary"). */
+  rowKind?: "tripDetail" | "tripSummary";
+  startLocation?: string;
+  endLocation?: string;
+  avgSpeedKph?: string;
+  fuelUsedL?: string;
 };
 
 type MovementReportVariant = "detailed" | "location";
@@ -201,6 +208,24 @@ const LOCATION_VISIT_COLUMNS = [
   "Time At Location"
 ] as const;
 
+/** Location to Location: legs between geofenced locations (trip start/end points vs geofence areas). */
+const LOCATION_TO_LOCATION_COLUMNS = [
+  "Asset Description",
+  "Registration Number",
+  "Driver Name",
+  "Site",
+  "From Location",
+  "Departed",
+  "To Location",
+  "Arrived",
+  "Distance (km)",
+  "Duration (hh:mm:ss)",
+  "Driving Time (hh:mm:ss)",
+  "Stops En Route",
+  "Avg Speed (km/h)",
+  "Max Speed (km/h)"
+] as const;
+
 const formatTripTimeZoneLabel = (value: string | number | Date, site?: string, settings?: SiteTimeZoneSettings | null) => {
   const date = value instanceof Date ? value : new Date(value);
   if (Number.isNaN(date.getTime())) return "—";
@@ -269,20 +294,6 @@ const summarizeDetailedMovementSection = (
   };
 };
 
-const appendMovementSectionsToExport = (
-  sections: MovementAssetSection[],
-  columns: readonly string[]
-) => {
-  const sectionedRows: string[][] = [];
-  sections.forEach((section) => {
-    sectionedRows.push([section.assetDescription, ...Array(columns.length - 1).fill("")]);
-    section.rows.forEach((row) => sectionedRows.push(row));
-    if (section.totals) sectionedRows.push(section.totals);
-    if (section.averages) sectionedRows.push(section.averages);
-  });
-  return sectionedRows;
-};
-
 const summarizeFuelTripSection = (rows: string[][]) => {
   const count = rows.length;
   const emptyTotals = ["Totals", "", "0.00", "0.00", "0.000", "0.00"];
@@ -307,19 +318,14 @@ const summarizeFuelTripSection = (rows: string[][]) => {
   };
 };
 
-const appendFuelSectionsToExport = (sections: FuelAssetSection[]) => {
-  const sectionedRows: string[][] = [];
-  sections.forEach((section) => {
-    sectionedRows.push([section.assetDescription, ...Array(FUEL_TRIP_SECTION_COLUMNS.length - 1).fill("")]);
-    section.rows.forEach((row) => sectionedRows.push(row));
-    if (section.totals) sectionedRows.push(section.totals);
-    if (section.averages) sectionedRows.push(section.averages);
-  });
-  return sectionedRows;
-};
-
 type TripDetailRow = {
   assetLabel: string;
+  registration?: string;
+  assetId?: string;
+  siteName?: string;
+  driver?: string;
+  startLocation?: string;
+  endLocation?: string;
   date: string;
   tripStart: string;
   tripEnd: string;
@@ -331,6 +337,68 @@ type TripDetailRow = {
   avgSpeedKph: string;
   maxSpeedKph: string;
 };
+
+/** Detailed Trip Report table (preview + export). */
+const TRIP_DETAIL_COLUMNS = [
+  "Date",
+  "Driver",
+  "Trip Start",
+  "Start Location",
+  "Trip End",
+  "End Location",
+  "Standing Time %",
+  "Driving Time (hh:mm:ss)",
+  "Standing Time (hh:mm:ss)",
+  "Duration (hh:mm:ss)",
+  "Distance (km)",
+  "Avg. Speed (km/h)",
+  "Max Speed (km/h)"
+] as const;
+
+const tripDetailRowCells = (row: TripDetailRow) => ([
+  row.date,
+  row.driver || "Unknown",
+  row.tripStart,
+  row.startLocation || "—",
+  row.tripEnd,
+  row.endLocation || "—",
+  row.standingPct,
+  row.drivingTime,
+  row.standingTime,
+  row.duration,
+  row.distanceKm,
+  row.avgSpeedKph,
+  row.maxSpeedKph
+]);
+
+const tripDetailSummaryCells = (label: "Totals" | "Averages", summary: TripDetailSummary) => ([
+  label,
+  "",
+  "",
+  "",
+  "",
+  "",
+  summary.standingPct,
+  summary.drivingTime,
+  summary.standingTime,
+  summary.duration,
+  summary.distanceKm,
+  summary.avgSpeedKph,
+  summary.maxSpeedKph
+]);
+
+/** Asset block labels shown above each asset's table (matches the MiX-style Daily Movement layout). */
+const assetSectionInfo = (section: {
+  assetDescription: string;
+  registrationNumber: string;
+  assetId: string;
+  siteName: string;
+}): Array<[string, string]> => ([
+  ["Asset Description", section.assetDescription],
+  ["Registration Number", section.registrationNumber],
+  ["Asset ID", section.assetId],
+  ["Site Name", section.siteName]
+]);
 
 type TripDetailSummary = {
   standingPct: string;
@@ -554,6 +622,7 @@ const materialsHandlingReports = [
 const movementReports = [
   "Daily Movement Report",
   "Location Overview Report",
+  "Location to Location Report",
   "Location Visits By day Of Week Report",
   "Locations Not Visited Report",
   "Mileage Daily Monthly Report",
@@ -579,6 +648,7 @@ const resolveMovementReportName = (reportName: string) => {
 
 const movementLocationReports = new Set<string>([
   "Location Overview Report",
+  "Location to Location Report",
   "Location Visits By day Of Week Report",
   "Locations Not Visited Report"
 ]);
@@ -1170,15 +1240,16 @@ const isAssetSummaryReportView = (
   return true;
 };
 
+/** Trip and summary distances are metres on every source (Traccar, GPS IoT, CMS 808). */
 const normalizeReportedDistanceKm = (value: unknown) => {
   const numeric = Number(value ?? 0);
   if (!Number.isFinite(numeric) || numeric <= 0) return 0;
-  if (numeric >= 1000) return numeric / 1000;
-  return numeric;
+  return numeric / 1000;
 };
 
 const buildAssetSummaryExportRow = ({
   registration,
+  assetDescription,
   siteName,
   trips,
   dayKeys,
@@ -1189,6 +1260,7 @@ const buildAssetSummaryExportRow = ({
   summary
 }: {
   registration: string;
+  assetDescription?: string;
   siteName: string;
   trips: Array<{ startTime?: unknown; distance?: unknown; duration?: unknown; endTime?: unknown }>;
   dayKeys: string[];
@@ -1224,6 +1296,7 @@ const buildAssetSummaryExportRow = ({
     basis,
     target: registration,
     registrationNumber: registration,
+    assetDescription: assetDescription || registration,
     dateRange,
     distanceKm: totalDistanceKm.toFixed(2),
     totalDuration: drivingHours,
@@ -1588,6 +1661,10 @@ export default function Reports() {
   const [archivesLoading, setArchivesLoading] = useState(false);
   const [archivesError, setArchivesError] = useState("");
   const [selectedCategory, setSelectedCategory] = useState("Cost Reports");
+  // Report suite is two steps: pick a category, then the report and its parameters.
+  const [suiteStep, setSuiteStep] = useState<"categories" | "configure">("categories");
+  const [categorySearch, setCategorySearch] = useState("");
+  const [reportSearch, setReportSearch] = useState("");
   const [selectedNotificationReport, setSelectedNotificationReport] = useState(NotificationReports[0]);
   const [selectedCostReport, setSelectedCostReport] = useState(costReports[0]);
   const [selectedCustomReport, setSelectedCustomReport] = useState(customReports[0]);
@@ -1987,6 +2064,8 @@ export default function Reports() {
   const handleCategorySelect = (category: string) => {
     setSelectedCategory(category);
     setActiveTab("suite");
+    setSuiteStep("configure");
+    setReportSearch("");
     setPreviewRows([]);
     setShowScopeSnapshot(false);
     setLastRunSnapshot(null);
@@ -2472,7 +2551,12 @@ export default function Reports() {
       return scopeSet.size === 0 || scopeSet.has(driverName);
     });
 
-    const resolved = await Promise.all(filteredAssets.map(async (asset) => {
+    const deviceIdByImei = await resolveTraccarDeviceIdsByUniqueId(
+      filteredAssets
+        .filter((asset) => !(Number(asset?.traccarDeviceId) > 0))
+        .map((asset) => String(asset?.imei ?? "").trim())
+    );
+    const resolved = filteredAssets.map((asset) => {
       const directId = Number(asset?.traccarDeviceId);
       if (Number.isFinite(directId) && directId > 0) {
         return {
@@ -2486,8 +2570,7 @@ export default function Reports() {
       }
       const uniqueId = String(asset?.imei ?? "").trim();
       if (!uniqueId) return null;
-      const devices = await getTraccarDevices({ uniqueId });
-      const deviceId = Number(devices[0]?.id);
+      const deviceId = Number(deviceIdByImei.get(uniqueId));
       if (!Number.isFinite(deviceId) || deviceId <= 0) return null;
       return {
         registration: String(asset?.registration ?? asset?.assetDescription ?? asset?.name ?? "").trim(),
@@ -2497,7 +2580,7 @@ export default function Reports() {
         driverId: extractDriverIdentifier(asset),
         deviceId: String(deviceId)
       };
-    }));
+    });
 
     let rows = resolved.filter((item): item is {
       registration: string;
@@ -3872,6 +3955,66 @@ export default function Reports() {
       return { headers, body };
     }
 
+    if (rows.length > 0 && rows.every((row) => row.rowKind === "tripSummary")) {
+      const headers = [
+        "Asset Description",
+        "Registration Number",
+        "Driver",
+        "Site",
+        "Trips",
+        "Distance (km)",
+        "Driving Time (hh:mm:ss)",
+        "Max Speed (km/h)",
+        "Fuel Used (L)"
+      ];
+      const body = rows.map((row) => ([
+        row.assetDescription || "",
+        row.registrationNumber || "",
+        row.driverName || "",
+        row.scope,
+        row.value,
+        row.distanceKm || "",
+        row.totalDuration || "",
+        row.speedKph || "",
+        row.fuelUsedL || ""
+      ]));
+      return { headers, body };
+    }
+
+    if (rows.length > 0 && rows.every((row) => row.rowKind === "tripDetail")) {
+      const headers = [
+        "Asset Description",
+        "Registration Number",
+        "Driver",
+        "Site",
+        "Trip Start",
+        "Start Location",
+        "Trip End",
+        "End Location",
+        "Driving Time (hh:mm:ss)",
+        "Distance (km)",
+        "Avg. Speed (km/h)",
+        "Max Speed (km/h)",
+        "Fuel Used (L)"
+      ];
+      const body = rows.map((row) => ([
+        row.assetDescription || "",
+        row.registrationNumber || "",
+        row.driverName || "",
+        row.scope,
+        row.startDate || "",
+        row.startLocation || "",
+        row.endTime || "",
+        row.endLocation || "",
+        row.totalDuration || "",
+        row.distanceKm || "",
+        row.avgSpeedKph || "",
+        row.speedKph || "",
+        row.fuelUsedL || ""
+      ]));
+      return { headers, body };
+    }
+
     if (selectedCategory === "Routes Reports" && selectedReportName === "Routes Dwell Time Report") {
       const headers = [
         "Location",
@@ -3987,15 +4130,15 @@ export default function Reports() {
     }
 
     if (isAssetSummaryReportView(selectedCategory, selectedReportName || "", shouldUseDetailTablePreview, runBasis, reportOutputMode)) {
-      const headers = ["Registration Number", "Value", "Distance (km)", "Trend", "Driving Hours", "Site", "Basis", "Date Range"];
+      const headers = ["Asset Description", "Registration Number", "Site", "Trips", "Distance (km)", "Driving Time (hh:mm:ss)", "Daily Distance Trend (km)", "Date Range"];
       const body = rows.map((row) => ([
+        row.assetDescription || row.registrationNumber || row.target,
         row.registrationNumber || row.target,
+        row.scope,
         row.value,
         row.distanceKm ?? "",
-        row.trendSeries?.map((value) => value.toFixed(2)).join(", ") || "",
         row.totalDuration || row.change,
-        row.scope,
-        row.basis,
+        row.trendSeries?.map((value) => value.toFixed(2)).join(" | ") || "",
         row.dateRange
       ]));
       return { headers, body };
@@ -4040,111 +4183,91 @@ export default function Reports() {
     });
 
     if (detailData) {
-      const metaRows: Array<[string, string]> = [
-        ["Date Range", detailData.dateRange],
-        ["Status", isVerifiedReportSelection ? "Data verified" : "Standard output"],
-        ["Organisation", detailData.organisation],
-        ["Dealer", detailData.dealer],
-        ["Database", detailData.database],
-        ["Site", detailData.site]
-      ];
 
       let headers: string[] = [];
-      let sectionedRows: Array<string[]> = [];
       let sheetName = "Report";
+      // Per-asset blocks (info rows + table) or one flat table; summary rows stay out of CSV.
+      let exportSections: Array<{ info: Array<[string, string]>; rows: string[][]; summary: string[][] }> | null = null;
+      let flatRows: string[][] = [];
+      let flatSummary: string[][] = [];
 
       if (detailData.kind === "movement") {
-      sheetName = "Movement Report";
-      headers = [...detailData.columns];
-      sectionedRows = appendMovementSectionsToExport(detailData.sections, detailData.columns);
+        sheetName = "Movement Report";
+        headers = [...detailData.columns];
+        if (detailData.variant === "detailed") {
+          exportSections = detailData.sections.map((section) => ({
+            info: assetSectionInfo(section),
+            rows: section.rows,
+            summary: [section.totals, section.averages].filter((row): row is string[] => Boolean(row))
+          }));
+        } else {
+          // Location variants already carry asset / registration / driver / site on every row.
+          detailData.sections.forEach((section) => {
+            section.rows.forEach((row) => (row[0] === "Totals" ? flatSummary : flatRows).push(row));
+          });
+        }
       } else if (detailData.kind === "trip") {
         sheetName = "Trip Report";
-        headers = [
-          "Date",
-          "Trip Start",
-          "Trip End",
-          "Standing Time %",
-          "Driving Time",
-          "Standing Time",
-          "Duration",
-          "Distance (km)",
-          "Avg. Speed (km/h)",
-          "Max Speed (km/h)"
-        ];
+        headers = [...TRIP_DETAIL_COLUMNS];
         const grouped = new Map<string, TripDetailRow[]>();
         detailData.rows.forEach((row) => {
-          const key = row.assetLabel || "Asset";
+          const key = `${row.assetLabel || "Asset"}|${row.registration || ""}`;
           const current = grouped.get(key) ?? [];
           current.push(row);
           grouped.set(key, current);
         });
-        for (const [assetLabel, assetRows] of grouped.entries()) {
-          sectionedRows.push([assetLabel, "", "", "", "", "", "", "", "", ""]);
-          assetRows.forEach((row) => {
-            sectionedRows.push([
-              row.date,
-              row.tripStart,
-              row.tripEnd,
-              row.standingPct,
-              row.drivingTime,
-              row.standingTime,
-              row.duration,
-              row.distanceKm,
-              row.avgSpeedKph,
-              row.maxSpeedKph
-            ]);
-          });
-        }
-        if (detailData.rows.length > 0) {
-          sectionedRows.push([
-            "Totals",
-            "",
-            "",
-            detailData.totals.standingPct,
-            detailData.totals.drivingTime,
-            detailData.totals.standingTime,
-            detailData.totals.duration,
-            detailData.totals.distanceKm,
-            detailData.totals.avgSpeedKph,
-            detailData.totals.maxSpeedKph
-          ]);
-          sectionedRows.push([
-            "Averages",
-            "",
-            "",
-            detailData.averages.standingPct,
-            detailData.averages.drivingTime,
-            detailData.averages.standingTime,
-            detailData.averages.duration,
-            detailData.averages.distanceKm,
-            detailData.averages.avgSpeedKph,
-            detailData.averages.maxSpeedKph
-          ]);
-        }
+        exportSections = Array.from(grouped.values()).map((assetRows) => {
+          const first = assetRows[0];
+          const { totals, averages } = summarizeTripDetailRows(assetRows);
+          return {
+            info: assetSectionInfo({
+              assetDescription: first.assetLabel || "Asset",
+              registrationNumber: first.registration || "—",
+              assetId: first.assetId || "—",
+              siteName: first.siteName || "—"
+            }),
+            rows: assetRows.map(tripDetailRowCells),
+            summary: [tripDetailSummaryCells("Totals", totals), tripDetailSummaryCells("Averages", averages)]
+          };
+        });
       } else if (detailData.kind === "fuel") {
         sheetName = "Fuel Report";
-        headers = detailData.showSectioned && detailData.sections?.length
-          ? [...FUEL_TRIP_SECTION_COLUMNS]
-          : detailData.columns;
-        sectionedRows = detailData.showSectioned && detailData.sections?.length
-          ? appendFuelSectionsToExport(detailData.sections)
-          : [...detailData.tableRows];
-        if (!detailData.showSectioned && detailData.showTotals && detailData.totals && detailData.averages) {
-          sectionedRows.push(detailData.totals, detailData.averages);
+        if (detailData.showSectioned && detailData.sections?.length) {
+          headers = [...FUEL_TRIP_SECTION_COLUMNS];
+          exportSections = detailData.sections.map((section) => ({
+            info: assetSectionInfo(section),
+            rows: section.rows,
+            summary: [section.totals, section.averages].filter((row): row is string[] => Boolean(row))
+          }));
+        } else {
+          headers = detailData.columns;
+          flatRows = [...detailData.tableRows];
+          if (detailData.showTotals && detailData.totals && detailData.averages) {
+            flatSummary = [detailData.totals, detailData.averages];
+          }
         }
       } else if (detailData.kind === "utilisation") {
         sheetName = "Asset Utilisation";
         headers = [...detailData.columns];
-        sectionedRows = [...detailData.tableRows];
+        flatRows = [...detailData.tableRows];
       }
 
       if (format === "csv") {
+        // Plain table: one header row, one value per column, asset details repeated on every row.
+        const csvCell = (value: unknown) => {
+          const text = String(value ?? "").trim();
+          return text === "—" ? "" : text;
+        };
+        const assetColumns = exportSections?.[0]?.info.map(([label]) => label) ?? [];
+        const csvRows: unknown[][] = exportSections
+          ? exportSections.flatMap((section) => section.rows.map((row) => [
+            ...section.info.map(([, value]) => value),
+            ...row
+          ]))
+          : flatRows;
         const csvContent = buildCsvContent([
-          [detailData.reportName],
-          ...metaRows,
-          [],
-          headers,
-          ...sectionedRows
+          [...assetColumns, ...headers],
+          ...csvRows.map((row) => row.map(csvCell))
         ]);
         saveBlob(new Blob([csvContent], { type: "text/csv;charset=utf-8" }), `${baseName}.csv`);
         return;
@@ -4154,7 +4277,10 @@ export default function Reports() {
         const workbookBuffer = await buildDetailReportExcelWorkbook({
           header: buildDetailExportHeader(detailData.reportName, detailData.dateRange),
           headers,
-          body: sectionedRows,
+          body: exportSections ? [] : [...flatRows, ...flatSummary],
+          sections: exportSections
+            ? exportSections.map((section) => ({ info: section.info, rows: [...section.rows, ...section.summary] }))
+            : undefined,
           sheetName,
           logoDataUrl
         });
@@ -4165,6 +4291,13 @@ export default function Reports() {
         return;
       }
 
+      const sectionedRows: string[][] = exportSections
+        ? exportSections.flatMap((section) => [
+          [section.info.map(([, value]) => value).filter((value) => value && value !== "—").join("  ·  "), ...Array(headers.length - 1).fill("")],
+          ...section.rows,
+          ...section.summary
+        ])
+        : [...flatRows, ...flatSummary];
       const pdf = new jsPDF({ orientation: "landscape" });
       applyDetailPdfHeader(pdf, buildDetailExportHeader(detailData.reportName, detailData.dateRange), logoDataUrl);
       const pdfTableStart = (pdf as any).lastAutoTable?.finalY ? (pdf as any).lastAutoTable.finalY + 6 : 42;
@@ -4174,27 +4307,13 @@ export default function Reports() {
     }
 
     if (format === "csv") {
-      const reportTitle = selectedReportName || selectedCategory;
-      const dateRange = `${formatReportDateTime(customFrom)} to ${formatReportDateTime(customTo)}`;
-      const exportHeader = buildDetailExportHeader(reportTitle, dateRange);
-      const targetLabel = selectedScopeItems.length > 0 ? selectedScopeItems.join(", ") : "All";
-      const csvMetaRows: Array<[string, string]> = [
-        ["Date Range", exportHeader.dateRangeLabel],
-        ["Status", exportHeader.statusLabel],
-        ["Organisation", exportHeader.organisation],
-        ["Dealer", exportHeader.dealer],
-        ["Database", exportHeader.database],
-        ["Site", exportHeader.site]
-      ];
-      if (runBasis === "driver") {
-        csvMetaRows.push(["Driver", targetLabel]);
-      }
+      // Plain table for Excel: header row first, one value per column.
       const csvContent = buildCsvContent([
-        [exportHeader.title],
-        ...csvMetaRows,
-        [],
         tableModel.headers,
-        ...tableModel.body
+        ...tableModel.body.map((row) => row.map((cell) => {
+          const text = String(cell ?? "").trim();
+          return text === "—" ? "" : text;
+        }))
       ]);
       saveBlob(new Blob([csvContent], { type: "text/csv;charset=utf-8" }), `${baseName}.csv`);
       return;
@@ -4312,6 +4431,14 @@ export default function Reports() {
     const targets = selectedScopeItems.length > 0 ? selectedScopeItems : (scopeItems.length > 0 ? scopeItems : []);
     if (targets.length === 0) return [];
     const assets = await getAssetsFromApi<AssetLike>();
+    const deviceIdByImei = isGpsIotServer()
+      ? new Map<string, number>()
+      : await resolveTraccarDeviceIdsByUniqueId(
+          targets
+            .map((reg) => assets.find((asset) => String(asset?.registration ?? "").trim() === reg))
+            .filter((asset) => asset && !(Number(asset.traccarDeviceId) > 0))
+            .map((asset) => String(asset?.imei ?? "").trim())
+        );
     const results = await Promise.all(
       targets.map(async (reg) => {
         const match = assets.find((asset) => String(asset?.registration ?? "").trim() === reg);
@@ -4342,8 +4469,7 @@ export default function Reports() {
           return { registration: reg, deviceId: String(directId), fuelTankCapacityLiters };
         }
         if (!imei) return null;
-        const devices = await getTraccarDevices({ uniqueId: imei });
-        const deviceId = Number(devices[0]?.id);
+        const deviceId = Number(deviceIdByImei.get(imei));
         return Number.isFinite(deviceId) && deviceId > 0
           ? { registration: reg, deviceId: String(deviceId), fuelTankCapacityLiters }
           : null;
@@ -4572,100 +4698,75 @@ export default function Reports() {
 
     const from = new Date(customFrom).toISOString();
     const to = new Date(customTo).toISOString();
-    const resolved = await resolveAllDeviceIds();
-    if (resolved.length === 0) return [];
+    const assets = await resolveScopedReportAssets();
+    if (assets.length === 0) return [];
 
     const isSummaryOutput = reportOutputMode === "summary" || /summary/i.test(selectedReportName || "");
     const allRows: ReportExportRow[] = [];
     const loadedTrips = await getTraccarTrips({
       from,
       to,
-      deviceIds: resolved.map((row) => row.deviceId)
+      deviceIds: assets.map((asset) => asset.deviceId)
     });
     const tripsByDevice = groupByDeviceId(loadedTrips);
+    const report = selectedReportName || selectedCategory;
 
-    for (const { registration, deviceId } of resolved) {
-      const trips = tripsByDevice.get(String(deviceId)) ?? [];
-      const source = String(trips[0]?.deviceName ?? registration ?? "device");
+    for (const asset of assets) {
+      const trips = [...(tripsByDevice.get(String(asset.deviceId)) ?? [])].sort(
+        (a, b) => Date.parse(String(a.startTime ?? "")) - Date.parse(String(b.startTime ?? ""))
+      );
+      const base = {
+        category: selectedCategory,
+        report,
+        scope: asset.siteName || selectedSite || "—",
+        basis: runBasis,
+        target: asset.registration,
+        metric: asset.registration,
+        dateRange: dateRangeLabel,
+        assetDescription: asset.assetLabel || asset.registration,
+        registrationNumber: asset.registration
+      };
 
       if (isSummaryOutput) {
         const totalDistanceKm = trips.reduce((sum, trip) => sum + normalizeReportedDistanceKm(trip.distance), 0);
         const totalFuel = trips.reduce((sum, trip) => sum + Number(trip.spentFuel ?? 0), 0);
         const maxSpeed = trips.reduce((max, trip) => Math.max(max, Number(trip.maxSpeed ?? 0)), 0);
-        allRows.push(
-          {
-            category: selectedCategory,
-            report: selectedReportName || selectedCategory,
-            metric: `${source} trips`,
-            value: String(trips.length),
-            change: `${totalDistanceKm.toFixed(2)} km total`,
-            scope: `${selectedDatabase} / ${selectedSite}`,
-            basis: runBasis,
-            target: registration,
-            dateRange: dateRangeLabel
-          },
-          {
-            category: selectedCategory,
-            report: selectedReportName || selectedCategory,
-            metric: `${source} spentFuel (L)`,
-            value: totalFuel.toFixed(2),
-            change: trips.length > 0 ? (totalFuel / Math.max(totalDistanceKm, 0.001)).toFixed(3) + " L/km" : "0.000 L/km",
-            scope: `${selectedDatabase} / ${selectedSite}`,
-            basis: runBasis,
-            target: registration,
-            dateRange: dateRangeLabel
-          },
-          {
-            category: selectedCategory,
-            report: selectedReportName || selectedCategory,
-            metric: `${source} maxSpeed (km/h)`,
-            value: (maxSpeed * 1.852).toFixed(2),
-            change: "Summary",
-            scope: `${selectedDatabase} / ${selectedSite}`,
-            basis: runBasis,
-            target: registration,
-            dateRange: dateRangeLabel
-          }
-        );
+        const drivingMs = trips.reduce((sum, trip) => sum + computeTripDrivingDurationMs(trip), 0);
+        allRows.push({
+          ...base,
+          rowKind: "tripSummary",
+          value: String(trips.length),
+          change: `${totalDistanceKm.toFixed(2)} km`,
+          driverName: asset.driverName || "Unknown",
+          distanceKm: totalDistanceKm.toFixed(2),
+          totalDuration: formatDurationHms(drivingMs),
+          speedKph: Math.round(maxSpeed * 1.852).toString(),
+          fuelUsedL: totalFuel.toFixed(2)
+        });
         continue;
       }
 
       for (const trip of trips) {
-        allRows.push(
-          {
-            category: selectedCategory,
-            report: selectedReportName || selectedCategory,
-            metric: `${source} startTime`,
-            value: String(trip.startTime ?? ""),
-            change: String(trip.endTime ?? ""),
-            scope: `${selectedDatabase} / ${selectedSite}`,
-            basis: runBasis,
-            target: registration,
-            dateRange: dateRangeLabel
-          },
-          {
-            category: selectedCategory,
-            report: selectedReportName || selectedCategory,
-            metric: `${source} distance (km)`,
-            value: String(((Number(trip.distance ?? 0) || 0) / 1000).toFixed(2)),
-            change: String(Number(trip.maxSpeed ?? 0).toFixed(2)),
-            scope: `${selectedDatabase} / ${selectedSite}`,
-            basis: runBasis,
-            target: registration,
-            dateRange: dateRangeLabel
-          },
-          {
-            category: selectedCategory,
-            report: selectedReportName || selectedCategory,
-            metric: `${source} averageSpeed (knots)`,
-            value: String(Number(trip.averageSpeed ?? 0).toFixed(2)),
-            change: String(Number(trip.spentFuel ?? 0).toFixed(2)),
-            scope: `${selectedDatabase} / ${selectedSite}`,
-            basis: runBasis,
-            target: registration,
-            dateRange: dateRangeLabel
-          }
-        );
+        const start = new Date(String(trip.startTime ?? ""));
+        const end = new Date(String(trip.endTime ?? trip.startTime ?? ""));
+        const drivingTime = formatDurationHms(computeTripDrivingDurationMs(trip));
+        const distanceKm = normalizeReportedDistanceKm(trip.distance).toFixed(2);
+        allRows.push({
+          ...base,
+          rowKind: "tripDetail",
+          value: distanceKm,
+          change: drivingTime,
+          driverName: resolveTripDriverName(trip.driverName, asset) || "Unknown",
+          startDate: formatReportDateTime(start),
+          endTime: formatReportDateTime(end),
+          startLocation: formatLocationLabel(trip.startAddress, "") || formatCoordinateLabel(trip.startLat, trip.startLon) || "—",
+          endLocation: formatLocationLabel(trip.endAddress, "") || formatCoordinateLabel(trip.endLat, trip.endLon) || "—",
+          totalDuration: drivingTime,
+          distanceKm,
+          avgSpeedKph: (Math.max(0, Number(trip.averageSpeed ?? 0)) * 1.852).toFixed(1),
+          speedKph: Math.round(Math.max(0, Number(trip.maxSpeed ?? 0)) * 1.852).toString(),
+          fuelUsedL: Number(trip.spentFuel ?? 0).toFixed(2)
+        });
       }
     }
     return allRows;
@@ -4693,6 +4794,7 @@ export default function Reports() {
       const { trips, summary } = await loadMovementSummaryForAsset(asset, from, to);
       return buildAssetSummaryExportRow({
         registration: asset.registration,
+        assetDescription: asset.assetLabel,
         siteName: asset.siteName || selectedSite || "—",
         trips,
         dayKeys,
@@ -4807,7 +4909,100 @@ export default function Reports() {
       return { variant: "location", columns: [...LOCATION_VISIT_COLUMNS], sections, ...previewMeta };
     }
 
-    const geocodeBudget = { remaining: 16 };
+    if (movementReportName === "Location to Location Report" || selectedReportName === "Location to Location Report") {
+      let locations = await loadLocationGeofences().catch(() => [] as LocationGeofence[]);
+      if (locations.length === 0 && !isGpsIotServer()) {
+        // No site-scoped library rows: fall back to the tenant's Traccar geofences.
+        const tenantId = readActiveTenantId();
+        locations = (await listTraccarGeofenceDefinitions().catch(() => []))
+          .filter((def) => {
+            const rowTenant = String(def.attributes?.viviTenantId ?? "").trim();
+            return !rowTenant || !tenantId || rowTenant === tenantId;
+          })
+          .map((def) => ({
+            id: String(def.id ?? ""),
+            name: String(def.name ?? def.description ?? `Geofence ${def.id}`),
+            type: "Geofence",
+            area: String(def.area ?? "")
+          }));
+      }
+      const geofences = resolveGeofenceShapes(locations);
+      if (geofences.length === 0) {
+        throw new Error("No geofenced locations found for this site. Add locations in the Location Library to run the Location to Location report.");
+      }
+
+      const gpsLegBundle = isGpsIotServer()
+        ? await getGpsIotMovementBundle({ deviceIds: assets.map((asset) => asset.deviceId), from, to })
+        : null;
+      const cmsActive = cms808HierarchyActive() || isCms808Server();
+      const traccarDeviceIds = gpsLegBundle || cmsActive ? [] : assets.map((asset) => asset.deviceId);
+      const tripsByDevice = groupByDeviceId(
+        gpsLegBundle
+          ? gpsLegBundle.trips
+          : traccarDeviceIds.length > 0
+            ? await getTraccarTrips({ from, to, deviceIds: traccarDeviceIds })
+            : []
+      );
+
+      const sections = await mapWithLimit(assets, 4, async (asset): Promise<MovementAssetSection> => {
+        const cmsDevice = String(asset.deviceId ?? "").replace(/^cms808:/i, "");
+        const useCms = cmsActive && (/^cms808:/i.test(String(asset.deviceId ?? "")) || /^\d{6,}$/.test(cmsDevice));
+        const trips = useCms
+          ? ((await loadCms808MovementTrips(cmsDevice, new Date(from), new Date(to), asset.registration).catch(() => [])) as unknown as TraccarTrip[])
+          : (tripsByDevice.get(String(asset.deviceId)) ?? []);
+        const legs = buildLocationToLocationLegs(trips, geofences);
+        const siteName = asset.siteName || selectedSite || "—";
+        const rows = legs.map((leg) => {
+          const drivingHours = leg.drivingMs / 3_600_000;
+          return [
+            asset.assetLabel || "Asset",
+            asset.registration || "—",
+            leg.driverName || asset.driverName || "Unknown",
+            siteName,
+            leg.fromName,
+            formatReportDateTime(new Date(leg.departedMs)),
+            leg.toName,
+            formatReportDateTime(new Date(leg.arrivedMs)),
+            leg.distanceKm.toFixed(2),
+            formatDurationHms(leg.durationMs),
+            formatDurationHms(leg.drivingMs),
+            String(leg.stopsEnRoute),
+            drivingHours > 0 ? (leg.distanceKm / drivingHours).toFixed(1) : "0.0",
+            Math.round(leg.maxSpeedKph).toString()
+          ];
+        });
+        if (legs.length > 0) {
+          const totalKm = legs.reduce((sum, leg) => sum + leg.distanceKm, 0);
+          const totalDrivingMs = legs.reduce((sum, leg) => sum + leg.drivingMs, 0);
+          rows.push([
+            "Totals",
+            asset.registration || "—",
+            "",
+            "",
+            `${legs.length} leg${legs.length === 1 ? "" : "s"}`,
+            "",
+            "",
+            "",
+            totalKm.toFixed(2),
+            formatDurationHms(legs.reduce((sum, leg) => sum + leg.durationMs, 0)),
+            formatDurationHms(totalDrivingMs),
+            String(legs.reduce((sum, leg) => sum + leg.stopsEnRoute, 0)),
+            totalDrivingMs > 0 ? (totalKm / (totalDrivingMs / 3_600_000)).toFixed(1) : "0.0",
+            Math.round(Math.max(...legs.map((leg) => leg.maxSpeedKph))).toString()
+          ]);
+        }
+        return {
+          assetDescription: asset.assetLabel || "Asset",
+          registrationNumber: asset.registration || "—",
+          assetId: String(asset.deviceId ?? "—"),
+          siteName,
+          rows
+        };
+      });
+      return { variant: "location", columns: [...LOCATION_TO_LOCATION_COLUMNS], sections, ...previewMeta };
+    }
+
+    const geocodeBudget = { remaining: 40 };
     const geocodeWithinBudget = async (lat: unknown, lng: unknown) => {
       if (geocodeBudget.remaining <= 0) {
         const parsedLat = Number(lat);
@@ -4841,15 +5036,13 @@ export default function Reports() {
         }
         const trips = gpsTripsByDevice
           ? (gpsTripsByDevice.get(String(asset.deviceId)) ?? [])
-          : await getTraccarTrips({ from, to, deviceId: asset.deviceId });
+          : await getTraccarTrips({ from, to, deviceId: asset.deviceId }).catch(() => [] as TraccarTrip[]);
         const stops = gpsStopsByDevice
           ? (gpsStopsByDevice.get(String(asset.deviceId)) ?? [])
           : await getTraccarStops({ from, to, deviceId: asset.deviceId }).catch(() => []);
-        const missingAddress = trips.some((trip) => !formatLocationLabel(trip.startAddress, "") || !formatLocationLabel(trip.endAddress, ""));
-        const routePoints = missingAddress && !isGpsIotServer()
-          ? await getTraccarRoute({ from, to, deviceId: asset.deviceId }).catch(() => [])
-          : [];
-        return { ...asset, trips, routePoints, stops };
+        // Missing trip addresses are reverse-geocoded from the trip's own start/end coordinates.
+        // Pulling the full route per asset for this was the slowest call in the report and timed out.
+        return { ...asset, trips, routePoints: [] as Awaited<ReturnType<typeof getTraccarRoute>>, stops };
       });
 
     const sections: MovementAssetSection[] = [];
@@ -5102,9 +5295,29 @@ export default function Reports() {
       trips: tripsByDevice.get(String(asset.deviceId)) ?? []
     }));
 
+    // Addresses: Traccar's own first, then a bounded reverse-geocode, then coordinates.
+    const geocodeBudget = { remaining: 24 };
+    const resolveTripLocation = async (address: unknown, lat: unknown, lng: unknown) => {
+      const direct = formatLocationLabel(address, "");
+      if (direct) return direct;
+      if (geocodeBudget.remaining > 0) {
+        geocodeBudget.remaining -= 1;
+        const resolved = await fetchReverseGeocodeLabel(lat, lng);
+        if (resolved) return resolved;
+      }
+      return formatCoordinateLabel(lat, lng) || "—";
+    };
+
     const tripDetailRows: TripDetailRow[] = [];
     for (const batch of batches) {
-      for (const trip of batch.trips) {
+      const sortedTrips = [...batch.trips].sort(
+        (a, b) => Date.parse(String(a.startTime ?? "")) - Date.parse(String(b.startTime ?? ""))
+      );
+      const locations = await Promise.all(sortedTrips.map(async (trip) => ({
+        start: await resolveTripLocation(trip.startAddress, trip.startLat, trip.startLon),
+        end: await resolveTripLocation(trip.endAddress, trip.endLat, trip.endLon)
+      })));
+      for (const [tripIndex, trip] of sortedTrips.entries()) {
         const start = new Date(String((trip as any)?.startTime ?? ""));
         const end = new Date(String((trip as any)?.endTime ?? (trip as any)?.startTime ?? ""));
         const durationMs = Number.isFinite(Number((trip as any)?.duration)) && Number((trip as any)?.duration) > 0
@@ -5117,7 +5330,13 @@ export default function Reports() {
         const standingPct = durationMs > 0 ? standingMs / durationMs : 0;
         tripDetailRows.push({
           assetLabel: batch.asset.assetLabel,
-          date: `${formatDateOnly(start)} 00:00:00`,
+          registration: batch.asset.registration || "—",
+          assetId: String(batch.asset.deviceId ?? "—"),
+          siteName: batch.asset.siteName || selectedSite || "—",
+          driver: resolveTripDriverName(trip.driverName, batch.asset) || "Unknown",
+          startLocation: locations[tripIndex].start,
+          endLocation: locations[tripIndex].end,
+          date: formatDateOnly(start),
           tripStart: formatReportDateTime(start),
           tripEnd: formatReportDateTime(end),
           standingPct: standingPct.toFixed(6),
@@ -6771,139 +6990,121 @@ export default function Reports() {
       setDetailPreview(null);
       let rows = buildReportRows();
       let detailForExport: DetailReportPreview | null = null;
-      try {
-        const [
-          utilisationRows,
-          driverPerformanceRows,
-          listRows,
-          tripRows,
-          journeyRows,
-          costServiceRows,
-          summaryRows,
-          geofenceRows,
-          locationAlertSummaryRows,
-          streamsActionRows,
-          eventRows,
-          fuelRows,
-          hosRows,
-          scoringRows,
-          unifiedAssetSummaryRows
-        ] = await Promise.all([
-          buildUtilisationRows(),
-          buildDriverPerformanceRows(),
-          buildListRows(),
-          shouldUseDetailTablePreview && selectedCategory === "Trip Reports" ? Promise.resolve(null) : buildTripRows(),
-          buildJourneySummaryRows(),
-          buildCostServiceRows(),
-          buildSummaryRows(),
-          buildGeofenceRows(),
-          buildLocationAlertNotificationSummaryRows(),
-          buildStreamsActionReportRows(),
-          buildEventRows(),
-          selectedCategory === "Fuel Reports" ? Promise.resolve(null) : buildFuelRows(),
-          buildHoursOfServiceRows(),
-          buildScoringRows(),
-          buildUnifiedAssetSummaryRows()
-        ]);
-        if (Array.isArray(utilisationRows)) {
-          rows = utilisationRows;
-        }
+      const failuresBefore = getTraccarReportFailureCount();
+      // Run only the builder whose rows are kept (same precedence as the old all-builders
+      // Promise.all), so one report no longer fans out 3+ overlapping Traccar loads.
+      const memo = <T,>(fn: () => Promise<T>) => {
+        let pending: Promise<T> | null = null;
+        return () => (pending ??= fn());
+      };
+      const utilisation = memo(buildUtilisationRows);
+      const driverPerformance = memo(buildDriverPerformanceRows);
+      const list = memo(buildListRows);
+      const trip = memo(() => (shouldUseDetailTablePreview && selectedCategory === "Trip Reports" ? Promise.resolve(null) : buildTripRows()));
+      const journey = memo(buildJourneySummaryRows);
+      const costService = memo(buildCostServiceRows);
+      const summary = memo(buildSummaryRows);
+      const geofence = memo(buildGeofenceRows);
+      const locationAlertSummary = memo(buildLocationAlertNotificationSummaryRows);
+      const streamsAction = memo(buildStreamsActionReportRows);
+      const events = memo(buildEventRows);
+      const fuel = memo(() => (selectedCategory === "Fuel Reports" ? Promise.resolve(null) : buildFuelRows()));
+      const hos = memo(buildHoursOfServiceRows);
+      const scoring = memo(buildScoringRows);
+      const unifiedAssetSummary = memo(buildUnifiedAssetSummaryRows);
+      const has = async (builder: () => Promise<ReportExportRow[] | null>) => Array.isArray(await builder());
+      const utilisationOrDriver = async () => (await has(utilisation)) || (await has(driverPerformance));
 
-        if (Array.isArray(driverPerformanceRows)) {
-          rows = driverPerformanceRows;
-        }
-
-        if (!Array.isArray(utilisationRows) && !Array.isArray(driverPerformanceRows) && Array.isArray(listRows)) {
-          rows = listRows;
-        }
-
-        if (!Array.isArray(utilisationRows) && !Array.isArray(driverPerformanceRows) && !Array.isArray(listRows) && Array.isArray(tripRows)) {
-          rows = tripRows;
-        }
-
-        if (!Array.isArray(utilisationRows) && !Array.isArray(driverPerformanceRows) && !Array.isArray(listRows) && Array.isArray(journeyRows)) {
-          rows = journeyRows;
-        }
-
-        if (!Array.isArray(utilisationRows) && !Array.isArray(driverPerformanceRows) && !Array.isArray(listRows) && Array.isArray(costServiceRows)) {
-          rows = costServiceRows;
-        }
-
-        if (!Array.isArray(utilisationRows) && !Array.isArray(driverPerformanceRows) && !Array.isArray(listRows) && !Array.isArray(tripRows) && !Array.isArray(journeyRows) && !Array.isArray(costServiceRows) && Array.isArray(summaryRows)) {
-          rows = summaryRows;
-        }
-
-        if (!Array.isArray(utilisationRows) && !Array.isArray(driverPerformanceRows) && Array.isArray(geofenceRows)) {
-          rows = geofenceRows;
-        }
-
-        if (Array.isArray(locationAlertSummaryRows)) {
-          rows = locationAlertSummaryRows;
-        }
-
-        if (Array.isArray(streamsActionRows)) {
-          rows = streamsActionRows;
-        }
-
-        if (!Array.isArray(locationAlertSummaryRows) && !Array.isArray(streamsActionRows) && Array.isArray(eventRows)) {
-          rows = eventRows;
-        }
-
-        if (!Array.isArray(utilisationRows) && !Array.isArray(driverPerformanceRows) && Array.isArray(fuelRows)) {
-          rows = fuelRows;
-        }
-
-        if (!Array.isArray(utilisationRows) && !Array.isArray(driverPerformanceRows) && Array.isArray(hosRows)) {
-          rows = hosRows;
-        }
-
-        if (!Array.isArray(utilisationRows) && !Array.isArray(driverPerformanceRows) && Array.isArray(scoringRows)) {
-          rows = scoringRows;
-        }
-
-        if (Array.isArray(unifiedAssetSummaryRows)) {
-          rows = unifiedAssetSummaryRows;
-        }
-
-        if (selectedCategory === "Fuel Reports") {
-          if (reportOutputMode !== "summary") {
-            const fuelData = await buildFuelDetailPreview();
-            if (fuelData) {
-              detailForExport = fuelData;
-              setDetailPreview(fuelData);
-            }
+      const selectRows = async (): Promise<ReportExportRow[]> => {
+        const unified = await unifiedAssetSummary();
+        if (Array.isArray(unified)) return unified;
+        if (!(await utilisationOrDriver())) {
+          for (const builder of [scoring, hos, fuel]) {
+            const built = await builder();
+            if (Array.isArray(built)) return built;
           }
-        } else if (selectedCategory === "Movement Reports") {
+        }
+        const eventRows = await events();
+        if (Array.isArray(eventRows) && !(await has(locationAlertSummary)) && !(await has(streamsAction))) return eventRows;
+        const streamsRows = await streamsAction();
+        if (Array.isArray(streamsRows)) return streamsRows;
+        const locationAlertRows = await locationAlertSummary();
+        if (Array.isArray(locationAlertRows)) return locationAlertRows;
+        if (!(await utilisationOrDriver())) {
+          const geofenceRows = await geofence();
+          if (Array.isArray(geofenceRows)) return geofenceRows;
+          const listRows = await list();
+          if (!Array.isArray(listRows)) {
+            const tripBacked = !(await has(trip)) && !(await has(journey)) && !(await has(costService));
+            if (tripBacked) {
+              const summaryRows = await summary();
+              if (Array.isArray(summaryRows)) return summaryRows;
+            }
+            for (const builder of [costService, journey, trip]) {
+              const built = await builder();
+              if (Array.isArray(built)) return built;
+            }
+          } else {
+            return listRows;
+          }
+        }
+        const driverRows = await driverPerformance();
+        if (Array.isArray(driverRows)) return driverRows;
+        const utilisationRows = await utilisation();
+        if (Array.isArray(utilisationRows)) return utilisationRows;
+        return buildReportRows();
+      };
+
+      const buildDetailForRun = async (): Promise<DetailReportPreview | null> => {
+        if (selectedCategory === "Fuel Reports") {
+          return reportOutputMode !== "summary" ? buildFuelDetailPreview() : null;
+        }
+        if (selectedCategory === "Movement Reports") {
           // Movement = Traccar Trips (detailed + location + overview). Summary Movement keeps tabular summary.
           const isSummaryMovement = /summary\s*movement|mileage\s*summary|mileage\s*monthly/i.test(selectedReportName || "")
             || /summary\s*movement/i.test(resolveMovementReportName(selectedReportName || ""));
           if (!isSummaryMovement || shouldUseDetailTablePreview || movementLocationReports.has(selectedReportName || "") || movementLocationReports.has(resolveMovementReportName(selectedReportName || ""))) {
             const movementData = await buildMovementReportPreview();
-            if (movementData) {
-              detailForExport = { kind: "movement", ...movementData };
-              setDetailPreview(detailForExport);
-            }
+            return movementData ? { kind: "movement", ...movementData } : null;
           }
-        } else if (isAssetUtilisationReportName(selectedReportName || "")) {
-          const utilisationData = await buildAssetUtilisationDetailPreview();
-          if (utilisationData) {
-            detailForExport = utilisationData;
-            setDetailPreview(utilisationData);
-          }
-        } else if (shouldUseDetailTablePreview) {
-          if (selectedCategory === "Trip Reports") {
-            const tripData = await buildTripDetailPreview();
-            if (tripData) {
-              detailForExport = tripData;
-              setDetailPreview(tripData);
-            }
-          }
+          return null;
         }
-      } catch (error) {
+        if (isAssetUtilisationReportName(selectedReportName || "")) return buildAssetUtilisationDetailPreview();
+        if (shouldUseDetailTablePreview && selectedCategory === "Trip Reports") return buildTripDetailPreview();
+        return null;
+      };
+
+      // The detail table replaces the summary rows in the preview and export, so load it on its own
+      // and only fall back to the row builders when it has nothing. Running both at once doubled the
+      // tracking-server load and caused the timeouts behind "some report data did not load".
+      const settle = async <T,>(work: () => Promise<T>): Promise<PromiseSettledResult<T>> => {
+        try {
+          return { status: "fulfilled", value: await work() };
+        } catch (reason) {
+          return { status: "rejected", reason };
+        }
+      };
+      const detailResult = await settle(buildDetailForRun);
+      const rowsResult: PromiseSettledResult<ReportExportRow[]> = detailResult.status === "fulfilled" && detailResult.value
+        ? { status: "fulfilled", value: [] }
+        : await settle(selectRows);
+      const failureMessages: string[] = [];
+      if (rowsResult.status === "fulfilled") {
+        rows = rowsResult.value;
+      } else {
         rows = [];
-        detailForExport = null;
-        const message = String((error as any)?.message ?? error ?? "").trim();
-        setRunError(message || "Failed to load report data from VIVI. Check scope, dates, and API connectivity.");
+        failureMessages.push(String((rowsResult.reason as any)?.message ?? rowsResult.reason ?? "").trim());
+      }
+      if (detailResult.status === "fulfilled") {
+        detailForExport = detailResult.value;
+        if (detailForExport) setDetailPreview(detailForExport);
+      } else {
+        failureMessages.push(String((detailResult.reason as any)?.message ?? detailResult.reason ?? "").trim());
+      }
+      if (failureMessages.length > 0 && !(rows.length > 0 || detailForExport)) {
+        setRunError(failureMessages.find(Boolean) || "Failed to load report data from VIVI. Check scope, dates, and API connectivity.");
+      } else if (failureMessages.length > 0 || getTraccarReportFailureCount() > failuresBefore) {
+        setRunError("Some report data did not load from the tracking server (timeout or upstream error). Results may be incomplete; run again or shorten the date range.");
       }
       const scopeLabel = selectedScopeItems.length > 0 ? String(selectedScopeItems.length) : "All";
       setLastRunSnapshot({
@@ -7119,6 +7320,7 @@ export default function Reports() {
       setActiveTab("favorites");
     } else if (category || report) {
       setActiveTab("suite");
+      setSuiteStep("configure");
     }
 
     if (category && visibleReportCategories.includes(category)) {
@@ -7206,7 +7408,7 @@ export default function Reports() {
       <section className="reports-card">
         <div className="reports-header">
           <span className="reports-title">
-            {isArchives ? "Archived reports" : isFavorites ? "Favourite reports" : isSubscriptions ? "Subscriptions" : `Report suite – ${selectedCategory}`}
+            {isArchives ? "Archived reports" : isFavorites ? "Favourite reports" : isSubscriptions ? "Subscriptions" : suiteStep === "categories" ? "Report suite" : `Report suite / ${selectedCategory}`}
           </span>
         </div>
 
@@ -7219,7 +7421,10 @@ export default function Reports() {
           <aside className="reports-sidebar">
             <button
               className={`reports-tab ${activeTab === "suite" ? "active" : ""}`}
-              onClick={() => setActiveTab("suite")}
+              onClick={() => {
+                setActiveTab("suite");
+                setSuiteStep("categories");
+              }}
               type="button"
             >
               Report suite
@@ -7285,61 +7490,170 @@ export default function Reports() {
                   </div>
                 ))}
               </section>
+            ) : activeTab === "suite" && suiteStep === "categories" ? (
+              <div className="reports-step reports-step--categories">
+                <div className="reports-stepper" aria-label="Report steps">
+                  <span className="reports-stepper-item is-current"><b>1</b> Category</span>
+                  <span className="reports-stepper-sep" aria-hidden="true" />
+                  <span className="reports-stepper-item"><b>2</b> Report and parameters</span>
+                </div>
+                <div className="reports-step-head">
+                  <div>
+                    <h2 className="reports-step-title">Choose a report category</h2>
+                    <p className="reports-step-sub">{visibleReportCategories.length} categories · {visibleReportCategories.reduce((sum, category) => sum + (reportOptionsByCategory[category]?.length ?? 0), 0)} reports</p>
+                  </div>
+                  <input
+                    type="search"
+                    className="reports-search-input"
+                    placeholder="Search categories or reports…"
+                    value={categorySearch}
+                    onChange={(event) => setCategorySearch(event.target.value)}
+                    aria-label="Search categories or reports"
+                  />
+                </div>
+                {(() => {
+                  const query = categorySearch.trim().toLowerCase();
+                  const categories = visibleReportCategories.filter((category) =>
+                    !query
+                    || category.toLowerCase().includes(query)
+                    || (reportOptionsByCategory[category] ?? []).some((report) => report.toLowerCase().includes(query))
+                  );
+                  const matchingReports = query
+                    ? visibleReportCategories.flatMap((category) =>
+                        (reportOptionsByCategory[category] ?? [])
+                          .filter((report) => report.toLowerCase().includes(query))
+                          .map((report) => ({ category, report }))
+                      ).slice(0, 12)
+                    : [];
+                  return (
+                    <>
+                      {matchingReports.length > 0 && (
+                        <div className="reports-match-list" role="list" aria-label="Matching reports">
+                          <div className="reports-match-title">Matching reports</div>
+                          {matchingReports.map(({ category, report }) => (
+                            <button
+                              key={`${category}::${report}`}
+                              type="button"
+                              className="reports-match-row"
+                              onClick={() => {
+                                handleCategorySelect(category);
+                                setSelectedReportForCategory(category, report);
+                              }}
+                            >
+                              <span className="reports-match-name">{report}</span>
+                              <span className="reports-match-cat">{category}</span>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                      <div className="reports-category-grid" role="list" aria-label="Report categories">
+                        {categories.map((category) => {
+                          const reports = reportOptionsByCategory[category] ?? [];
+                          return (
+                            <button
+                              key={category}
+                              type="button"
+                              role="listitem"
+                              className={`reports-category-tile${selectedCategory === category ? " is-last" : ""}`}
+                              onClick={() => handleCategorySelect(category)}
+                            >
+                              <span className="reports-category-tile-head">
+                                <span className="reports-category-tile-name">{category}</span>
+                                <span className="reports-category-tile-count">{reports.length}</span>
+                              </span>
+                              <span className="reports-category-tile-list">
+                                {reports.slice(0, 3).join(" · ")}{reports.length > 3 ? " …" : ""}
+                              </span>
+                              <span className="reports-category-tile-go" aria-hidden="true">Select ›</span>
+                            </button>
+                          );
+                        })}
+                        {categories.length === 0 && (
+                          <div className="reports-multi-select-empty">No categories or reports match “{categorySearch}”.</div>
+                        )}
+                      </div>
+                    </>
+                  );
+                })()}
+              </div>
             ) : activeTab === "suite" ? (
               <div className="reports-suite-grid">
-                <div className="reports-suite-col reports-suite-col--categories">
-                  <div className="reports-suite-header">
-                    <div className="reports-suite-header-label">Select category</div>
-                    <div className="reports-suite-header-value">Report Categories</div>
+                <div className="reports-suite-col reports-suite-col--reports">
+                  <div className="reports-stepper" aria-label="Report steps">
+                    <button type="button" className="reports-stepper-item is-done" onClick={() => setSuiteStep("categories")}>
+                      <b>1</b> Category
+                    </button>
+                    <span className="reports-stepper-sep" aria-hidden="true" />
+                    <span className="reports-stepper-item is-current"><b>2</b> Report and parameters</span>
                   </div>
-                  <div className="reports-category-list" role="listbox" aria-label="Report category">
-                    {visibleReportCategories.map((category) => {
-                      const isActive = selectedCategory === category;
-                      return (
-                        <button
-                          key={category}
-                          type="button"
-                          role="option"
-                          aria-selected={isActive}
-                          className={`reports-category-btn${isActive ? " active" : ""}`}
-                          onClick={() => handleCategorySelect(category)}
-                        >
-                          <span className="reports-category-dot" aria-hidden="true" />
-                          <span className="reports-category-text">{category}</span>
-                        </button>
-                      );
-                    })}
+                  <div className="reports-step-nav">
+                    <button type="button" className="reports-back-btn" onClick={() => setSuiteStep("categories")}>
+                      ‹ All categories
+                    </button>
+                    <select
+                      className="reports-select-single reports-category-switch"
+                      value={selectedCategory}
+                      onChange={(event) => handleCategorySelect(event.target.value)}
+                      aria-label="Category"
+                    >
+                      {visibleReportCategories.map((category) => (
+                        <option key={category} value={category}>{category}</option>
+                      ))}
+                    </select>
                   </div>
+                  <div className="reports-filter-title">
+                    {currentReportOptions.length} {currentReportOptions.length === 1 ? "report" : "reports"}
+                  </div>
+                  {currentReportOptions.length > 6 && (
+                    <input
+                      type="search"
+                      className="reports-search-input"
+                      placeholder="Filter reports…"
+                      value={reportSearch}
+                      onChange={(event) => setReportSearch(event.target.value)}
+                      aria-label="Filter reports"
+                    />
+                  )}
+                  <div className="reports-report-list" role="listbox" aria-label={`Select ${currentReportLabel}`}>
+                    {currentReportOptions
+                      .filter((report) => report.toLowerCase().includes(reportSearch.trim().toLowerCase()))
+                      .map((report) => {
+                        const isActive = report === selectedReportName;
+                        return (
+                          <button
+                            key={report}
+                            type="button"
+                            role="option"
+                            aria-selected={isActive}
+                            className={`reports-report-row${isActive ? " active" : ""}`}
+                            onClick={() => setSelectedReportForCategory(selectedCategory, report)}
+                          >
+                            <span className="reports-report-radio" aria-hidden="true" />
+                            <span className="reports-report-name">{report}</span>
+                          </button>
+                        );
+                      })}
+                  </div>
+                  <p className="reports-category-desc">{currentCategoryNote}</p>
                 </div>
 
                 <div className="reports-suite-col reports-suite-col--details">
                   <div className="reports-suite-header">
-                    <div className="reports-suite-header-label">Selected category</div>
-                    <div className="reports-suite-header-value">{selectedCategory}</div>
+                    <div className="reports-suite-header-label">{selectedCategory}</div>
+                    <div className="reports-suite-header-value">{selectedReportName || `Select a ${currentReportLabel}`}</div>
+                    <div className="reports-suite-header-meta">
+                      <span className="reports-category-note-badge">{isTripOrScoringCategory ? "Structured export" : "Configured flow"}</span>
+                      <span>
+                        {datePresetButtons.find((preset) => preset.key === datePreset)?.label ?? "Custom"}
+                        {" · "}
+                        {selectedSites.length === 0 ? "All sites" : selectedSites.length === 1 ? selectedSites[0] : `${selectedSites.length} sites`}
+                        {" · "}
+                        {selectedScopeItems.length === 0
+                          ? `All ${runBasis === "asset" ? "assets" : "drivers"}`
+                          : `${selectedScopeItems.length} ${runBasis === "asset" ? "assets" : "drivers"}`}
+                      </span>
+                    </div>
                   </div>
-
-                <div className={`reports-category-note${isTripOrScoringCategory ? " reports-category-note--verified" : ""}`}>
-                  <div className="reports-category-note-head">
-                    <span className="reports-category-note-badge">{isTripOrScoringCategory ? "Structured export" : "Configured flow"}</span>
-                    <span className="reports-category-note-count">{currentReportOptions.length} reports</span>
-                  </div>
-                  <p>{currentCategoryNote}</p>
-                </div>
-
-                <div className="reports-Notification">
-                  <div className="reports-label">Select {currentReportLabel}</div>
-                  <select
-                    className="reports-select-single"
-                    value={selectedReportName}
-                    onChange={(e) => setSelectedReportForCategory(selectedCategory, e.target.value)}
-                  >
-                    {currentReportOptions.map((report) => (
-                      <option key={report} value={report}>
-                        {report}
-                      </option>
-                    ))}
-                  </select>
-                </div>
 
                 <div className="reports-filter-card">
                   <div className="reports-filter-title">Date range</div>
@@ -7798,74 +8112,75 @@ export default function Reports() {
                   </div>
 
                   {detailPreview.kind === "trip" && (
-                  <table className="movement-preview-table" role="table" aria-label="Trip report table">
-                    <thead>
-                      <tr>
-                        <th>Date</th>
-                        <th>Trip Start</th>
-                        <th>Trip End</th>
-                        <th>Standing %</th>
-                        <th>Driving Time</th>
-                        <th>Standing Time</th>
-                        <th>Duration</th>
-                        <th>Distance (km)</th>
-                        <th>Avg. Speed</th>
-                        <th>Max Speed</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {tripDetailSections.map((section, sectionIndex) => (
-                        <Fragment key={`trip-section-${sectionIndex}`}>
-                          <tr className="movement-preview-section-row">
-                            <td colSpan={10}>{section.assetLabel}</td>
-                          </tr>
-                          {section.rows.map((row, idx) => (
-                            <tr key={`trip-row-${sectionIndex}-${idx}`}>
-                              <td>{row.date}</td>
-                              <td>{row.tripStart}</td>
-                              <td>{row.tripEnd}</td>
-                              <td>{row.standingPct}</td>
-                              <td>{row.drivingTime}</td>
-                              <td>{row.standingTime}</td>
-                              <td>{row.duration}</td>
-                              <td>{row.distanceKm}</td>
-                              <td>{row.avgSpeedKph}</td>
-                              <td>{row.maxSpeedKph}</td>
-                            </tr>
+                  <>
+                    {tripDetailSections.map((section, sectionIndex) => (
+                      <Fragment key={`trip-section-${sectionIndex}`}>
+                        <div className="movement-preview-meta-grid movement-preview-asset-meta">
+                          {assetSectionInfo({
+                            assetDescription: section.assetLabel,
+                            registrationNumber: section.rows[0]?.registration || "—",
+                            assetId: section.rows[0]?.assetId || "—",
+                            siteName: section.rows[0]?.siteName || "—"
+                          }).map(([label, value]) => (
+                            <div key={label}><strong>{label}</strong><span>{value}</span></div>
                           ))}
-                        </Fragment>
-                      ))}
-                      {tripDetailPreview && tripDetailPreview.rows.length === 0 && (
-                        <tr>
-                          <td colSpan={10} className="movement-preview-empty">No trip data found for the selected range.</td>
-                        </tr>
-                      )}
-                    </tbody>
-                    {tripDetailPreview && tripDetailPreview.rows.length > 0 && (
-                      <tfoot>
-                        <tr className="movement-preview-summary-row">
-                          <td colSpan={3}>Totals</td>
-                          <td>{tripDetailPreview.totals.standingPct}</td>
-                          <td>{tripDetailPreview.totals.drivingTime}</td>
-                          <td>{tripDetailPreview.totals.standingTime}</td>
-                          <td>{tripDetailPreview.totals.duration}</td>
-                          <td>{tripDetailPreview.totals.distanceKm}</td>
-                          <td>{tripDetailPreview.totals.avgSpeedKph}</td>
-                          <td>{tripDetailPreview.totals.maxSpeedKph}</td>
-                        </tr>
-                        <tr className="movement-preview-summary-row movement-preview-summary-row--avg">
-                          <td colSpan={3}>Averages</td>
-                          <td>{tripDetailPreview.averages.standingPct}</td>
-                          <td>{tripDetailPreview.averages.drivingTime}</td>
-                          <td>{tripDetailPreview.averages.standingTime}</td>
-                          <td>{tripDetailPreview.averages.duration}</td>
-                          <td>{tripDetailPreview.averages.distanceKm}</td>
-                          <td>{tripDetailPreview.averages.avgSpeedKph}</td>
-                          <td>{tripDetailPreview.averages.maxSpeedKph}</td>
-                        </tr>
-                      </tfoot>
+                        </div>
+                        <table className="movement-preview-table" role="table" aria-label="Trip report table">
+                          <thead>
+                            <tr>
+                              {TRIP_DETAIL_COLUMNS.map((column) => (
+                                <th key={`${sectionIndex}-${column}`}>{column}</th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {section.rows.map((row, idx) => (
+                              <tr key={`trip-row-${sectionIndex}-${idx}`}>
+                                {tripDetailRowCells(row).map((cell, cellIdx) => (
+                                  <td key={`trip-cell-${sectionIndex}-${idx}-${cellIdx}`}>{cell}</td>
+                                ))}
+                              </tr>
+                            ))}
+                          </tbody>
+                          <tfoot>
+                            {(() => {
+                              const { totals, averages } = summarizeTripDetailRows(section.rows);
+                              return (
+                                <>
+                                  <tr className="movement-preview-summary-row">
+                                    {tripDetailSummaryCells("Totals", totals).map((cell, idx) => (
+                                      <td key={`trip-total-${sectionIndex}-${idx}`}>{cell}</td>
+                                    ))}
+                                  </tr>
+                                  <tr className="movement-preview-summary-row movement-preview-summary-row--avg">
+                                    {tripDetailSummaryCells("Averages", averages).map((cell, idx) => (
+                                      <td key={`trip-avg-${sectionIndex}-${idx}`}>{cell}</td>
+                                    ))}
+                                  </tr>
+                                </>
+                              );
+                            })()}
+                          </tfoot>
+                        </table>
+                      </Fragment>
+                    ))}
+                    {tripDetailPreview && tripDetailPreview.rows.length === 0 && (
+                      <table className="movement-preview-table" role="table" aria-label="Trip report table">
+                        <thead>
+                          <tr>
+                            {TRIP_DETAIL_COLUMNS.map((column) => (
+                              <th key={column}>{column}</th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <tr>
+                            <td colSpan={TRIP_DETAIL_COLUMNS.length} className="movement-preview-empty">No trip data found for the selected range.</td>
+                          </tr>
+                        </tbody>
+                      </table>
                     )}
-                  </table>
+                  </>
                   )}
 
                   {detailPreview.kind === "utilisation" && utilisationDetailPreview && (

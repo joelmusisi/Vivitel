@@ -1420,7 +1420,7 @@ const isTransientNetworkError = (error: unknown, status = 0) => {
     return true;
   }
   const message = String((error as any)?.message ?? error ?? "");
-  return /failed to fetch|networkerror|network request failed|http2|protocol_error|connection_closed|connection reset|econnreset|etimedout|timeout|aborted|load failed/i.test(
+  return /failed to fetch|networkerror|network request failed|http2|protocol_error|connection_closed|connection reset|econnreset|etimedout|timeout|aborted|load failed|proxy is busy/i.test(
     message
   );
 };
@@ -1434,10 +1434,14 @@ async function sleepMs(ms: number) {
 const TRACCAR_PROXY_MAX_INFLIGHT = 6;
 /** Cap how long a caller can wait for a free proxy slot (timeout starts after acquire). */
 const TRACCAR_PROXY_SLOT_WAIT_MS = 25_000;
+/** Report queries (/reports/*) queue behind live polls; let them wait longer than a live refresh would. */
+const TRACCAR_REPORT_SLOT_WAIT_MS = 90_000;
+/** Worker aborts Traccar /reports/* at 60s; the browser must outlast that or it cancels a query about to succeed. */
+const TRACCAR_REPORT_TIMEOUT_MS = 75_000;
 let traccarProxyInflight = 0;
 const traccarProxyWaiters: Array<() => void> = [];
 
-async function acquireTraccarProxySlot() {
+async function acquireTraccarProxySlot(waitMs = TRACCAR_PROXY_SLOT_WAIT_MS) {
   if (traccarProxyInflight < TRACCAR_PROXY_MAX_INFLIGHT) {
     traccarProxyInflight += 1;
     return;
@@ -1460,7 +1464,7 @@ async function acquireTraccarProxySlot() {
       const index = traccarProxyWaiters.indexOf(waiter);
       if (index >= 0) traccarProxyWaiters.splice(index, 1);
       reject(new Error("Traccar proxy is busy. Try again in a moment."));
-    }, TRACCAR_PROXY_SLOT_WAIT_MS);
+    }, waitMs);
     traccarProxyWaiters.push(waiter);
   });
   traccarProxyInflight += 1;
@@ -1472,8 +1476,8 @@ function releaseTraccarProxySlot() {
   if (next) next();
 }
 
-async function withTraccarProxySlot<T>(fn: () => Promise<T>): Promise<T> {
-  await acquireTraccarProxySlot();
+async function withTraccarProxySlot<T>(fn: () => Promise<T>, waitMs?: number): Promise<T> {
+  await acquireTraccarProxySlot(waitMs);
   try {
     return await fn();
   } finally {
@@ -6325,6 +6329,34 @@ export async function getTraccarDevicesDetailed(params?: {
   return { devices };
 }
 
+/**
+ * Map IMEIs (Traccar uniqueId) to Traccar device ids with one /devices list call,
+ * then per-IMEI lookups only for misses. Report and history pages used to issue one
+ * lookup per asset, which queued behind the 6 proxy slots and dropped assets on busy sites.
+ */
+export async function resolveTraccarDeviceIdsByUniqueId(
+  uniqueIds: string[],
+  options?: { lookupMissing?: boolean }
+): Promise<Map<string, number>> {
+  const wanted = Array.from(new Set(uniqueIds.map((id) => String(id ?? "").trim()).filter(Boolean)));
+  const byUniqueId = new Map<string, number>();
+  if (!wanted.length) return byUniqueId;
+  const remember = (devices: TraccarDevice[]) => {
+    for (const device of devices) {
+      const uniqueId = String(device?.uniqueId ?? "").trim();
+      const id = Number(device?.id);
+      if (uniqueId && Number.isFinite(id) && id > 0) byUniqueId.set(uniqueId, id);
+    }
+  };
+  if (wanted.length > 1) remember(await getTraccarDevices().catch(() => [] as TraccarDevice[]));
+  if (options?.lookupMissing === false) return byUniqueId;
+  const missing = wanted.filter((id) => !byUniqueId.has(id));
+  await mapWithLimit(missing, 4, async (uniqueId) => {
+    remember(await getTraccarDevices({ uniqueId }).catch(() => [] as TraccarDevice[]));
+  });
+  return byUniqueId;
+}
+
 export type TraccarLivePosition = {
   lat?: number;
   lng?: number;
@@ -7205,6 +7237,60 @@ export async function getTraccarSummary(params: {
   return [];
 }
 
+export type ForwardedTraccarCoverage = Record<string, { firstMs: number | null; lastMs: number | null }>;
+
+/**
+ * Trips computed on the VPS from positions Traccar forwards there (US Traccar only).
+ * Returns null when the store is unreachable so callers fall back to Traccar reports.
+ */
+export type ForwardedTripSegment = { type: "moving" | "idle"; start: string; end: string; distance: number };
+
+export async function getForwardedTraccarTrips(params: {
+  deviceIds: Array<number | string>;
+  from: string;
+  to: string;
+  /** IMEIs let the VPS find the device binding for assets saved without a Traccar id. */
+  imeiByDeviceId?: Record<string, string>;
+}): Promise<{ trips: Array<TraccarTrip & { segments?: ForwardedTripSegment[] }>; coverage: ForwardedTraccarCoverage } | null> {
+  if (isGpsIotServer()) return null;
+  const ids = collectTripDeviceIds({ deviceIds: params.deviceIds });
+  if (!ids.length) return null;
+  const query = new URLSearchParams({ from: params.from, to: params.to });
+  ids.forEach((id) => query.append("deviceId", id));
+  for (const [id, imei] of Object.entries(params.imeiByDeviceId ?? {})) {
+    if (imei) query.append("asset", `${id}:${imei}`);
+  }
+  const result = await fetchJson<{ trips?: TraccarTrip[]; coverage?: ForwardedTraccarCoverage }>(`/history/traccar/trips?${query}`);
+  if (!result || !Array.isArray(result.trips)) return null;
+  return { trips: result.trips, coverage: result.coverage ?? {} };
+}
+
+export async function getForwardedTraccarRoute(params: {
+  deviceId: number | string;
+  from: string;
+  to: string;
+}): Promise<TraccarRoutePoint[] | null> {
+  const query = new URLSearchParams({ deviceId: String(params.deviceId), from: params.from, to: params.to });
+  const result = await fetchJson<{ positions?: TraccarRoutePoint[] }>(`/history/traccar/route?${query}`);
+  return result && Array.isArray(result.positions) ? result.positions : null;
+}
+
+/**
+ * True when the VPS store holds this device's positions for the whole window: forwarding
+ * started before `fromMs` and kept arriving (parked devices still report periodically).
+ */
+export function forwardedCoverageSpans(
+  coverage: ForwardedTraccarCoverage,
+  deviceId: number | string,
+  fromMs: number,
+  toMs: number
+): boolean {
+  const row = coverage[String(deviceId)];
+  if (!row || row.firstMs === null || row.lastMs === null) return false;
+  const STALE_MS = 6 * 3_600_000;
+  return row.firstMs <= fromMs + 5 * 60_000 && row.lastMs >= Math.min(toMs, Date.now()) - STALE_MS;
+}
+
 /**
  * Fetch stop intervals for a device over a time range.
  * Calls Traccar GET /reports/stops via the proxy.
@@ -7450,6 +7536,14 @@ export interface TraccarComputedAttributeWritePayload {
   attributes?: Record<string, unknown>;
 }
 
+/**
+ * Count of Traccar /reports/* queries that failed or were soft-failed by the Worker
+ * (timeouts come back as an empty list). Report pages compare it before/after a run
+ * so "no rows" can be told apart from "data did not load".
+ */
+let traccarReportFailureCount = 0;
+export const getTraccarReportFailureCount = () => traccarReportFailureCount;
+
 async function traccarProxyRequest<T = unknown>(
   path: string,
   init: RequestInit,
@@ -7457,8 +7551,13 @@ async function traccarProxyRequest<T = unknown>(
 ): Promise<{ ok: boolean; status: number; body: T | null; error?: string; softFailed?: boolean }> {
   const method = String(init.method ?? "GET").toUpperCase();
   const bypassSlot = options?.bypassSlot === true;
+  const isReportQuery = method === "GET" && /^\/?reports\//i.test(String(path ?? "").trim());
   const attemptTimeoutMs =
-    typeof options?.timeoutMs === "number" && options.timeoutMs > 0 ? options.timeoutMs : 20_000;
+    typeof options?.timeoutMs === "number" && options.timeoutMs > 0
+      ? options.timeoutMs
+      : isReportQuery
+        ? TRACCAR_REPORT_TIMEOUT_MS
+        : 20_000;
   const getCacheKey = method === "GET" ? `GET:${getTenantId() || "_"}:${String(path ?? "").trim()}` : "";
   const useInflightDedupe = Boolean(getCacheKey) && !options?.skipInflightDedupe;
   if (useInflightDedupe) {
@@ -7554,7 +7653,7 @@ async function traccarProxyRequest<T = unknown>(
     try {
       const result = bypassSlot
         ? await runAttempt()
-        : await withTraccarProxySlot(runAttempt);
+        : await withTraccarProxySlot(runAttempt, isReportQuery ? TRACCAR_REPORT_SLOT_WAIT_MS : undefined);
 
       const retryableStatus = isTransientNetworkError(result.error, result.status);
       const retryableSoftFail =
@@ -7580,8 +7679,14 @@ async function traccarProxyRequest<T = unknown>(
   return { ok: false, status: 0, body: null, error: "Traccar proxy request failed after retries." };
   };
 
+  const executeTracked = async () => {
+    const result = await execute();
+    if (isReportQuery && (!result.ok || result.softFailed)) traccarReportFailureCount += 1;
+    return result;
+  };
+
   if (useInflightDedupe) {
-    const pending = execute()
+    const pending = executeTracked()
       .then((result) => {
         if (result.ok && !result.softFailed) {
           const pathText = String(path ?? "");
@@ -7602,7 +7707,7 @@ async function traccarProxyRequest<T = unknown>(
     traccarGetInflight.set(getCacheKey, pending);
     return pending;
   }
-  return execute();
+  return executeTracked();
 }
 
 /**
