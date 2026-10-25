@@ -31275,3 +31275,55 @@ table td,
   word-break: normal;
   overflow-wrap: normal;
 }
+
+/* Assets, Live tracking and Historical tables: one shared grid per table (head, body and rows
+   are subgrids), so every column fits its longest cell on one line and rows stay aligned. */
+.assets-table-inner,
+.live-table-wrapper,
+.history-table-scroll-content {
+  display: grid;
+  grid-auto-rows: max-content;
+  align-content: start;
+}
+
+.assets-table-inner > *,
+.assets-table-body > *,
+.live-table-wrapper > *,
+.live-table > *,
+.history-table-scroll-content > *,
+.history-table > *,
+.history-row-group > * {
+  grid-column: 1 / -1;
+}
+
+.assets-table-head,
+.assets-table-body,
+.assets-table-body > .assets-row,
+.live-table-head,
+.live-table,
+.live-table > .live-row,
+.history-table-head,
+.history-table,
+.history-row-group,
+.history-row-group > .history-row {
+  display: grid;
+  grid-template-columns: subgrid;
+}
+
+.live-table-head,
+.live-table,
+.live-table > .live-row {
+  width: auto;
+  min-width: 0;
+}
+
+.assets-cell,
+.live-cell,
+.live-cell-text,
+.history-col,
+.history-row-cell,
+.history-cell {
+  white-space: nowrap;
+  overflow: visible;
+  text-overflow: clip;
+}

@@ -4471,7 +4471,8 @@ export default function LiveTracking() {
   }, [activeCols, visibleAssetRows]);
 
   // Add 3 for: checkbox, status, actions
-  const gridTemplate = `32px 24px ${activeCols.map((col) => `${columnWidths.get(col.key) ?? col.minWidth}px`).join(" ")} 48px`;
+  // Rows are subgrids of the table wrapper, so each column grows to its longest cell.
+  const gridTemplate = `32px 24px ${activeCols.map((col) => `minmax(${columnWidths.get(col.key) ?? col.minWidth}px, max-content)`).join(" ")} 48px`;
 
   useEffect(() => {
     const syncColumnGuides = () => {
@@ -7624,6 +7625,7 @@ export default function LiveTracking() {
           <div
             className="live-table-wrapper"
             ref={tableRef}
+            style={{ gridTemplateColumns: gridTemplate }}
             onScroll={(event) => {
               if (!hScrollRef.current) return;
               const target = event.currentTarget;
@@ -7639,7 +7641,7 @@ export default function LiveTracking() {
                 ))}
               </div>
             ) : null}
-            <div className="live-table-head" ref={tableHeadRef} style={{ gridTemplateColumns: gridTemplate }}>
+            <div className="live-table-head" ref={tableHeadRef}>
               <div />
               <div />
               {activeCols.map((col) => (
@@ -7690,7 +7692,6 @@ export default function LiveTracking() {
                 <div
                   key={asset.id}
                   className="live-row"
-                  style={{ gridTemplateColumns: gridTemplate }}
                 >
                   <div className="live-cell">
                     <input

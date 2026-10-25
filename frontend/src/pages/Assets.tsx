@@ -2771,7 +2771,8 @@ export default function Assets() {
       }, "ISP Serial Number".length) * 8 + 24
     )
   );
-  const grid = `${activeCols.map((col) => col.key === "fleetNumber" ? `${fleetNumberColWidth}px` : `${columnWidths[col.key]}px`).join(" ")} 48px`;
+  // Each column is at least its preset width and grows to its longest cell (rows are subgrids).
+  const grid = `${activeCols.map((col) => `minmax(${col.key === "fleetNumber" ? fleetNumberColWidth : columnWidths[col.key]}px, max-content)`).join(" ")} 48px`;
 
   const totalPages = Math.max(1, Math.ceil(sortedFilteredAssets.length / ASSETS_PER_PAGE));
   const safeCurrentPage = Math.min(currentPage, totalPages);
@@ -4665,8 +4666,8 @@ export default function Assets() {
 
       <section className="assets-table-wrap">
         <div className="assets-table-scroll">
-          <div className="assets-table-inner">
-            <div className="assets-table-head" style={{ gridTemplateColumns: grid }}>
+          <div className="assets-table-inner" style={{ gridTemplateColumns: grid }}>
+            <div className="assets-table-head">
             {activeCols.map((c) => (
               <div
                 key={c.key}
@@ -4735,7 +4736,7 @@ export default function Assets() {
           </div>
             <div className="assets-table-body">
               {pagedAssets.map((a) => (
-                <div key={a.id} className="assets-row" style={{ gridTemplateColumns: grid }}>
+                <div key={a.id} className="assets-row">
                   {activeCols.map((col) => (
                     <div key={col.key} className={`assets-cell${centeredColumns.has(col.key) ? " is-center" : ""}`}>
                       {col.key === "assetDescription" ? (

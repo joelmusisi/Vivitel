@@ -1475,7 +1475,7 @@ export default function HistoricalTracking() {
     () =>
       activeHistoryCols
         .map((col) =>
-          `minmax(${col.minWidth}px, ${col.key === "assetDescription" ? "1.6fr" : col.key === "events" ? "0.55fr" : col.key === "totalDistance" ? "0.85fr" : "1fr"})`
+          `minmax(max-content, ${col.key === "assetDescription" ? "1.6fr" : col.key === "events" ? "0.55fr" : col.key === "totalDistance" ? "0.85fr" : "1fr"})`
         )
         .join(" "),
     [columnOrder]
@@ -4709,16 +4709,14 @@ export default function HistoricalTracking() {
               <div
                 className="history-table-scroll-content"
                 ref={tableContentRef}
-                style={{ minWidth: `max(100%, ${historyTableMinWidth}px)` }}
+                style={{ minWidth: `max(100%, ${historyTableMinWidth}px)`, gridTemplateColumns: historyGridTemplate }}
               >
-                <div
-                  className="history-table-head"
-                  style={{ gridTemplateColumns: historyGridTemplate, minWidth: "100%" }}
-                >
+                <div className="history-table-head">
                   {activeHistoryCols.map((col) => (
                     <div
                       key={col.key}
                       className={`history-col${dragCol === col.key ? " dragging" : ""}`}
+                      style={{ minWidth: `var(--history-col-min-${col.key}, ${col.minWidth}px)` }}
                       draggable
                       onDragStart={(event) => {
                         setDragCol(col.key);
@@ -4758,7 +4756,7 @@ export default function HistoricalTracking() {
               ) : (
                 sortedFilteredAssets.map((row) => (
                   <div key={row.id} className="history-row-group">
-                    <div className="history-row" style={{ gridTemplateColumns: historyGridTemplate, minWidth: historyTableMinWidth }}>
+                    <div className="history-row">
                       {activeHistoryCols.map((col) => (
                         <div key={col.key} className="history-row-cell">
                           {renderHistoryCell(row, col.key)}
