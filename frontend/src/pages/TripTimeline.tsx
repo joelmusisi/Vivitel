@@ -959,7 +959,8 @@ export default function TripTimeline() {
 
     const peakSpeed = windowPoints.reduce((max, point) => Math.max(max, point.speedKph), 0);
     const peakRpm = windowPoints.reduce((max, point) => Math.max(max, point.rpmRevPerSec), 0);
-    const maxSpeed = tachoAxisMax(peakSpeed, 140);
+    // Multiple of 5 (min 10) so the five axis steps are whole km/h.
+    const maxSpeed = Math.max(10, Math.ceil(tachoAxisMax(peakSpeed, 140) / 5) * 5);
     const maxRpm = tachoAxisMax(peakRpm, 50);
 
     const xForMs = (atMs: number) => {
@@ -3283,7 +3284,7 @@ export default function TripTimeline() {
                         strokeDasharray="3 3"
                       />
                       <text x={tachoChartGeometry.left - 10} y={tick.y + 4} textAnchor="end" fill="#7a1b1b" fontSize="11">
-                        {tick.speedKph >= 10 ? tick.speedKph.toFixed(0) : tick.speedKph.toFixed(1)}
+                        {tick.speedKph.toFixed(0)}
                       </text>
                       <text x={tachoChartGeometry.left + tachoChartGeometry.innerWidth + 10} y={tick.y + 4} textAnchor="start" fill="#16a34a" fontSize="11">
                         {tick.rpmRevPerSec.toFixed(1)}
@@ -3442,7 +3443,7 @@ export default function TripTimeline() {
                           {formatFuelChartTime(tachoChartGeometry.pointDots[tachoHoverIndex].atMs)}
                         </text>
                         <text x="8" y="31" fill="#fca5a5" fontSize="11" fontWeight="700">
-                          {`Speed: ${tachoChartGeometry.pointDots[tachoHoverIndex].speedKph.toFixed(1)} kph`}
+                          {`Speed: ${tachoChartGeometry.pointDots[tachoHoverIndex].speedKph.toFixed(0)} kph`}
                         </text>
                         <text x="8" y="45" fill="#86efac" fontSize="11" fontWeight="700">
                           {`RPM: ${tachoChartGeometry.pointDots[tachoHoverIndex].rpmRevPerSec.toFixed(1)} Rev/s`}
