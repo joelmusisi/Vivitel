@@ -704,20 +704,10 @@ const readStoredConfigGroups = (tenantKey: string): ConfigGroupRecord[] => {
 
 const BINDINGS_PAGE_PATH = "/Control/config/templates";
 
-/** Grid track per asset-table column (header label → width). */
+/** Fixed grid tracks; every other asset-table column sizes to its longest text. */
 const CONFIG_ASSET_COLUMN_WIDTHS: Record<string, string> = {
   "": "36px",
   Flag: "40px",
-  "Asset description": "minmax(140px, 1.4fr)",
-  "Configuration group": "minmax(140px, 1.2fr)",
-  "Asset ID": "minmax(80px, 0.7fr)",
-  IMEI: "minmax(110px, 0.9fr)",
-  Site: "minmax(90px, 0.8fr)",
-  "Mobile Device Binding": "minmax(120px, 1fr)",
-  "Notification Binding": "minmax(120px, 1fr)",
-  "Configuration Date": "minmax(110px, 0.9fr)",
-  "Configuration status": "minmax(130px, 1fr)",
-  "Config Compile Status": "minmax(120px, 1fr)",
   Actions: "48px"
 };
 
@@ -1447,18 +1437,10 @@ export default function ConfigAdmin() {
     () => pageConfigs[configGroupPath].columns.filter((col) => !hiddenConfigAssetCols.includes(col)),
     [hiddenConfigAssetCols]
   );
+  // Rows are subgrids of the table, so these tracks keep every row aligned at full text width.
   const configAssetGrid = configAssetVisibleColumns
-    .map((col) => CONFIG_ASSET_COLUMN_WIDTHS[col] ?? "minmax(100px, 1fr)")
+    .map((col) => CONFIG_ASSET_COLUMN_WIDTHS[col] ?? "minmax(max-content, 1fr)")
     .join(" ");
-  // Sum of track minimums (+ grid gaps) so hiding columns also narrows the scroll width.
-  const configAssetMinWidth = configAssetVisibleColumns.reduce((total, col) => {
-    const match = /(\d+)px/.exec(CONFIG_ASSET_COLUMN_WIDTHS[col] ?? "100px");
-    return total + Number(match?.[1] ?? 100) + 12;
-  }, 0);
-  const configAssetRowStyle: CSSProperties = {
-    gridTemplateColumns: configAssetGrid,
-    minWidth: `${configAssetMinWidth}px`
-  };
 
   const selectedSidebarGroup =
     selectedSidebarGroupId === "all" ? null : configGroups[selectedSidebarGroupId] ?? null;
@@ -2155,11 +2137,6 @@ export default function ConfigAdmin() {
                 <div className="admin-panel-title">
                   {selectedSidebarGroup?.name ?? "All groups"}
                 </div>
-                <div className="admin-panel-sub">
-                  {selectedSidebarGroup
-                    ? "One row per asset assigned to this configuration group."
-                    : "One row per asset across all configuration groups."}
-                </div>
               </div>
               <div className="admin-filter-row">
                 <input
@@ -2187,9 +2164,14 @@ export default function ConfigAdmin() {
 
             <div
               className="admin-table config-groups-asset-table"
-              style={{ "--admin-cols": String(configAssetVisibleColumns.length) } as CSSProperties}
+              style={
+                {
+                  "--admin-cols": String(configAssetVisibleColumns.length),
+                  gridTemplateColumns: configAssetGrid
+                } as CSSProperties
+              }
             >
-              <div className="admin-row admin-row-head" style={configAssetRowStyle}>
+              <div className="admin-row admin-row-head">
                 {configAssetVisibleColumns.map((col) => {
                   if (col === "") {
                     const visibleIds = configAssetSort.sortedRows.map((row) => row.id);
@@ -2281,7 +2263,7 @@ export default function ConfigAdmin() {
                     || (compilingGroupId === row.groupId && !compilingAssetKey);
                   const menuOpen = openAssetMenuId === row.id;
                   return (
-                    <div key={row.id} className="admin-row" style={configAssetRowStyle}>
+                    <div key={row.id} className="admin-row">
                       <span className="config-groups-check-col">
                         <input
                           type="checkbox"

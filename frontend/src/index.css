@@ -5548,7 +5548,7 @@ label.vivi-required-missing select,
 
 .driver-debrief-table-row > [role="cell"] {
   min-width: 0;
-  overflow-wrap: anywhere;
+  white-space: nowrap;
 }
 
 .driver-debrief-table-actions-col {
@@ -12373,24 +12373,6 @@ label.vivi-required-missing select,
   -webkit-overflow-scrolling: touch;
 }
 
-.config-groups-asset-table .admin-row {
-  grid-template-columns:
-    36px
-    40px
-    minmax(140px, 1.4fr)
-    minmax(140px, 1.2fr)
-    minmax(80px, 0.7fr)
-    minmax(110px, 0.9fr)
-    minmax(90px, 0.8fr)
-    minmax(120px, 1fr)
-    minmax(120px, 1fr)
-    minmax(110px, 0.9fr)
-    minmax(130px, 1fr)
-    minmax(120px, 1fr)
-    48px;
-  min-width: 1320px;
-}
-
 .config-groups-col-menu {
   display: inline-flex;
   align-items: center;
@@ -12623,17 +12605,25 @@ label.vivi-required-missing select,
   background: #ffffff;
 }
 
+/* One shared grid per table: rows are subgrids, so each column fits its longest
+   cell on one line and the table scrolls sideways (scrollbar at the bottom). */
 .admin-table {
   --admin-cols: 5;
   border: 1px solid rgba(15, 23, 42, 0.08);
   border-radius: 12px;
-  overflow: hidden;
   background: #ffffff;
   flex: 1;
   min-height: 0;
-  display: flex;
-  flex-direction: column;
-  overflow-y: auto;
+  display: grid;
+  grid-template-columns: repeat(var(--admin-cols), minmax(max-content, 1fr));
+  grid-auto-rows: max-content;
+  align-content: start;
+  column-gap: 10px;
+  overflow: auto;
+}
+
+.admin-table > * {
+  grid-column: 1 / -1;
 }
 
 .admin-row {
@@ -12644,6 +12634,14 @@ label.vivi-required-missing select,
   padding: 10px 12px;
   border-bottom: 1px solid rgba(15, 23, 42, 0.08);
   font-size: 0.9rem;
+}
+
+.admin-table > .admin-row {
+  grid-template-columns: subgrid;
+}
+
+.admin-row > * {
+  white-space: nowrap;
 }
 
 
@@ -31267,3 +31265,13 @@ button.sortable-col-header {
 .cms808-info-table{width:100%;border-collapse:collapse;font-size:13px}
 .cms808-info-table td{padding:4px 8px;border-bottom:1px solid rgba(128,128,128,.25)}
 .cms808-note{font-size:12px;opacity:.75}
+
+/* Data tables app-wide: show full cell text on one line (scroll sideways, never wrap or break). */
+table th,
+table td,
+[role="columnheader"],
+[role="cell"] {
+  white-space: nowrap;
+  word-break: normal;
+  overflow-wrap: normal;
+}
