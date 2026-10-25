@@ -131,6 +131,8 @@ const HOME_MODEL_CACHE_KEY = "vivi.home.dashboard.model.v3";
 const HOME_MODEL_CACHE_LEGACY_KEY = "vivi.home.dashboard.model.v1";
 const HOME_MODEL_CACHE_MAX = 6;
 const HOME_MODEL_CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+/** A stale snapshot (other dates) is still shown instantly while the fresh one loads. */
+const HOME_MODEL_STALE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
 type HomeModelCacheFile = {
   entries?: Record<string, { savedAt?: number; model?: unknown }>;
@@ -193,6 +195,33 @@ export const readCachedHomeDashboardModel = <T>(params: {
     // fall through to the previous session slot
   }
   return readLegacySessionModel<T>(key);
+};
+
+/**
+ * Newest saved model for the same tenant and sites, whatever its dates. Home paints
+ * it at once when the exact range has no entry yet (e.g. "Last 7 Days" on a new day)
+ * and replaces it when the fresh load lands.
+ */
+export const readLatestHomeDashboardModel = <T>(params: {
+  fromDate: string;
+  toDate: string;
+  scopedSites?: string[];
+}): T | null => {
+  if (typeof window === "undefined") return null;
+  const exactKey = homeDashboardModelCacheKey(params);
+  const prefix = exactKey.split("|").slice(0, 2).join("|") + "|";
+  try {
+    const newest = Object.entries(readHomeModelCacheFile().entries ?? {})
+      .filter(([key, entry]) =>
+        key.startsWith(prefix)
+        && entry?.model
+        && typeof entry.model === "object"
+        && Date.now() - Number(entry.savedAt ?? 0) < HOME_MODEL_STALE_MAX_AGE_MS)
+      .sort((a, b) => Number(b[1]?.savedAt ?? 0) - Number(a[1]?.savedAt ?? 0))[0];
+    return newest ? (newest[1].model as T) : null;
+  } catch {
+    return null;
+  }
 };
 
 export const writeCachedHomeDashboardModel = (

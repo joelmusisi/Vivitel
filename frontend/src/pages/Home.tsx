@@ -8,6 +8,7 @@ import {
   homeRangeFromPreset,
   persistHomeDates,
   readCachedHomeDashboardModel,
+  readLatestHomeDashboardModel,
   readHomeDashboardDateQuery,
   readPersistedHomeDates,
   writeCachedHomeDashboardModel,
@@ -402,6 +403,8 @@ const readInstantHomeModel = (fromDate: string, toDate: string): Partial<Dashboa
     scopedSites: scope.scopedSites
   });
   if (cached && (hasFleetPaint(cached) || hasMetricsPaint(cached))) return cached;
+  const latest = readLatestHomeDashboardModel<Partial<DashboardModel>>({ fromDate, toDate, scopedSites: scope.scopedSites });
+  if (latest && (hasFleetPaint(latest) || hasMetricsPaint(latest))) return latest;
   return peekHomeLiveFromCache() ?? {};
 };
 
@@ -430,7 +433,12 @@ export function Home() {
   const [loadingMetrics, setLoadingMetrics] = useState(() => {
     const scope = readHomeSiteScope();
     if (!scope.ready) return false;
-    return !hasMetricsPaint(readInstantHomeModel(defaultRange.fromDate, defaultRange.toDate));
+    // A stale snapshot is painted, but its numbers are still being refreshed.
+    return !hasMetricsPaint(readCachedHomeDashboardModel<Partial<DashboardModel>>({
+      fromDate: defaultRange.fromDate,
+      toDate: defaultRange.toDate,
+      scopedSites: scope.scopedSites
+    }));
   });
   const [error, setError] = useState("");
   const [incomplete, setIncomplete] = useState("");
@@ -498,9 +506,14 @@ export function Home() {
       setLoadingLive(false);
       setLoadingMetrics(false);
     } else {
+      const latest = readLatestHomeDashboardModel<Partial<DashboardModel>>(query);
       const peeked = peekHomeLiveFromCache();
       const fleet = hasFleetPaint(cachedModel) ? cachedModel : peeked;
-      if (fleet) {
+      if (latest && hasMetricsPaint(latest)) {
+        // Instant paint from the last snapshot for this site; fresh numbers replace it below.
+        setModel({ ...latest, ...(fleet ? { totalVehicles: fleet.totalVehicles, statusCounts: fleet.statusCounts } : {}) });
+        setLoadingLive(false);
+      } else if (fleet) {
         setModel({
           totalVehicles: fleet.totalVehicles,
           statusCounts: fleet.statusCounts
@@ -760,7 +773,7 @@ export function Home() {
       )}
       {siteScope.ready && !loadingLive && loadingMetrics && (
         <div className="viv-banner">
-          <span className="viv-spin" /> Loading metrics for {scopeLabel}…
+          <span className="viv-spin" /> {hasMetricsPaint(model) ? "Updating" : "Loading"} metrics for {scopeLabel}…
         </div>
       )}
       {error && !loading && <div className="viv-banner">⚠ {error}</div>}

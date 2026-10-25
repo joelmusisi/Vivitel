@@ -11,6 +11,7 @@ import {
   saveSessionResume
 } from "./tenantContext";
 import { mergeAssetsKeepingNewerLive, overlayLivePositions, rememberLivePositions } from "./assetLiveCache";
+import { loadTripsWithDayCache } from "./tripDayCache";
 import {
   bindingIdsToPruneAfterSave,
   dedupeBindingRows,
@@ -6713,6 +6714,35 @@ const tripBatchQueues = new Map<string, TripBatchWaiter[]>();
  * those calls into one multi-device /reports/trips request and split the rows back
  * by deviceId, so the proxy and Traccar see one query instead of one per asset.
  */
+const TRIPS_REQUEST_CHUNK = 40;
+
+/** Raw /reports/trips for a device list, chunked; ok is false when any chunk failed. */
+async function fetchTraccarTripsRangeRaw(
+  ids: string[],
+  from: string,
+  to: string
+): Promise<{ ok: boolean; trips: TraccarTrip[] }> {
+  const trips: TraccarTrip[] = [];
+  let ok = true;
+  for (let index = 0; index < ids.length; index += TRIPS_REQUEST_CHUNK) {
+    const query = new URLSearchParams({ from, to });
+    for (const id of ids.slice(index, index + TRIPS_REQUEST_CHUNK)) query.append("deviceId", id);
+    const result = await traccarProxyRequest<TraccarTrip[] | { trips?: TraccarTrip[]; data?: TraccarTrip[] }>(
+      `/reports/trips?${query.toString()}`,
+      { method: "GET" }
+    );
+    if (!result.ok || result.softFailed) ok = false;
+    const body: any = result.ok ? result.body : null;
+    const list = Array.isArray(body) ? body : Array.isArray(body?.trips) ? body.trips : Array.isArray(body?.data) ? body.data : [];
+    trips.push(...(list as TraccarTrip[]));
+  }
+  return { ok, trips };
+}
+
+/** Trips with finished days served from the browser day cache (see tripDayCache). */
+const fetchTraccarTripsCached = (ids: string[], from: string, to: string) =>
+  loadTripsWithDayCache(ids, from, to, `${buildApiUrl("")}|${getTenantId() || "_"}`, fetchTraccarTripsRangeRaw);
+
 function getTraccarTripsCoalesced(deviceId: string, from: string, to: string): Promise<TraccarTrip[]> {
   const key = `${getTenantId() || "_"}|${from}|${to}`;
   return new Promise<TraccarTrip[]>((resolve) => {
@@ -6724,21 +6754,7 @@ function getTraccarTripsCoalesced(deviceId: string, from: string, to: string): P
         const waiters = tripBatchQueues.get(key) ?? [];
         tripBatchQueues.delete(key);
         const ids = Array.from(new Set(waiters.map((waiter) => waiter.deviceId)));
-        const run = async () => {
-          const rows: TraccarTrip[] = [];
-          for (let index = 0; index < ids.length; index += 40) {
-            const query = new URLSearchParams({ from, to });
-            for (const id of ids.slice(index, index + 40)) query.append("deviceId", id);
-            const result = await traccarProxyRequest<TraccarTrip[] | { trips?: TraccarTrip[]; data?: TraccarTrip[] }>(
-              `/reports/trips?${query.toString()}`,
-              { method: "GET" }
-            );
-            const body: any = result.ok ? result.body : null;
-            const list = Array.isArray(body) ? body : Array.isArray(body?.trips) ? body.trips : Array.isArray(body?.data) ? body.data : [];
-            rows.push(...(list as TraccarTrip[]));
-          }
-          return rows;
-        };
+        const run = async () => (await fetchTraccarTripsCached(ids, from, to)).trips;
         run()
           .catch(() => [] as TraccarTrip[])
           .then((rows) => {
@@ -6771,18 +6787,7 @@ export async function getTraccarTrips(params: {
 
   if (uniqueIds.length === 1) return getTraccarTripsCoalesced(uniqueIds[0], from, to);
 
-  const query = new URLSearchParams({ from, to });
-  for (const id of uniqueIds) query.append("deviceId", id);
-  const result = await traccarProxyRequest<TraccarTrip[] | { trips?: TraccarTrip[]; data?: TraccarTrip[] }>(
-    `/reports/trips?${query.toString()}`,
-    { method: "GET" }
-  );
-  const body = result.ok ? result.body : null;
-
-  if (Array.isArray(body)) return body;
-  if (Array.isArray((body as any)?.trips)) return (body as any).trips;
-  if (Array.isArray((body as any)?.data)) return (body as any).data;
-  return [];
+  return (await fetchTraccarTripsCached(uniqueIds, from, to)).trips;
 }
 
 /**
@@ -6800,18 +6805,9 @@ export async function getTraccarTripsStrict(params: {
   const to = String(params.to ?? "").trim();
   if (uniqueIds.length === 0 || !from || !to) return [];
 
-  const query = new URLSearchParams({ from, to });
-  for (const id of uniqueIds) query.append("deviceId", id);
-  const result = await traccarProxyRequest<TraccarTrip[] | { trips?: TraccarTrip[]; data?: TraccarTrip[] }>(
-    `/reports/trips?${query.toString()}`,
-    { method: "GET" }
-  );
-  if (!result.ok) throw new Error(`Trips report failed (${result.status})`);
-  const body = result.body;
-  if (Array.isArray(body)) return body;
-  if (Array.isArray((body as any)?.trips)) return (body as any).trips;
-  if (Array.isArray((body as any)?.data)) return (body as any).data;
-  return [];
+  const result = await fetchTraccarTripsCached(uniqueIds, from, to);
+  if (!result.ok && result.trips.length === 0) throw new Error("Trips report failed");
+  return result.trips;
 }
 
 /**

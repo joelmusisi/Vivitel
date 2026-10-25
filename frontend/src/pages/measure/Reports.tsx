@@ -145,6 +145,8 @@ type MovementAssetSection = {
   assetId: string;
   siteName: string;
   rows: string[][];
+  /** Daily Movement CSV only: one row per trip in MOVEMENT_CSV_COLUMNS order. */
+  csvRows?: string[][];
   totals?: string[];
   averages?: string[];
 };
@@ -194,6 +196,58 @@ const DETAILED_MOVEMENT_TABLE_COLUMNS = [
   "Next Departure",
   "Standing Time at Location (hh:mm:ss)"
 ] as const;
+
+/** Daily Movement CSV export columns (MiX raw layout); the Excel export keeps the sectioned table. */
+const MOVEMENT_CSV_COLUMNS = [
+  "AssetExtra",
+  "AssetHostID",
+  "AssetID",
+  "SiteName",
+  "DepartureDate",
+  "AssetName2",
+  "AssetExtra2",
+  "FleetNumber",
+  "DepartureTime",
+  "TimeZone1",
+  "DepartFrom",
+  "StartLatLong",
+  "TripType",
+  "TripClassificationComment",
+  "DrivingTime",
+  "StandingTime",
+  "Duration",
+  "Distance",
+  "StartOdoMeter",
+  "EndOdoMeter",
+  "MaxSpeed",
+  "AvgSpeed",
+  "ArrivalTime",
+  "ArrivalDate",
+  "TimeZone2",
+  "ArriveAt",
+  "EndLatLong",
+  "NextDepartureDateTime",
+  "TimeZone",
+  "TimeAtLocation",
+  "PassengerList",
+  "NrOfVisits",
+  "BlankJourneyType",
+  "TotalFuelUsedMeasured",
+  "CalcFuelConsumption"
+] as const;
+
+const formatOdometerKm = (meters: unknown) => {
+  const value = Number(meters);
+  if (!Number.isFinite(value) || value <= 0) return "";
+  return (value / 1000).toFixed(2);
+};
+
+const formatLatLong = (lat: unknown, lng: unknown) => {
+  const parsedLat = Number(lat);
+  const parsedLng = Number(lng);
+  if (!Number.isFinite(parsedLat) || !Number.isFinite(parsedLng) || (parsedLat === 0 && parsedLng === 0)) return "";
+  return `${parsedLat.toFixed(9)} ${parsedLng.toFixed(9)}`;
+};
 
 const LOCATION_VISIT_COLUMNS = [
   "Asset Description",
@@ -2524,14 +2578,17 @@ export default function Reports() {
     ?? ""
   ).trim();
 
-  const resolveScopedReportAssets = async (): Promise<Array<{
+  type ScopedReportAsset = {
     registration: string;
     assetLabel: string;
     siteName: string;
     driverName: string;
     driverId: string;
     deviceId: string;
-  }>> => {
+    fleetNumber?: string;
+  };
+
+  const resolveScopedReportAssets = async (): Promise<ScopedReportAsset[]> => {
     const rawAssets = await getAssetsFromApi<any>();
     const siteSet = new Set((selectedSites.length > 0 ? selectedSites : (selectedSite ? [selectedSite] : []))
       .map((value) => String(value).trim())
@@ -2556,7 +2613,7 @@ export default function Reports() {
         .filter((asset) => !(Number(asset?.traccarDeviceId) > 0))
         .map((asset) => String(asset?.imei ?? "").trim())
     );
-    const resolved = filteredAssets.map((asset) => {
+    const resolved = filteredAssets.map((asset): ScopedReportAsset | null => {
       const directId = Number(asset?.traccarDeviceId);
       if (Number.isFinite(directId) && directId > 0) {
         return {
@@ -2565,7 +2622,8 @@ export default function Reports() {
           siteName: String(asset?.site ?? selectedSite ?? "Default Site").trim() || "Default Site",
           driverName: extractScopedDriverName(asset) || "Unknown",
           driverId: extractDriverIdentifier(asset),
-          deviceId: String(directId)
+          deviceId: String(directId),
+          fleetNumber: String(asset?.fleetNumber ?? asset?.imei ?? "").trim()
         };
       }
       const uniqueId = String(asset?.imei ?? "").trim();
@@ -2578,18 +2636,12 @@ export default function Reports() {
         siteName: String(asset?.site ?? selectedSite ?? "Default Site").trim() || "Default Site",
         driverName: extractScopedDriverName(asset) || "Unknown",
         driverId: extractDriverIdentifier(asset),
-        deviceId: String(deviceId)
+        deviceId: String(deviceId),
+        fleetNumber: String(asset?.fleetNumber ?? uniqueId).trim()
       };
     });
 
-    let rows = resolved.filter((item): item is {
-      registration: string;
-      assetLabel: string;
-      siteName: string;
-      driverName: string;
-      driverId: string;
-      deviceId: string;
-    } => Boolean(item));
+    let rows = resolved.filter((item): item is ScopedReportAsset => Boolean(item));
 
     if ((cms808HierarchyActive() || isCms808Server()) && rows.length === 0) {
       let vehicles = await loadCms808VehiclesForActiveHierarchy().catch(() => []);
@@ -4252,6 +4304,16 @@ export default function Reports() {
         flatRows = [...detailData.tableRows];
       }
 
+      if (format === "csv" && detailData.kind === "movement" && detailData.variant === "detailed") {
+        // Daily Movement CSV: MiX raw layout, one trip per row, asset details on every row.
+        const csvContent = buildCsvContent([
+          [...MOVEMENT_CSV_COLUMNS],
+          ...detailData.sections.flatMap((section) => section.csvRows ?? [])
+        ]);
+        saveBlob(new Blob([csvContent], { type: "text/csv;charset=utf-8" }), `${baseName}.csv`);
+        return;
+      }
+
       if (format === "csv") {
         // Plain table: one header row, one value per column, asset details repeated on every row.
         const csvCell = (value: unknown) => {
@@ -5025,21 +5087,31 @@ export default function Reports() {
     const gpsTripsByDevice = gpsBundle ? groupByDeviceId(gpsBundle.trips) : null;
     const gpsStopsByDevice = gpsBundle ? groupByDeviceId(gpsBundle.stops) : null;
 
+    const isCmsAsset = (asset: { deviceId: string }) => {
+      const cmsDevice = String(asset.deviceId ?? "").replace(/^cms808:/i, "");
+      return (cms808HierarchyActive() || isCms808Server()) && (
+        /^cms808:/i.test(String(asset.deviceId ?? "")) || /^\d{6,}$/.test(cmsDevice)
+      );
+    };
+    // One fleet trips load (chunked, finished days cached) instead of a trips + stops call per asset.
+    // Standing time at location is arrival → next departure, so the stops report is not needed.
+    const traccarTripsByDevice = gpsTripsByDevice
+      ? null
+      : groupByDeviceId(await getTraccarTrips({
+          from,
+          to,
+          deviceIds: assets.filter((asset) => !isCmsAsset(asset)).map((asset) => asset.deviceId)
+        }).catch(() => [] as TraccarTrip[]));
+
     const allPairData = await mapWithLimit(assets, 4, async (asset) => {
         const cmsDevice = String(asset.deviceId ?? "").replace(/^cms808:/i, "");
-        const useCms = (cms808HierarchyActive() || isCms808Server()) && (
-          /^cms808:/i.test(String(asset.deviceId ?? "")) || /^\d{6,}$/.test(cmsDevice)
-        );
+        const useCms = isCmsAsset(asset);
         if (useCms) {
           const trips = await loadCms808MovementTrips(cmsDevice, new Date(from), new Date(to), asset.registration).catch(() => []);
           return { ...asset, trips: trips as unknown as TraccarTrip[], routePoints: [] as Awaited<ReturnType<typeof getTraccarRoute>>, stops: [] as Awaited<ReturnType<typeof getTraccarStops>> };
         }
-        const trips = gpsTripsByDevice
-          ? (gpsTripsByDevice.get(String(asset.deviceId)) ?? [])
-          : await getTraccarTrips({ from, to, deviceId: asset.deviceId }).catch(() => [] as TraccarTrip[]);
-        const stops = gpsStopsByDevice
-          ? (gpsStopsByDevice.get(String(asset.deviceId)) ?? [])
-          : await getTraccarStops({ from, to, deviceId: asset.deviceId }).catch(() => []);
+        const trips = (gpsTripsByDevice ?? traccarTripsByDevice)?.get(String(asset.deviceId)) ?? [];
+        const stops = gpsStopsByDevice?.get(String(asset.deviceId)) ?? [];
         // Missing trip addresses are reverse-geocoded from the trip's own start/end coordinates.
         // Pulling the full route per asset for this was the slowest call in the report and timed out.
         return { ...asset, trips, routePoints: [] as Awaited<ReturnType<typeof getTraccarRoute>>, stops };
@@ -5200,22 +5272,72 @@ export default function Reports() {
             trip.endLon
           );
 
-          return [
+          const driverName = resolveTripDriverName(trip.driverName, assetData) || "Unknown";
+          const timeZone = formatTripTimeZoneLabel(startTime, section.siteName, siteTimeZones);
+          const avgSpeedKph = Math.max(0, Number(trip.averageSpeed ?? 0) * 1.852);
+          // Moving time from distance / average speed; the rest of the trip is in-trip standing.
+          const movingMs = avgSpeedKph > 0 && distanceKm > 0
+            ? Math.min(durationMs, (distanceKm / avgSpeedKph) * 3_600_000)
+            : durationMs;
+          const fuelUsedL = Number(trip.spentFuel ?? 0);
+          const csvRow = [
+            section.assetDescription,
+            section.registrationNumber,
+            section.assetId,
+            section.siteName,
             formatDateOnly(startTime),
-            resolveTripDriverName(trip.driverName, assetData) || "Unknown",
+            driverName,
+            "",
+            assetData.fleetNumber || "",
             formatTimeOnly(startTime),
-            departedFrom || "—",
+            timeZone,
+            departedFrom || "",
+            formatLatLong(trip.startLat, trip.startLon),
+            "Unclassified",
+            "",
+            formatDurationHms(movingMs),
+            formatDurationHms(Math.max(0, durationMs - movingMs)),
             formatDurationHms(durationMs),
-            distanceKm.toFixed(2),
+            distanceKm.toFixed(1),
+            formatOdometerKm((trip as { startOdometer?: unknown }).startOdometer),
+            formatOdometerKm((trip as { endOdometer?: unknown }).endOdometer),
             Math.round(maxSpeedKph).toString(),
+            avgSpeedKph.toFixed(2),
             formatTimeOnly(endTime),
-            arrivedAt || "—",
-            nextStart ? formatNextDepartureLabel(nextStart) : "—",
-            standingMs > 0 ? formatDurationHms(standingMs) : "00:00:00"
+            formatDateOnly(endTime),
+            timeZone,
+            arrivedAt || "",
+            formatLatLong(trip.endLat, trip.endLon),
+            nextStart ? formatNextDepartureLabel(nextStart) : "",
+            timeZone,
+            formatDurationHms(standingMs),
+            "",
+            "1",
+            "",
+            fuelUsedL > 0 ? fuelUsedL.toFixed(2) : "",
+            fuelUsedL > 0 && distanceKm > 0 ? (distanceKm / fuelUsedL).toFixed(2) : ""
           ];
+
+          return {
+            csvRow,
+            row: [
+              formatDateOnly(startTime),
+              driverName,
+              formatTimeOnly(startTime),
+              departedFrom || "—",
+              formatDurationHms(durationMs),
+              distanceKm.toFixed(2),
+              Math.round(maxSpeedKph).toString(),
+              formatTimeOnly(endTime),
+              arrivedAt || "—",
+              nextStart ? formatNextDepartureLabel(nextStart) : "—",
+              standingMs > 0 ? formatDurationHms(standingMs) : "00:00:00"
+            ]
+          };
         }));
 
-        section.rows = detailedRows;
+        section.rows = detailedRows.map((item) => item.row);
+        section.csvRows = detailedRows.map((item) => item.csvRow);
         const summary = summarizeDetailedMovementSection(metrics);
         section.totals = summary.totals;
         section.averages = summary.averages;
