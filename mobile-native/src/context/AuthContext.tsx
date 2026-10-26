@@ -1,5 +1,6 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import { login as apiLogin, refreshAuthMe } from "../api/auth";
+import { registerForPush, unregisterFromPush } from "../notifications/push";
 import { clearSession, getApiKey, getLastLoginEmail } from "../storage/session";
 
 type AuthContextValue = {
@@ -45,7 +46,24 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return result;
   }, []);
 
+  // Register this device for fleet-alert pushes whenever a user is signed in.
+  useEffect(() => {
+    if (!signedIn) return;
+    let unsubscribe = () => {};
+    let cancelled = false;
+    void registerForPush().then((off) => {
+      if (cancelled) off();
+      else unsubscribe = off;
+    });
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, [signedIn]);
+
   const signOut = useCallback(async () => {
+    // Needs the API key, so unregister before the session is cleared.
+    await unregisterFromPush();
     await clearSession();
     setSignedIn(false);
   }, []);

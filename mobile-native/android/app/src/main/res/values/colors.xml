@@ -1,0 +1,6 @@
+<resources>
+    <!-- VIVI accent, used to tint push notifications on Android. -->
+    <color name="notification_accent">#38BDF8</color>
+    <!-- Window background behind the JS UI, so launch never flashes white. -->
+    <color name="vivi_bg">#0B1220</color>
+</resources>

@@ -1,10 +1,11 @@
 import React, { useCallback, useEffect, useState } from "react";
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, Alert, Platform, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { refreshAuthMe } from "../api/auth";
 import { fetchHierarchy, type HierarchyDealer } from "../api/fleet";
 import { APP_NAME } from "../config";
 import { useAuth } from "../context/AuthContext";
 import { getLastLoginEmail, getTenantId } from "../storage/session";
+import { monoFont, pressedStyle, pressFeedback } from "../theme/platform";
 
 export default function ProfileScreen() {
   const { signOut } = useAuth();
@@ -33,6 +34,13 @@ export default function ProfileScreen() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  // Native confirm dialog (UIAlertController on iOS, Material dialog on Android).
+  const confirmSignOut = () =>
+    Alert.alert("Sign out?", "You will stop receiving fleet alerts on this device.", [
+      { text: "Cancel", style: "cancel" },
+      { text: "Sign out", style: "destructive", onPress: () => void signOut() }
+    ]);
 
   const orgCount = hierarchy.reduce((sum, dealer) => sum + (dealer.organisations?.length ?? 0), 0);
 
@@ -71,10 +79,14 @@ export default function ProfileScreen() {
           <View style={styles.card}>
             <Text style={styles.label}>App</Text>
             <Text style={styles.value}>{APP_NAME}</Text>
-            <Text style={styles.hint}>React Native with Hermes</Text>
+            <Text style={styles.hint}>{Platform.OS === "ios" ? "iOS" : "Android"} · React Native with Hermes</Text>
           </View>
 
-          <Pressable style={styles.signOut} onPress={() => void signOut()}>
+          <Pressable
+            {...pressFeedback}
+            style={({ pressed }) => [styles.signOut, pressedStyle(pressed)]}
+            onPress={confirmSignOut}
+          >
             <Text style={styles.signOutText}>Sign out</Text>
           </Pressable>
         </>
@@ -99,7 +111,7 @@ const styles = StyleSheet.create({
   label: { color: "#94a3b8", fontSize: 12, fontWeight: "600", marginBottom: 4 },
   spaced: { marginTop: 12 },
   value: { color: "#f8fafc", fontSize: 16, fontWeight: "600" },
-  valueMono: { color: "#cbd5e1", fontFamily: "monospace", fontSize: 13 },
+  valueMono: { color: "#cbd5e1", fontFamily: monoFont, fontSize: 13 },
   hint: { color: "#64748b", marginTop: 8, fontSize: 13, lineHeight: 18 },
   signOut: {
     marginTop: 8,
@@ -108,7 +120,8 @@ const styles = StyleSheet.create({
     paddingVertical: 14,
     alignItems: "center",
     borderWidth: 1,
-    borderColor: "#334155"
+    borderColor: "#334155",
+    overflow: "hidden"
   },
   signOutText: { color: "#f87171", fontWeight: "700", fontSize: 16 }
 });

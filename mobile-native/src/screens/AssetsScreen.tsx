@@ -9,6 +9,7 @@ import {
   View
 } from "react-native";
 import { fetchAssets, type FleetAsset } from "../api/fleet";
+import { isIOS } from "../theme/platform";
 
 function assetLabel(asset: FleetAsset): string {
   return (
@@ -82,6 +83,11 @@ export default function AssetsScreen() {
         style={styles.search}
         value={query}
         onChangeText={setQuery}
+        autoCorrect={false}
+        autoCapitalize="characters"
+        returnKeyType="search"
+        clearButtonMode="while-editing"
+        keyboardAppearance="dark"
       />
 
       {loading && assets.length === 0 ? (
@@ -97,7 +103,7 @@ export default function AssetsScreen() {
         data={filtered}
         keyExtractor={(item, index) => String(item.assetId ?? item.id ?? index)}
         refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={() => void load(true)} tintColor="#38bdf8" />
+          <RefreshControl refreshing={refreshing} onRefresh={() => void load(true)} tintColor="#38bdf8" colors={["#38bdf8"]} progressBackgroundColor="#111827" />
         }
         ListEmptyComponent={
           !loading ? (
@@ -113,6 +119,7 @@ export default function AssetsScreen() {
           </View>
         )}
         contentContainerStyle={filtered.length === 0 ? styles.emptyList : styles.list}
+        keyboardDismissMode={isIOS ? "interactive" : "on-drag"}
       />
     </View>
   );

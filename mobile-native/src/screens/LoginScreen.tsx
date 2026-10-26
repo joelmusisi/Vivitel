@@ -11,6 +11,7 @@ import {
 } from "react-native";
 import { APP_NAME } from "../config";
 import { useAuth } from "../context/AuthContext";
+import { pressedStyle, pressFeedback, tapFeedback } from "../theme/platform";
 
 export default function LoginScreen() {
   const { signIn, emailHint } = useAuth();
@@ -49,6 +50,10 @@ export default function LoginScreen() {
           autoCapitalize="none"
           autoCorrect={false}
           keyboardType="email-address"
+          // Lets iCloud Keychain / Google Password Manager offer saved fleet logins.
+          textContentType="username"
+          autoComplete="email"
+          returnKeyType="next"
           placeholder="you@company.com"
           placeholderTextColor="#64748b"
           style={styles.input}
@@ -60,6 +65,9 @@ export default function LoginScreen() {
         <Text style={styles.label}>Password</Text>
         <TextInput
           secureTextEntry
+          textContentType="password"
+          autoComplete="password"
+          returnKeyType="go"
           placeholder="Password"
           placeholderTextColor="#64748b"
           style={styles.input}
@@ -72,8 +80,12 @@ export default function LoginScreen() {
         {error ? <Text style={styles.error}>{error}</Text> : null}
 
         <Pressable
-          style={[styles.button, submitting && styles.buttonDisabled]}
-          onPress={() => void onSubmit()}
+          {...pressFeedback}
+          style={({ pressed }) => [styles.button, submitting && styles.buttonDisabled, pressedStyle(pressed)]}
+          onPress={() => {
+            tapFeedback();
+            void onSubmit();
+          }}
           disabled={submitting}
         >
           {submitting ? (
@@ -136,6 +148,7 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     paddingVertical: 14,
     alignItems: "center",
+    overflow: "hidden",
     marginTop: 4
   },
   buttonDisabled: {

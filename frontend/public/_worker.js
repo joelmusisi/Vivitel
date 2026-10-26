@@ -92,6 +92,19 @@ export default {
       }
     }
 
+    // Mobile app link verification. Apple requires JSON content-type on an extensionless file,
+    // and neither file may fall back to the SPA shell.
+    if (url.pathname === "/.well-known/apple-app-site-association" || url.pathname === "/.well-known/assetlinks.json") {
+      const asset = await env.ASSETS.fetch(request);
+      if (!asset.ok || isHtmlResponse(asset)) {
+        return new Response("Not Found", { status: 404, headers: { "content-type": "text/plain; charset=utf-8" } });
+      }
+      const headers = new Headers(asset.headers);
+      headers.set("content-type", "application/json");
+      headers.set("cache-control", "public, max-age=3600");
+      return new Response(asset.body, { status: 200, headers });
+    }
+
     const response = await env.ASSETS.fetch(request);
 
     // Cloudflare may return index.html (200) for missing /assets/* files — never pass that through.

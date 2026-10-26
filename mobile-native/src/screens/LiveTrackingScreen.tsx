@@ -2,7 +2,6 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   ActivityIndicator,
   FlatList,
-  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -10,6 +9,7 @@ import {
   View
 } from "react-native";
 import MapView, { Marker, type Region } from "react-native-maps";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import TraccarTileMap from "../components/TraccarTileMap";
 import {
   DEFAULT_MAP_LAYER,
@@ -22,11 +22,15 @@ import {
   type LiveMapMarker
 } from "../api/liveTracking";
 import { assetDotStatusColor } from "../utils/assetStatus";
+import { pressedStyle, pressFeedback, tapFeedback } from "../theme/platform";
 
 const REFRESH_MS = 30_000;
 
 export default function LiveTrackingScreen() {
   const mapRef = useRef<MapView>(null);
+  const insets = useSafeAreaInsets();
+  // Overlays sit below the status bar / notch on both platforms instead of fixed offsets.
+  const top = insets.top + 12;
   const [markers, setMarkers] = useState<LiveMapMarker[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -106,14 +110,22 @@ export default function LiveTrackingScreen() {
         ))}
       </TraccarTileMap>
 
-      <View style={styles.topBar}>
+      <View style={[styles.topBar, { top }]}>
         <View>
           <Text style={styles.topTitle}>Live tracking</Text>
           <Text style={styles.topSub}>
             {markers.length} on map{degraded ? " · telemetry degraded" : ""}
           </Text>
         </View>
-        <Pressable style={styles.iconButton} onPress={() => void load(true)} disabled={refreshing}>
+        <Pressable
+          {...pressFeedback}
+          style={({ pressed }) => [styles.iconButton, pressedStyle(pressed)]}
+          onPress={() => {
+            tapFeedback();
+            void load(true);
+          }}
+          disabled={refreshing}
+        >
           {refreshing ? (
             <ActivityIndicator color="#38bdf8" size="small" />
           ) : (
@@ -125,7 +137,7 @@ export default function LiveTrackingScreen() {
       <ScrollView
         horizontal
         showsHorizontalScrollIndicator={false}
-        style={styles.layerBar}
+        style={[styles.layerBar, { top: top + 62 }]}
         contentContainerStyle={styles.layerBarContent}
       >
         {MAP_LAYERS.map((layer) => {
@@ -133,7 +145,8 @@ export default function LiveTrackingScreen() {
           return (
             <Pressable
               key={layer.id}
-              style={[styles.layerChip, active && styles.layerChipActive]}
+              {...pressFeedback}
+              style={({ pressed }) => [styles.layerChip, active && styles.layerChipActive, pressedStyle(pressed)]}
               onPress={() => setMapLayer(layer.id)}
             >
               <Text style={[styles.layerChipText, active && styles.layerChipTextActive]}>{layer.label}</Text>
@@ -150,7 +163,7 @@ export default function LiveTrackingScreen() {
       ) : null}
 
       {error ? (
-        <View style={styles.banner}>
+        <View style={[styles.banner, { top: top + 114 }]}>
           <Text style={styles.bannerText}>{error}</Text>
         </View>
       ) : null}
@@ -164,7 +177,11 @@ export default function LiveTrackingScreen() {
         </View>
       ) : null}
 
-      <Pressable style={styles.listToggle} onPress={() => setShowList((value) => !value)}>
+      <Pressable
+        {...pressFeedback}
+        style={({ pressed }) => [styles.listToggle, pressedStyle(pressed)]}
+        onPress={() => setShowList((value) => !value)}
+      >
         <Text style={styles.listToggleText}>{showList ? "Hide list" : `List (${markers.length})`}</Text>
       </Pressable>
 
@@ -175,7 +192,11 @@ export default function LiveTrackingScreen() {
             keyExtractor={(item) => item.id}
             keyboardShouldPersistTaps="handled"
             renderItem={({ item }) => (
-              <Pressable style={styles.listRow} onPress={() => focusMarker(item)}>
+              <Pressable
+                {...pressFeedback}
+                style={({ pressed }) => [styles.listRow, pressedStyle(pressed)]}
+                onPress={() => focusMarker(item)}
+              >
                 <View style={[styles.statusDot, { backgroundColor: assetDotStatusColor(item.status) }]} />
                 <View style={styles.listTextWrap}>
                   <Text style={styles.listTitle}>{item.label}</Text>
@@ -198,7 +219,6 @@ const styles = StyleSheet.create({
   map: { ...StyleSheet.absoluteFill },
   topBar: {
     position: "absolute",
-    top: Platform.OS === "ios" ? 56 : 16,
     left: 16,
     right: 16,
     flexDirection: "row",
@@ -214,6 +234,7 @@ const styles = StyleSheet.create({
   topTitle: { color: "#f8fafc", fontWeight: "700", fontSize: 16 },
   topSub: { color: "#94a3b8", fontSize: 12, marginTop: 2 },
   iconButton: {
+    overflow: "hidden",
     paddingHorizontal: 12,
     paddingVertical: 8,
     borderRadius: 10,
@@ -223,13 +244,13 @@ const styles = StyleSheet.create({
   iconButtonText: { color: "#38bdf8", fontWeight: "600" },
   layerBar: {
     position: "absolute",
-    top: Platform.OS === "ios" ? 118 : 78,
     left: 16,
     right: 16,
     maxHeight: 44
   },
   layerBarContent: { gap: 8, paddingRight: 8 },
   layerChip: {
+    overflow: "hidden",
     backgroundColor: "rgba(17, 24, 39, 0.92)",
     borderRadius: 999,
     paddingHorizontal: 12,
@@ -252,7 +273,6 @@ const styles = StyleSheet.create({
   loadingText: { color: "#cbd5e1", marginTop: 12 },
   banner: {
     position: "absolute",
-    top: Platform.OS === "ios" ? 170 : 130,
     left: 16,
     right: 16,
     backgroundColor: "rgba(127, 29, 29, 0.92)",
@@ -276,6 +296,7 @@ const styles = StyleSheet.create({
   detailMeta: { color: "#64748b", marginTop: 4, fontSize: 12 },
   listToggle: {
     position: "absolute",
+    overflow: "hidden",
     right: 16,
     bottom: 24,
     backgroundColor: "#111827",

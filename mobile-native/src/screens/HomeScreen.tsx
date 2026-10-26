@@ -9,6 +9,7 @@ import {
   View
 } from "react-native";
 import { fetchAssets, summarizeFleetStatus, type HomeStatusCounts } from "../api/fleet";
+import { cardElevation, pressedStyle, pressFeedback } from "../theme/platform";
 
 const EMPTY_COUNTS: HomeStatusCounts = { moving: 0, stopped: 0, idle: 0, offline: 0 };
 
@@ -62,7 +63,7 @@ export default function HomeScreen() {
     <ScrollView
       style={styles.root}
       contentContainerStyle={styles.content}
-      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => void load(true)} tintColor="#38bdf8" />}
+      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => void load(true)} tintColor="#38bdf8" colors={["#38bdf8"]} progressBackgroundColor="#111827" />}
     >
       <Text style={styles.date}>{todayLabel()}</Text>
       <Text style={styles.title}>Fleet overview</Text>
@@ -76,7 +77,7 @@ export default function HomeScreen() {
 
       {error ? <Text style={styles.error}>{error}</Text> : null}
 
-      <View style={styles.card}>
+      <View style={[styles.card, cardElevation]}>
         <Text style={styles.cardTitle}>Vehicles</Text>
         <Text style={styles.total}>{total}</Text>
         <View style={styles.rows}>
@@ -96,7 +97,11 @@ export default function HomeScreen() {
         </View>
       </View>
 
-      <Pressable style={styles.refreshButton} onPress={() => void load(true)}>
+      <Pressable
+        {...pressFeedback}
+        style={({ pressed }) => [styles.refreshButton, pressedStyle(pressed)]}
+        onPress={() => void load(true)}
+      >
         <Text style={styles.refreshText}>Refresh now</Text>
       </Pressable>
     </ScrollView>
@@ -132,7 +137,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     borderRadius: 10,
     borderWidth: 1,
-    borderColor: "#334155"
+    borderColor: "#334155",
+    overflow: "hidden"
   },
   refreshText: { color: "#38bdf8", fontWeight: "600" }
 });

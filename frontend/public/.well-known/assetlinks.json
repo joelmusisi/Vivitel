@@ -1,0 +1,13 @@
+[
+  {
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "com.vivitel.telematics",
+      "sha256_cert_fingerprints": [
+        "REPLACE_WITH_PLAY_APP_SIGNING_SHA256 (Play Console > Test and release > App integrity)",
+        "REPLACE_WITH_UPLOAD_KEY_SHA256 (keytool -list -v -keystore vivi-upload.keystore)"
+      ]
+    }
+  }
+]
