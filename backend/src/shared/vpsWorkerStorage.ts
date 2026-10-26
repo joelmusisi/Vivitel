@@ -1,8 +1,10 @@
 import {
   D1_CREDENTIAL_TABLES,
+  VPS_RBAC_TABLES,
   extractD1WriteTables,
   extractOperationalSqlTables,
-  isD1WriteSql
+  isD1WriteSql,
+  sqlUsesVpsRbacTables
 } from "./operationalSqlPolicy";
 import { resolveVpsOrigin, type VpsProxyEnv } from "./vpsOperationalProxy";
 
@@ -212,6 +214,113 @@ function d1Result(results: unknown[] = [], meta: Record<string, unknown> = {}) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// One-time copy of the legacy RBAC rows from D1 to VPS SQLite (2026-10-26).
+// Rows are copied with INSERT OR IGNORE, the D1 rows are never deleted, and the
+// VPS marker is set only once every VPS table holds at least as many rows as D1.
+// Until then RBAC reads fall back to D1 (login and permission checks keep
+// working) and RBAC writes fail instead of splitting data between two stores.
+// ---------------------------------------------------------------------------
+
+export const RBAC_VPS_MIGRATION_MARKER_KEY = "migration:rbac-to-vps:v1";
+const RBAC_COPY_ROWS_PER_STATEMENT = 100;
+const RBAC_COPY_STATEMENTS_PER_BATCH = 50;
+const RBAC_COPY_RETRY_MS = 60_000;
+
+let rbacCopyPromise: Promise<boolean> | null = null;
+let rbacCopyFailedAt = 0;
+
+/** Test hook: forget this isolate's migration state. */
+export function resetRbacVpsMigrationStateForTests(): void {
+  rbacCopyPromise = null;
+  rbacCopyFailedAt = 0;
+}
+
+async function readLegacyD1Rows(d1: WorkerD1Database, table: string): Promise<Record<string, unknown>[]> {
+  try {
+    const result = await d1.prepare(`SELECT * FROM ${table}`).all<Record<string, unknown>>();
+    return Array.isArray(result?.results) ? result.results : [];
+  } catch (error) {
+    if (/no such table/i.test(String((error as Error)?.message ?? error))) return [];
+    throw error;
+  }
+}
+
+async function countVpsRows(env: WorkerStorageEnv, table: string): Promise<number> {
+  const result = await postWorkerStorage<any>(env, "/operational/sql", {
+    sql: `SELECT COUNT(*) AS c FROM ${table}`,
+    params: [],
+    operation: "all"
+  });
+  return Number(result?.results?.[0]?.c ?? 0);
+}
+
+async function copyRbacTablesToVps(env: WorkerStorageEnv, d1: WorkerD1Database): Promise<boolean> {
+  const marker = await getWorkerStorage<{ value?: string | null }>(env, "/operational/kv", {
+    key: RBAC_VPS_MIGRATION_MARKER_KEY
+  });
+  if (marker?.value) return true;
+
+  const counts: Record<string, { d1: number; vps: number }> = {};
+  for (const table of VPS_RBAC_TABLES) {
+    const rows = await readLegacyD1Rows(d1, table);
+    const statements: RemoteSqlStatement[] = [];
+    for (let offset = 0; offset < rows.length; offset += RBAC_COPY_ROWS_PER_STATEMENT) {
+      const chunk = rows.slice(offset, offset + RBAC_COPY_ROWS_PER_STATEMENT);
+      const columns = Object.keys(chunk[0] ?? {}).filter((column) => /^[a-z_][a-z0-9_]*$/i.test(column));
+      if (!columns.length) continue;
+      const tuple = `(${columns.map(() => "?").join(", ")})`;
+      statements.push({
+        sql: `INSERT OR IGNORE INTO ${table} (${columns.join(", ")}) VALUES ${chunk.map(() => tuple).join(", ")}`,
+        params: normalizeSqlParams(chunk.flatMap((row) => columns.map((column) => row[column]))),
+        operation: "run"
+      });
+    }
+    for (let offset = 0; offset < statements.length; offset += RBAC_COPY_STATEMENTS_PER_BATCH) {
+      await postWorkerStorage(env, "/operational/sql/batch", {
+        statements: statements.slice(offset, offset + RBAC_COPY_STATEMENTS_PER_BATCH)
+      });
+    }
+    counts[table] = { d1: rows.length, vps: await countVpsRows(env, table) };
+  }
+
+  const short = Object.entries(counts).filter(([, count]) => count.vps < count.d1);
+  if (short.length) {
+    console.warn("[rbac-vps-migration] VPS row counts are short; staying on D1 reads:", JSON.stringify(counts));
+    return false;
+  }
+  await postWorkerStorage(env, "/operational/kv", {
+    key: RBAC_VPS_MIGRATION_MARKER_KEY,
+    value: JSON.stringify({ copiedAt: new Date().toISOString(), counts }),
+    encoding: "text",
+    metadata: null,
+    expiration: null,
+    expirationTtl: null
+  });
+  console.log("[rbac-vps-migration] RBAC tables copied to the VPS:", JSON.stringify(counts));
+  return true;
+}
+
+/** True once the RBAC tables are on the VPS; copies them on first use in this isolate. */
+export async function rbacTablesReadyOnVps(env: WorkerStorageEnv, d1: WorkerD1Database): Promise<boolean> {
+  if (!rbacCopyPromise) {
+    if (rbacCopyFailedAt && Date.now() - rbacCopyFailedAt < RBAC_COPY_RETRY_MS) return false;
+    rbacCopyPromise = copyRbacTablesToVps(env, d1).catch((error) => {
+      console.warn("[rbac-vps-migration] copy failed; staying on D1 reads:", String((error as Error)?.message ?? error));
+      return false;
+    });
+  }
+  const ready = await rbacCopyPromise;
+  if (!ready) {
+    rbacCopyPromise = null;
+    rbacCopyFailedAt = Date.now();
+  }
+  return ready;
+}
+
+const rbacMigrationPendingError = () =>
+  new Error("Roles and permissions are being moved to the VPS; please retry in a minute.");
+
 function createRoutedStatement(
   sql: string,
   env: WorkerStorageEnv,
@@ -221,6 +330,14 @@ function createRoutedStatement(
   let native: WorkerD1Statement | null = null;
   const useD1 = statementUsesCredentials(sql);
   if (useD1) native = d1.prepare(sql);
+  const usesRbac = !useD1 && sqlUsesVpsRbacTables(extractOperationalSqlTables(sql));
+
+  /** RBAC reads stay on legacy D1 until the copy is confirmed; RBAC writes wait for it. */
+  const legacyRbacRead = async (): Promise<WorkerD1Statement | null> => {
+    if (!usesRbac || (await rbacTablesReadyOnVps(env, d1))) return null;
+    if (isWritableD1Statement(sql)) throw rbacMigrationPendingError();
+    return d1.prepare(sql).bind(...normalizeSqlParams(params));
+  };
 
   const remote = async (operation: SqlOperation) => {
     const positional = toPositionalSql(sql, normalizeSqlParams(params));
@@ -241,17 +358,23 @@ function createRoutedStatement(
     },
     async all<T = Record<string, unknown>>(): Promise<WorkerD1Result<T>> {
       if (native) return native.all<T>();
+      const legacy = await legacyRbacRead();
+      if (legacy) return legacy.all<T>();
       const result = await remote("all");
       return d1Result(result.results ?? [], result.meta ?? {}) as WorkerD1Result<T>;
     },
     async first<T = Record<string, unknown>>(columnName?: string): Promise<T | null> {
       if (native) return native.first<T>(columnName);
+      const legacy = await legacyRbacRead();
+      if (legacy) return legacy.first<T>(columnName);
       const result = await remote("all");
       const row = (result.results ?? [])[0] ?? null;
       return columnName && row ? (row[columnName] as T) ?? null : (row as T | null);
     },
     async run<T = Record<string, unknown>>(): Promise<WorkerD1Result<T>> {
       if (native) return native.run<T>();
+      const legacy = await legacyRbacRead();
+      if (legacy) return legacy.run<T>();
       if (!isWritableD1Statement(sql)) {
         const result = await remote("all");
         return d1Result(result.results ?? [], result.meta ?? {}) as WorkerD1Result<T>;
@@ -261,6 +384,8 @@ function createRoutedStatement(
     },
     async raw<T = unknown[]>(): Promise<T[]> {
       if (native) return native.raw<T>();
+      const legacy = await legacyRbacRead();
+      if (legacy) return legacy.raw<T>();
       const result = await remote("all");
       return (result.results ?? []).map((row: Record<string, unknown>) => Object.values(row)) as T[];
     }
@@ -302,6 +427,12 @@ export function routeOperationalD1ToVps(db: WorkerD1Database, env: WorkerStorage
       if (credentialFlags.some(Boolean)) {
         throw new Error("A D1 batch cannot mix credentials with VPS operational data.");
       }
+      if (
+        routedStatements.some((statement) => sqlUsesVpsRbacTables(extractOperationalSqlTables(statement.sql))) &&
+        !(await rbacTablesReadyOnVps(env, db))
+      ) {
+        throw rbacMigrationPendingError();
+      }
       const result = await postWorkerStorage<{ results?: WorkerD1Result[] }>(env, "/operational/sql/batch", {
         statements: routedStatements.map((statement) => ({
           ...statement,
@@ -312,6 +443,9 @@ export function routeOperationalD1ToVps(db: WorkerD1Database, env: WorkerStorage
     },
     async exec(sql: string) {
       if (statementUsesCredentials(sql)) return db.exec(sql);
+      if (sqlUsesVpsRbacTables(extractOperationalSqlTables(sql)) && !(await rbacTablesReadyOnVps(env, db))) {
+        throw rbacMigrationPendingError();
+      }
       const result = await postWorkerStorage<{ count?: number; duration?: number }>(
         env,
         "/operational/sql/exec",

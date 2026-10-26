@@ -9,6 +9,10 @@ import {
   writeRealtimeStateToVps,
   type VpsProxyEnv
 } from "../shared/vpsOperationalProxy";
+import { readSupportDeskRoleHolders } from "../shared/rbacUserDirectory";
+import { createVpsKvNamespace, routeOperationalD1ToVps } from "../shared/vpsWorkerStorage";
+import { createRegionScopedKv } from "../shared/regionStorage";
+import { DEFAULT_REGION, isRegionId, type RegionId } from "../shared/regionServers";
 
 export type RealtimeEnv = VpsProxyEnv & {
   TRACCAR_BASE_URL?: string;
@@ -20,6 +24,31 @@ export type RealtimeEnv = VpsProxyEnv & {
   REALTIME_HUB?: DurableObjectNamespace;
   TRACCAR_SOCKET_BRIDGE?: DurableObjectNamespace;
 };
+
+const routedEnvs = new WeakMap<object, RealtimeEnv>();
+
+const regionForTenant = (tenantId: string): RegionId => {
+  const candidate = String(tenantId.match(/^region:([a-z0-9]+):/i)?.[1] ?? "").toLowerCase();
+  return isRegionId(candidate) ? candidate : DEFAULT_REGION;
+};
+
+/**
+ * Durable Objects receive the raw Cloudflare bindings (legacy, empty D1 tables and no KV
+ * binding). Read through the VPS exactly like the Worker does, with the tenant's region
+ * partition for KV keys.
+ */
+function storageEnv(env: RealtimeEnv, tenantId = ""): RealtimeEnv {
+  let routed = routedEnvs.get(env);
+  if (!routed) {
+    routed = {
+      ...env,
+      VIVI_D1: routeOperationalD1ToVps(env.VIVI_D1 as any, env as any) as unknown as D1Database,
+      ViviTEL: createVpsKvNamespace(env as any) as unknown as KVNamespace
+    };
+    routedEnvs.set(env, routed);
+  }
+  return tenantId ? { ...routed, ViviTEL: createRegionScopedKv(routed.ViviTEL, regionForTenant(tenantId)) } : routed;
+}
 
 const buildBasicAuth = (user: string, pass: string) => btoa(`${user}:${pass}`);
 
@@ -119,14 +148,15 @@ export async function fetchTelemetryEventsSince(
 ): Promise<{ events: Record<string, unknown>[]; newestAt: string }> {
   const tid = String(tenantId ?? "").trim();
   if (!tid) return { events: [], newestAt: since };
+  const db = storageEnv(env).VIVI_D1;
   try {
     const result = since
-      ? await env.VIVI_D1.prepare(
+      ? await db.prepare(
           `SELECT data FROM telemetry_events WHERE tenant_id = ? AND created_at > ? ORDER BY created_at ASC LIMIT 200`
         )
           .bind(tid, since)
           .all()
-      : await env.VIVI_D1.prepare(
+      : await db.prepare(
           `SELECT data FROM telemetry_events WHERE tenant_id = ? ORDER BY created_at ASC LIMIT 200`
         )
           .bind(tid)
@@ -167,7 +197,7 @@ export async function fetchUserAlerts(env: RealtimeEnv, tenantId: string, userId
   if (!tid || !uid) return [];
   try {
     const key = `vivi:user-alerts:${tid}:${uid}`;
-    const raw = await env.ViviTEL.get(key);
+    const raw = await storageEnv(env, tid).ViviTEL.get(key);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     if (Array.isArray(parsed)) return parsed;
@@ -188,13 +218,13 @@ type ChatConversation = {
 };
 
 async function readConversation(env: RealtimeEnv, tenantId: string, id: string): Promise<ChatConversation | null> {
-  const raw = await env.ViviTEL.get(`chat:${tenantId}:${id}`);
+  const raw = await storageEnv(env, tenantId).ViviTEL.get(`chat:${tenantId}:${id}`);
   return raw ? (JSON.parse(raw) as ChatConversation) : null;
 }
 
 export async function listOpenConversations(env: RealtimeEnv, tenantId: string, limit = 50) {
   const key = `chat:index:${tenantId}`;
-  const raw = await env.ViviTEL.get(key);
+  const raw = await storageEnv(env, tenantId).ViviTEL.get(key);
   let ids: string[] = [];
   try {
     ids = raw ? (JSON.parse(raw) as string[]) : [];
@@ -235,30 +265,8 @@ function normalizeSupportAgentCategory(input: unknown): string {
 
 async function readOwnSupportAgents(env: RealtimeEnv) {
   try {
-    const rows = await env.VIVI_D1.prepare(
-      `SELECT u.id AS id, u.name AS name, u.email AS email,
-              COALESCE(rr.standard_role_key, '') AS standardRoleKey,
-              COALESCE(rr.name, '') AS roleName
-       FROM rbac_users u
-       INNER JOIN (
-         SELECT ur.user_id AS user_id, ur.role_id AS role_id, ur.tenant_id AS tenant_id
-         FROM rbac_user_roles ur
-         UNION
-         SELECT ug.user_id AS user_id, gr.role_id AS role_id, ug.tenant_id AS tenant_id
-         FROM rbac_user_groups ug
-         INNER JOIN rbac_group_roles gr
-           ON gr.group_id = ug.group_id
-          AND (gr.tenant_id = ug.tenant_id OR gr.tenant_id = '' OR ug.tenant_id = '')
-       ) assigned ON assigned.user_id = u.id
-       INNER JOIN rbac_roles rr
-         ON rr.id = assigned.role_id
-       WHERE lower(trim(COALESCE(u.status, 'active'))) = 'active'
-         AND (
-           lower(trim(COALESCE(rr.standard_role_key, ''))) IN ('admin', 'own-support')
-           OR lower(trim(COALESCE(rr.name, ''))) IN ('admin', 'own support', 'tenant admin', 'administrator')
-         )
-       ORDER BY u.name ASC`
-    ).all<{ id: string; name: string; email: string; standardRoleKey: string; roleName: string }>();
+    // Roles on the VPS, users in D1 (see rbacUserDirectory).
+    const rows = await readSupportDeskRoleHolders(storageEnv(env).VIVI_D1);
 
     const byId = new Map<string, { id: string; name: string; email: string; category: string; isAdmin: boolean }>();
     for (const row of rows.results ?? []) {

@@ -28,6 +28,7 @@ import {
   type DeviceAlertEmailEvent
 } from "./deviceAlertEmail";
 import { createRegionScopedKv, isTraccarStorageTenant } from "./regionStorage";
+import { readRbacUsersByIds } from "./rbacUserDirectory";
 import { DEFAULT_REGION, isRegionId, type RegionId } from "./regionServers";
 import { siteScopesMatch } from "./scopeIsolation";
 import { buildScopedKvKey } from "./scopeIsolation";
@@ -187,14 +188,16 @@ async function listAlertRecipients(env: UserAlertDispatchEnv, tenantId: string, 
     `CREATE TABLE IF NOT EXISTS rbac_user_sites (tenant_id TEXT NOT NULL, user_id TEXT NOT NULL, site_id TEXT NOT NULL, site_name TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (tenant_id, user_id, site_id))`
   ).run();
 
-  const users = await env.VIVI_D1.prepare(
-    `SELECT u.id AS userId, u.name AS name, u.email AS email, u.status AS status
-     FROM rbac_users u
-     INNER JOIN rbac_user_tenants ut ON ut.user_id = u.id AND ut.tenant_id = ?1
-     WHERE lower(u.status) = 'active'`
-  )
+  // Tenant membership is on the VPS; user identity (rbac_users) is in D1.
+  const members = await env.VIVI_D1.prepare(`SELECT user_id AS userId FROM rbac_user_tenants WHERE tenant_id = ?1`)
     .bind(tenantId)
-    .all<{ userId?: string; name?: string; email?: string }>();
+    .all<{ userId?: string }>();
+  const memberUsers = await readRbacUsersByIds(env.VIVI_D1, (members.results ?? []).map((row) => row?.userId));
+  const users = {
+    results: [...memberUsers.values()]
+      .filter((user) => user.status.toLowerCase() === "active")
+      .map((user) => ({ userId: user.id, name: user.name, email: user.email }))
+  };
 
   const siteRows = await env.VIVI_D1.prepare(
     `SELECT user_id AS userId, site_name AS siteName FROM rbac_user_sites WHERE tenant_id = ?1`

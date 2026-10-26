@@ -153,6 +153,12 @@ import {
 import { scheduleServerlessWarm, warmServerlessBindings } from "./shared/performance/serverlessWarm";
 import { createVpsKvNamespace, routeOperationalD1ToVps } from "./shared/vpsWorkerStorage";
 import {
+  compareSqliteText,
+  listAllRbacUsers,
+  readRbacUsersByIds,
+  readSupportDeskRoleHolders
+} from "./shared/rbacUserDirectory";
+import {
   LOCATION_ALERTS_KV_BASE,
   itemsForSite,
   confineToSite,
@@ -4174,10 +4180,16 @@ async function ensureRbacSchema(env: Env) {
     // ignore when column already exists
   }
   try {
-    await db.prepare(
-      `INSERT OR IGNORE INTO rbac_user_regions (user_id, region, created_at)
-       SELECT id, 'us', COALESCE(created_at, datetime('now')) FROM rbac_users`
-    ).run();
+    // rbac_users is in D1 and rbac_user_regions on the VPS, so seed in two steps.
+    const now = new Date().toISOString();
+    const seeds = (await listAllRbacUsers(db)).map((user) =>
+      db
+        .prepare(`INSERT OR IGNORE INTO rbac_user_regions (user_id, region, created_at) VALUES (?1, 'us', ?2)`)
+        .bind(user.id, user.createdAt || now)
+    );
+    for (let offset = 0; offset < seeds.length; offset += 100) {
+      await db.batch(seeds.slice(offset, offset + 100));
+    }
   } catch {
     // ignore when table is empty or already seeded
   }
@@ -4366,19 +4378,20 @@ async function healOrphanRbacUsersForTenant(env: Env, tenantId: string, actor: R
   if (!scopedTenant || scopedTenant.split(":").filter(Boolean).length < 3) return;
   const now = new Date().toISOString();
   const unrestricted = actor.isAdmin || actor.isTenantAdmin || actor.isOwnSupport ? 1 : 0;
-  const rows = await env.VIVI_D1
+  // Users are in D1 and their assignments on the VPS: find unlinked users in two reads.
+  const linked = await env.VIVI_D1
     .prepare(
-      `SELECT u.id AS id
-       FROM rbac_users u
-       WHERE NOT EXISTS (SELECT 1 FROM rbac_user_tenants t WHERE t.user_id = u.id)
-         AND NOT EXISTS (SELECT 1 FROM rbac_user_roles r WHERE r.user_id = u.id)
-         AND NOT EXISTS (SELECT 1 FROM rbac_user_sites s WHERE s.user_id = u.id)
-         AND NOT EXISTS (SELECT 1 FROM rbac_user_groups g WHERE g.user_id = u.id)
-         AND (?1 = 1 OR u.created_by_user_id = ?2)`
+      `SELECT user_id AS userId FROM rbac_user_tenants
+       UNION SELECT user_id FROM rbac_user_roles
+       UNION SELECT user_id FROM rbac_user_sites
+       UNION SELECT user_id FROM rbac_user_groups`
     )
-    .bind(unrestricted, actor.userId || "")
-    .all<{ id: string }>();
-  for (const row of rows.results ?? []) {
+    .all<{ userId: string }>();
+  const linkedIds = new Set((linked.results ?? []).map((row) => String(row?.userId ?? "")));
+  const orphans = (await listAllRbacUsers(env.VIVI_D1, { full: true })).filter(
+    (user) => !linkedIds.has(user.id) && (unrestricted === 1 || user.createdByUserId === (actor.userId || ""))
+  );
+  for (const row of orphans) {
     const userId = normalizeId(row?.id);
     if (!userId) continue;
     await env.VIVI_D1
@@ -5194,18 +5207,11 @@ async function listRbacUserRowsForTenant(env: Env, tenantId: string): Promise<Re
   const dbId = parts.length >= 3 ? parts[2] : parts[parts.length - 1] || "";
   const likeSuffix = dbId ? `%:${dbId}` : scopedTenant;
 
+  // Assignments come from the VPS; user identity (rbac_users) is joined in from D1 below.
   const rows = await env.VIVI_D1
     .prepare(
       `SELECT
-         u.id,
-         u.name,
-         u.email,
-         u.status,
-         u.created_at AS createdAt,
-         u.updated_at AS updatedAt,
-         u.last_login_at AS lastLoginAt,
-         u.created_by_user_id AS createdByUserId,
-         creator.name AS createdByName,
+         scope.user_id AS id,
          ?1 AS assignedTenantId,
          ?1 AS assignedTenantIds,
          us_scoped.assignedSiteId AS assignedSiteId,
@@ -5223,8 +5229,6 @@ async function listRbacUserRowsForTenant(env: Env, tenantId: string): Promise<Re
          UNION
          SELECT user_id FROM rbac_user_groups WHERE tenant_id = ?1 OR (?2 != '' AND (tenant_id = ?2 OR tenant_id LIKE ?3))
        ) AS scope
-       JOIN rbac_users u ON u.id = scope.user_id
-       LEFT JOIN rbac_users creator ON creator.id = u.created_by_user_id
        LEFT JOIN (
          SELECT user_id,
                 MIN(site_id) AS assignedSiteId,
@@ -5233,7 +5237,7 @@ async function listRbacUserRowsForTenant(env: Env, tenantId: string): Promise<Re
          FROM rbac_user_sites
          WHERE tenant_id = ?1 OR (?2 != '' AND (tenant_id = ?2 OR tenant_id LIKE ?3))
          GROUP BY user_id
-       ) us_scoped ON us_scoped.user_id = u.id
+       ) us_scoped ON us_scoped.user_id = scope.user_id
        LEFT JOIN (
          SELECT rbac_user_roles.user_id AS user_id,
                 MIN(rbac_user_roles.role_id) AS role_id,
@@ -5245,14 +5249,39 @@ async function listRbacUserRowsForTenant(env: Env, tenantId: string): Promise<Re
          WHERE rbac_user_roles.tenant_id = ?1
             OR (?2 != '' AND (rbac_user_roles.tenant_id = ?2 OR rbac_user_roles.tenant_id LIKE ?3))
          GROUP BY rbac_user_roles.user_id
-       ) ur ON ur.user_id = u.id
-       LEFT JOIN rbac_roles rr ON rr.id = ur.role_id AND (rr.tenant_id = ?1 OR rr.tenant_id = ?2 OR rr.tenant_id LIKE ?3)
-       ORDER BY u.updated_at DESC`
+       ) ur ON ur.user_id = scope.user_id
+       LEFT JOIN rbac_roles rr ON rr.id = ur.role_id AND (rr.tenant_id = ?1 OR rr.tenant_id = ?2 OR rr.tenant_id LIKE ?3)`
     )
     .bind(scopedTenant, dbId || "", likeSuffix)
-    .all();
+    .all<Record<string, unknown>>();
 
-  return Array.isArray(rows.results) ? (rows.results as Record<string, unknown>[]) : [];
+  const assignments = Array.isArray(rows.results) ? rows.results : [];
+  const users = await readRbacUsersByIds(env.VIVI_D1, assignments.map((row) => row.id), { full: true });
+  const creators = await readRbacUsersByIds(
+    env.VIVI_D1,
+    [...users.values()].map((user) => user.createdByUserId).filter((id) => id && !users.has(id))
+  );
+  const nameOf = (id: string | null) => (id ? (users.get(id) ?? creators.get(id))?.name ?? null : null);
+  return assignments
+    .flatMap((row) => {
+      const user = users.get(String(row.id ?? ""));
+      if (!user) return [];
+      return [
+        {
+          ...row,
+          id: user.id,
+          name: user.name,
+          email: user.email,
+          status: user.status,
+          createdAt: user.createdAt,
+          updatedAt: user.updatedAt,
+          lastLoginAt: user.lastLoginAt,
+          createdByUserId: user.createdByUserId,
+          createdByName: nameOf(user.createdByUserId)
+        }
+      ];
+    })
+    .sort((a, b) => compareSqliteText(b.updatedAt, a.updatedAt));
 }
 
 async function canActorSeeUserInTenant(
@@ -7282,30 +7311,7 @@ function supportDeskCategoryForRole(standardRoleKey: string, roleName: string): 
 /** Active users with Admin or Own Support (direct or via security group) appear in Support Centre. */
 async function readOwnSupportAgents(env: Env): Promise<Array<{ id: string; name: string; email: string; category: string }>> {
   await ensureRbacSchema(env);
-  const rows = await env.VIVI_D1.prepare(
-    `SELECT u.id AS id, u.name AS name, u.email AS email,
-            COALESCE(rr.standard_role_key, '') AS standardRoleKey,
-            COALESCE(rr.name, '') AS roleName
-     FROM rbac_users u
-     INNER JOIN (
-       SELECT ur.user_id AS user_id, ur.role_id AS role_id, ur.tenant_id AS tenant_id
-       FROM rbac_user_roles ur
-       UNION
-       SELECT ug.user_id AS user_id, gr.role_id AS role_id, ug.tenant_id AS tenant_id
-       FROM rbac_user_groups ug
-       INNER JOIN rbac_group_roles gr
-         ON gr.group_id = ug.group_id
-        AND (gr.tenant_id = ug.tenant_id OR gr.tenant_id = '' OR ug.tenant_id = '')
-     ) assigned ON assigned.user_id = u.id
-     INNER JOIN rbac_roles rr
-       ON rr.id = assigned.role_id
-     WHERE lower(trim(COALESCE(u.status, 'active'))) = 'active'
-       AND (
-         lower(trim(COALESCE(rr.standard_role_key, ''))) IN ('admin', 'own-support')
-         OR lower(trim(COALESCE(rr.name, ''))) IN ('admin', 'own support', 'tenant admin', 'administrator')
-       )
-     ORDER BY u.name ASC`
-  ).all<{ id: string; name: string; email: string; standardRoleKey: string; roleName: string }>();
+  const rows = await readSupportDeskRoleHolders(env.VIVI_D1);
 
   const byId = new Map<string, { id: string; name: string; email: string; category: string; isAdmin: boolean }>();
   for (const row of rows.results ?? []) {

@@ -20,6 +20,8 @@ import type { TraccarLivePayload } from "./traccarLivePayload";
 export type RealtimeChannel = "live" | "streams" | "support";
 
 type SocketAttachment = {
+  /** Kept on each socket (survives hibernation in memory) so the hub never stores its tenant. */
+  tenantId: string;
   channels: RealtimeChannel[];
   site: string;
   userId: string;
@@ -33,6 +35,7 @@ type SocketAttachment = {
 const ALARM_MS = 5_000;
 
 const emptyAttachment = (): SocketAttachment => ({
+  tenantId: "",
   channels: [],
   site: "",
   userId: "",
@@ -66,18 +69,20 @@ export class ViviRealtimeHub implements DurableObject {
     private readonly state: DurableObjectState,
     private readonly env: RealtimeEnv & { REALTIME_HUB?: DurableObjectNamespace }
   ) {
-    this.state.blockConcurrencyWhile(async () => {
-      this.tenantId = String((await this.state.storage.get<string>("tenantId")) ?? "").trim();
-    });
+    // In-memory only (no Durable Object storage writes): after hibernation the tenant
+    // comes back from the open sockets' attachments; every request also carries it.
+    for (const ws of this.state.getWebSockets()) {
+      const tenantId = this.readAttachment(ws).tenantId.trim();
+      if (tenantId) {
+        this.tenantId = tenantId;
+        break;
+      }
+    }
   }
 
   private async ensureTenant(tenantId: string) {
     const next = String(tenantId ?? "").trim();
-    if (!next) return;
-    if (this.tenantId !== next) {
-      this.tenantId = next;
-      await this.state.storage.put("tenantId", next);
-    }
+    if (next) this.tenantId = next;
   }
 
   private async ensureAlarm() {
@@ -222,18 +227,7 @@ export class ViviRealtimeHub implements DurableObject {
       const siteKey = site.trim().toLowerCase();
       const storageKey = `routes-library:${siteKey}`;
 
-      try {
-        this.state.storage.sql.exec(
-          `CREATE TABLE IF NOT EXISTS route_libraries (
-            site TEXT PRIMARY KEY,
-            payload TEXT NOT NULL,
-            updated_at TEXT NOT NULL
-          )`
-        );
-      } catch {
-        // Older DO runtimes without sql — fall through to KV-style storage.
-      }
-
+      // Legacy read-only store: no DDL here; a missing table just means no saved library.
       if (request.method === "GET") {
         let raw: string | null = null;
         try {
@@ -314,18 +308,7 @@ export class ViviRealtimeHub implements DurableObject {
       await this.ensureTenant(tenantId);
       const storageKey = `scoped-kv:${key}`;
 
-      try {
-        this.state.storage.sql.exec(
-          `CREATE TABLE IF NOT EXISTS scoped_kv (
-            k TEXT PRIMARY KEY,
-            payload TEXT NOT NULL,
-            updated_at TEXT NOT NULL
-          )`
-        );
-      } catch {
-        // Older DO runtimes without sql — fall through to map storage.
-      }
-
+      // Legacy read-only store: no DDL here; a missing table just means no saved value.
       if (request.method === "GET") {
         let raw: string | null = null;
         try {
@@ -402,6 +385,7 @@ export class ViviRealtimeHub implements DurableObject {
     this.state.acceptWebSocket(server);
     this.writeAttachment(server, {
       ...emptyAttachment(),
+      tenantId,
       userId,
       telemetrySince: new Date().toISOString()
     });

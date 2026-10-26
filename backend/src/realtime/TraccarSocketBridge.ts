@@ -63,22 +63,14 @@ export class TraccarSocketBridge implements DurableObject {
   private lastSocketAt = "";
   private lastForwardAt = "";
   private fanOutTimer: ReturnType<typeof setTimeout> | null = null;
-  /** Tenant list last saved to storage; timestamps alone are not worth a billed write. */
-  private persistedInterestKeys = "";
 
   constructor(
     private readonly state: DurableObjectState,
     private readonly env: BridgeEnv
   ) {
-    this.state.blockConcurrencyWhile(async () => {
-      this.cookie = String((await this.state.storage.get<string>("cookie")) ?? "").trim();
-      this.interested = ((await this.state.storage.get<InterestMap>("interested")) ?? {}) as InterestMap;
-      this.persistedInterestKeys = Object.keys(this.interested).sort().join("|");
-      // Snapshots are kept in memory only (each storage write is a billed row). Drop the
-      // copy older versions saved, and the retired alert keep-alive flag.
-      const legacy = await this.state.storage.get(["lastPayload", "alertsKeepAliveUntil"]);
-      if (legacy.size) await this.state.storage.delete([...legacy.keys()]);
-    });
+    // In-memory only: no Durable Object storage reads or writes (alarms only). After a
+    // restart the Traccar cookie comes back from a fresh login and tenant interest from
+    // the realtime hubs, which re-register every few seconds. Old stored keys are left as is.
   }
 
   private async ensureAlarm(ms = RECONNECT_ALARM_MS) {
@@ -86,19 +78,6 @@ export class TraccarSocketBridge implements DurableObject {
     if (existing == null) {
       await this.state.storage.setAlarm(Date.now() + ms);
     }
-  }
-
-  /** Only when the set of watching tenants changes; refreshed timestamps stay in memory. */
-  private async persistInterest() {
-    const keys = Object.keys(this.interested).sort().join("|");
-    if (keys === this.persistedInterestKeys) return;
-    this.persistedInterestKeys = keys;
-    await this.state.storage.put("interested", this.interested);
-  }
-
-  private async persistCookie() {
-    if (this.cookie) await this.state.storage.put("cookie", this.cookie);
-    else await this.state.storage.delete("cookie");
   }
 
   private buildPayload(source: TraccarLivePayload["source"] = "socket"): TraccarLivePayload {
@@ -151,7 +130,6 @@ export class TraccarSocketBridge implements DurableObject {
         const cookie = pickSetCookie(resp.headers);
         if (cookie) {
           this.cookie = cookie;
-          await this.persistCookie();
         }
         if (resp.ok || (resp.status >= 300 && resp.status < 400 && cookie)) {
           this.lastError = "";
@@ -392,7 +370,6 @@ export class TraccarSocketBridge implements DurableObject {
           // Cookie may be stale — clear and retry next alarm.
           if (resp.status === 401 || resp.status === 403) {
             this.cookie = "";
-            await this.persistCookie();
           }
           return;
         }
@@ -454,7 +431,6 @@ export class TraccarSocketBridge implements DurableObject {
         });
       }
       this.interested[tenantId] = Date.now();
-      await this.persistInterest();
       await this.connectSocket();
       await this.ensureAlarm();
       return new Response(JSON.stringify({ ok: true, tenantId, socket: Boolean(this.socket) }), {
@@ -564,7 +540,7 @@ export class TraccarSocketBridge implements DurableObject {
 
   async alarm(): Promise<void> {
     try {
-      if (this.pruneInterest()) await this.persistInterest();
+      this.pruneInterest();
       const hasInterest = Object.keys(this.interested).length > 0;
       if (!hasInterest) {
         try {

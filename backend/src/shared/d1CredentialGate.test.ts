@@ -16,7 +16,7 @@ describe("d1CredentialGate", () => {
     expect(isD1WriteSql("CREATE TABLE IF NOT EXISTS assets (id TEXT)")).toBe(true);
   });
 
-  it("allows credential / RBAC writes only", () => {
+  it("allows login credential writes only", () => {
     expect(isAllowedCredentialD1Write("INSERT INTO rbac_users (id, email, password_hash) VALUES (1,2,3)")).toBe(
       true
     );
@@ -25,8 +25,19 @@ describe("d1CredentialGate", () => {
         "CREATE TABLE IF NOT EXISTS auth_admin_credentials (id TEXT PRIMARY KEY, password_hash TEXT)"
       )
     ).toBe(true);
-    expect(isAllowedCredentialD1Write("ALTER TABLE rbac_roles ADD COLUMN role_level INTEGER")).toBe(true);
-    expect(isAllowedCredentialD1Write("DELETE FROM rbac_user_roles WHERE user_id = ?")).toBe(true);
+    expect(isAllowedCredentialD1Write("DELETE FROM auth_reset_tokens WHERE token = ?1")).toBe(true);
+    // Upsert: `DO UPDATE SET` is not a table named "set".
+    expect(
+      isAllowedCredentialD1Write(
+        "INSERT INTO auth_admin_credentials (id) VALUES (?1) ON CONFLICT(id) DO UPDATE SET updated_at = excluded.updated_at"
+      )
+    ).toBe(true);
+  });
+
+  it("treats RBAC role / permission / assignment tables as VPS data", () => {
+    expect(isAllowedCredentialD1Write("ALTER TABLE rbac_roles ADD COLUMN role_level INTEGER")).toBe(false);
+    expect(isAllowedCredentialD1Write("DELETE FROM rbac_user_roles WHERE user_id = ?")).toBe(false);
+    expect(isAllowedCredentialD1Write("INSERT OR IGNORE INTO rbac_user_regions (user_id) VALUES (?1)")).toBe(false);
   });
 
   it("blocks operational D1 writes", () => {
