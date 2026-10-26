@@ -116,7 +116,8 @@ export async function fetchLiveMapMarkers(): Promise<{ markers: LiveMapMarker[];
     if (String(asset.site ?? "").trim()) parts.unshift(String(asset.site).trim());
 
     markers.push({
-      id: String(asset.assetId ?? asset.id ?? `${lat},${lng}`),
+      // Must stay stable across refreshes (never derived from position) so selection survives updates.
+      id: String(asset.assetId ?? asset.id ?? asset.imei ?? assetLabel(asset)),
       label: assetLabel(asset),
       subtitle: parts.join(" · "),
       lat,

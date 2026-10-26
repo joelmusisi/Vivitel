@@ -1,7 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
-  FlatList,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -21,8 +20,9 @@ import {
   regionForMarkers,
   type LiveMapMarker
 } from "../api/liveTracking";
-import { assetDotStatusColor } from "../utils/assetStatus";
-import { pressedStyle, pressFeedback, tapFeedback } from "../theme/platform";
+import { assetDotStatusColor, assetDotStatusLabel } from "../utils/assetStatus";
+import { cameraTargetAfterLoad } from "../utils/mapSelection";
+import { colors, pressedStyle, pressFeedback, tapFeedback } from "../theme/platform";
 
 const REFRESH_MS = 30_000;
 
@@ -37,8 +37,16 @@ export default function LiveTrackingScreen() {
   const [error, setError] = useState("");
   const [degraded, setDegraded] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [showList, setShowList] = useState(false);
   const [mapLayer, setMapLayer] = useState<MapLayerId>(DEFAULT_MAP_LAYER);
+  // Read inside `load` (a stable callback) without re-creating the refresh timer.
+  const selectedIdRef = useRef<string | null>(null);
+  const fittedRef = useRef(false);
+  const userMovedRef = useRef(false);
+
+  const selectAsset = useCallback((id: string | null) => {
+    selectedIdRef.current = id;
+    setSelectedId(id);
+  }, []);
 
   const load = useCallback(async (isRefresh = false) => {
     if (isRefresh) setRefreshing(true);
@@ -48,9 +56,19 @@ export default function LiveTrackingScreen() {
       const result = await fetchLiveMapMarkers();
       setMarkers(result.markers);
       setDegraded(result.degraded);
-      if (result.markers.length > 0) {
-        const region = regionForMarkers(result.markers);
-        mapRef.current?.animateToRegion(region, 450);
+      const target = cameraTargetAfterLoad(result.markers, selectedIdRef.current, {
+        fitted: fittedRef.current,
+        userMoved: userMovedRef.current
+      });
+      if (target?.kind === "fit") {
+        mapRef.current?.animateToRegion(regionForMarkers(result.markers), 450);
+        fittedRef.current = true;
+      } else if (target?.kind === "follow") {
+        // Keep the user's zoom; just track the selected vehicle's new position.
+        mapRef.current?.animateCamera(
+          { center: { latitude: target.marker.lat, longitude: target.marker.lng } },
+          { duration: 350 }
+        );
       }
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : "Could not load live positions.";
@@ -72,20 +90,17 @@ export default function LiveTrackingScreen() {
     [markers, selectedId]
   );
 
-  const focusMarker = (marker: LiveMapMarker) => {
-    setSelectedId(marker.id);
-    mapRef.current?.animateToRegion(
-      {
-        latitude: marker.lat,
-        longitude: marker.lng,
-        latitudeDelta: 0.04,
-        longitudeDelta: 0.04
-      },
-      350
+  /** Select a tapped pin and centre on it, keeping the current zoom. */
+  const selectMarker = (marker: LiveMapMarker) => {
+    selectAsset(marker.id);
+    mapRef.current?.animateCamera(
+      { center: { latitude: marker.lat, longitude: marker.lng } },
+      { duration: 300 }
     );
   };
 
-  const initialRegion = useMemo<Region>(() => regionForMarkers(markers), [markers]);
+  // Only used for the first frame; later camera moves go through the map ref.
+  const initialRegion = useMemo<Region>(() => regionForMarkers([]), []);
 
   return (
     <View style={styles.root}>
@@ -97,17 +112,32 @@ export default function LiveTrackingScreen() {
         showsUserLocation={false}
         showsCompass
         loadingEnabled
+        onPress={(event) => {
+          // Tapping empty map clears the selection; marker taps also bubble here on iOS.
+          if (event.nativeEvent.action !== "marker-press") selectAsset(null);
+        }}
+        onRegionChangeComplete={(_region, details) => {
+          if (details?.isGesture) userMovedRef.current = true;
+        }}
       >
-        {markers.map((marker) => (
-          <Marker
-            key={marker.id}
-            coordinate={{ latitude: marker.lat, longitude: marker.lng }}
-            title={marker.label}
-            description={marker.subtitle}
-            pinColor={assetDotStatusColor(marker.status)}
-            onPress={() => setSelectedId(marker.id)}
-          />
-        ))}
+        {markers.map((marker) => {
+          const isSelected = marker.id === selectedId;
+          return (
+            <Marker
+              // Re-key on selection so Android redraws the pin colour.
+              key={`${marker.id}:${isSelected ? "sel" : ""}`}
+              identifier={marker.id}
+              coordinate={{ latitude: marker.lat, longitude: marker.lng }}
+              pinColor={isSelected ? colors.accent : assetDotStatusColor(marker.status)}
+              zIndex={isSelected ? 10 : 1}
+              accessibilityLabel={`${marker.label}, ${assetDotStatusLabel(marker.status)}`}
+              onPress={(event) => {
+                event.stopPropagation();
+                selectMarker(marker);
+              }}
+            />
+          );
+        })}
       </TraccarTileMap>
 
       <View style={[styles.topBar, { top }]}>
@@ -170,46 +200,28 @@ export default function LiveTrackingScreen() {
 
       {selected ? (
         <View style={styles.detailCard}>
-          <Text style={styles.detailTitle}>{selected.label}</Text>
+          <View style={styles.detailHeader}>
+            <View style={[styles.statusDot, { backgroundColor: assetDotStatusColor(selected.status) }]} />
+            <Text style={styles.detailTitle} numberOfLines={1}>
+              {selected.label}
+            </Text>
+            <Pressable
+              {...pressFeedback}
+              accessibilityRole="button"
+              accessibilityLabel="Close asset details"
+              hitSlop={10}
+              style={({ pressed }) => [styles.detailClose, pressedStyle(pressed)]}
+              onPress={() => selectAsset(null)}
+            >
+              <Text style={styles.detailCloseText}>{"\u2715"}</Text>
+            </Pressable>
+          </View>
           <Text style={styles.detailSub}>{selected.subtitle}</Text>
           {selected.address ? <Text style={styles.detailMeta}>{selected.address}</Text> : null}
           {selected.fixTime ? <Text style={styles.detailMeta}>Updated {selected.fixTime}</Text> : null}
         </View>
       ) : null}
 
-      <Pressable
-        {...pressFeedback}
-        style={({ pressed }) => [styles.listToggle, pressedStyle(pressed)]}
-        onPress={() => setShowList((value) => !value)}
-      >
-        <Text style={styles.listToggleText}>{showList ? "Hide list" : `List (${markers.length})`}</Text>
-      </Pressable>
-
-      {showList ? (
-        <View style={styles.listPanel}>
-          <FlatList
-            data={markers}
-            keyExtractor={(item) => item.id}
-            keyboardShouldPersistTaps="handled"
-            renderItem={({ item }) => (
-              <Pressable
-                {...pressFeedback}
-                style={({ pressed }) => [styles.listRow, pressedStyle(pressed)]}
-                onPress={() => focusMarker(item)}
-              >
-                <View style={[styles.statusDot, { backgroundColor: assetDotStatusColor(item.status) }]} />
-                <View style={styles.listTextWrap}>
-                  <Text style={styles.listTitle}>{item.label}</Text>
-                  <Text style={styles.listSub}>{item.subtitle}</Text>
-                </View>
-              </Pressable>
-            )}
-            ListEmptyComponent={
-              !loading ? <Text style={styles.listEmpty}>No assets with a live GPS fix.</Text> : undefined
-            }
-          />
-        </View>
-      ) : null}
     </View>
   );
 }
@@ -284,53 +296,27 @@ const styles = StyleSheet.create({
     position: "absolute",
     left: 16,
     right: 16,
-    bottom: 88,
+    bottom: 16,
     backgroundColor: "rgba(17, 24, 39, 0.95)",
     borderRadius: 14,
     padding: 14,
     borderWidth: 1,
     borderColor: "#1f2937"
   },
-  detailTitle: { color: "#f8fafc", fontWeight: "700", fontSize: 16 },
+  detailHeader: { flexDirection: "row", alignItems: "center" },
+  detailTitle: { color: "#f8fafc", fontWeight: "700", fontSize: 16, flex: 1 },
+  detailClose: {
+    marginLeft: 8,
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    alignItems: "center",
+    justifyContent: "center",
+    overflow: "hidden",
+    backgroundColor: "#1f2937"
+  },
+  detailCloseText: { color: "#94a3b8", fontSize: 13, fontWeight: "700" },
   detailSub: { color: "#cbd5e1", marginTop: 4 },
   detailMeta: { color: "#64748b", marginTop: 4, fontSize: 12 },
-  listToggle: {
-    position: "absolute",
-    overflow: "hidden",
-    right: 16,
-    bottom: 24,
-    backgroundColor: "#111827",
-    borderRadius: 999,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    borderWidth: 1,
-    borderColor: "#334155"
-  },
-  listToggleText: { color: "#38bdf8", fontWeight: "700" },
-  listPanel: {
-    position: "absolute",
-    left: 0,
-    right: 0,
-    bottom: 0,
-    maxHeight: "42%",
-    backgroundColor: "#111827",
-    borderTopLeftRadius: 18,
-    borderTopRightRadius: 18,
-    borderWidth: 1,
-    borderColor: "#1f2937",
-    paddingTop: 8
-  },
-  listRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: "#1f2937"
-  },
-  statusDot: { width: 10, height: 10, borderRadius: 5, marginRight: 12 },
-  listTextWrap: { flex: 1 },
-  listTitle: { color: "#f8fafc", fontWeight: "600" },
-  listSub: { color: "#94a3b8", marginTop: 2, fontSize: 12 },
-  listEmpty: { color: "#94a3b8", textAlign: "center", padding: 20 }
+  statusDot: { width: 10, height: 10, borderRadius: 5, marginRight: 10 }
 });
