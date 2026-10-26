@@ -2672,6 +2672,29 @@ const requireTraccarWebhookSecret = (request: Request, url: URL, env: Env) => {
 
 const isBootstrapEnabled = (env: Env) => String(env.ALLOW_ADMIN_BOOTSTRAP ?? "").trim().toLowerCase() === "true";
 
+const CAMERA_DEVICE_VPS_PATHS = new Set([
+  "/device/settings",
+  "/device/push-settings",
+  "/device/pending-settings",
+  "/device/ack-settings"
+]);
+// Single-segment /device/* names the worker handles itself.
+const WORKER_LOCAL_DEVICE_SEGMENTS = new Set(["artifacts", "decommission", "kick-avl"]);
+
+/** Camera settings queue + per-device info/commands, all served by the VPS. */
+const isCameraDeviceVpsPath = (pathname: string) => {
+  if (CAMERA_DEVICE_VPS_PATHS.has(pathname)) return true;
+  const match = /^\/device\/([^/]+)(\/command)?$/.exec(pathname);
+  if (!match) return false;
+  let segment = match[1];
+  try {
+    segment = decodeURIComponent(segment);
+  } catch {
+    // Keep the raw segment for malformed escapes.
+  }
+  return !WORKER_LOCAL_DEVICE_SEGMENTS.has(segment);
+};
+
 const requireApiKey = async (request: Request, env: Env) => {
   const key = request.headers.get("x-api-key")?.trim() ?? "";
   if (!key) return unauthorized();
@@ -8120,6 +8143,23 @@ async function handleWorkerFetch(request: Request, rawEnv: Env, ctx: ExecutionCo
         return json({ ok: true, id: agentId, lastSeenAt: now });
       }
 
+      // Camera settings queue and device commands live on the VPS: MiTAC cameras poll the VPS
+      // directly, so dashboard pushes must land in the same queue (not D1).
+      if (isCameraDeviceVpsPath(url.pathname)) {
+        const callerAuth = await requireApiKey(request, env);
+        if (callerAuth) return callerAuth;
+        try {
+          const proxied = await proxyOperationalRequestToVps(request, env, { useServiceKey: true });
+          if (proxied) return proxied;
+        } catch (err: any) {
+          return json({ error: "Origin server unavailable", message: String(err?.message ?? err ?? "") }, { status: 502 });
+        }
+        // Never fall back to the legacy D1 queue: rows belong on the VPS / Backblaze only.
+        return json(
+          { error: "Origin server is not configured for device settings", hint: "Set Worker var VPS_ORIGIN." },
+          { status: 503 }
+        );
+      }
       // Operational rows (assets, bindings, config, cameras, …) live on the VPS / B2 — not D1.
       if (isOperationalD1Path(url.pathname)) {
         try {
@@ -13200,9 +13240,23 @@ async function handleWorkerFetch(request: Request, rawEnv: Env, ctx: ExecutionCo
         }
       }
       case "/admin/mitac-software": {
-        const auth = await requireApiKey(request, env);
-        if (auth) return auth;
+        // Replacing the pack is admin-only: service/admin keys or an admin session, not user sessions.
+        const uploaderKey = request.headers.get("x-api-key")?.trim() ?? "";
+        const serviceKeys = [env.API_KEY, env.API_KEY_PERMANENT, env.ADMIN_API_KEY]
+          .map((value) => String(value ?? "").trim())
+          .filter(Boolean);
+        const isAdminUploader =
+          Boolean(uploaderKey) &&
+          (serviceKeys.includes(uploaderKey) || (await validateAdminSession(env, uploaderKey).catch(() => false)));
+        if (!isAdminUploader) return unauthorized();
         if (request.method !== "POST") return badRequest("Use POST with a JSON payload.");
+        // The pack lives on the VPS disk (device-artifacts); the worker has no storage for it.
+        try {
+          const proxied = await proxyOperationalRequestToVps(request, env, { useServiceKey: true });
+          if (proxied) return proxied;
+        } catch (err: any) {
+          return json({ error: "Origin server unavailable", message: String(err?.message ?? err ?? "") }, { status: 502 });
+        }
         try {
           const body = (await request.json()) as Record<string, unknown>;
           const contentBase64 = String(body.contentBase64 ?? "").trim();
@@ -13235,6 +13289,12 @@ async function handleWorkerFetch(request: Request, rawEnv: Env, ctx: ExecutionCo
         const auth = await requireApiKey(request, env);
         if (auth) return auth;
         if (request.method !== "GET") return badRequest("Use GET.");
+        try {
+          const proxied = await proxyOperationalRequestToVps(request, env, { useServiceKey: true });
+          if (proxied && proxied.status !== 404) return proxied;
+        } catch {
+          // Fall through to bucket storage below.
+        }
         if (env.STORAGE_BUCKET) {
           const obj = await env.STORAGE_BUCKET.get(MITAC_SOFTWARE_R2_KEY);
           if (obj) {

@@ -8,6 +8,9 @@
   <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
   <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
   <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+  <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+  <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
 
   <application
     android:allowBackup="false"
@@ -61,13 +64,21 @@
       android:exported="true"
       android:foregroundServiceType="mediaPlayback" />
 
+    <service
+      android:name=".LocationReportService"
+      android:exported="false"
+      android:foregroundServiceType="location" />
+
     <receiver
       android:name=".SdBootstrapReceiver"
       android:exported="true">
+      <!-- BOOT_COMPLETED / MY_PACKAGE_REPLACED carry no data URI, so they must not share the file-scheme filter. -->
       <intent-filter>
         <action android:name="android.intent.action.BOOT_COMPLETED" />
-        <action android:name="android.intent.action.MEDIA_MOUNTED" />
         <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+      </intent-filter>
+      <intent-filter>
+        <action android:name="android.intent.action.MEDIA_MOUNTED" />
         <data android:scheme="file" />
       </intent-filter>
     </receiver>

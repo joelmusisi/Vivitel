@@ -659,6 +659,51 @@ export function buildTraccarDefaultNotificationRows(): NotificationRow[] {
 }
 
 /**
+ * Camera AI alarms (Device Remote Actions → Alarm → AI App: DMS/DSC, ADAS, BSD, Video) offered in
+ * every site library as "VIVI <alarm>", available and with event video capture on by default.
+ */
+export const VIVI_CAMERA_ALARM_NOTIFICATION_NAMES = [
+  // DMS / DSC
+  "VIVI Driver Fatigue",
+  "VIVI No Driver",
+  "VIVI Phone Distraction",
+  "VIVI Smoking",
+  "VIVI Distraction",
+  "VIVI Yawn",
+  "VIVI Seatbelt",
+  "VIVI No Mask",
+  "VIVI Infrared Blocked",
+  "VIVI Device Disconnected",
+  // ADAS
+  "VIVI Lane Departure Warning",
+  "VIVI Forward Collision Warning",
+  "VIVI Overspeed",
+  "VIVI Headway Monitoring Warning",
+  "VIVI Pedestrian Collision Warning",
+  "VIVI Rolling Stop",
+  // BSD
+  "VIVI Right Blind Spot Detection",
+  "VIVI Left Blind Spot Detection",
+  "VIVI Front Blind Area",
+  "VIVI Rear Blind Spot",
+  // Video
+  "VIVI Video Loss"
+] as const;
+
+const VIVI_CAMERA_ALARM_VIDEO = { enabled: true, beforeSeconds: 10, afterSeconds: 10 } as const;
+
+export function buildViviCameraAlarmNotificationRows(): NotificationRow[] {
+  return VIVI_CAMERA_ALARM_NOTIFICATION_NAMES.map((description) =>
+    normalizeNotificationRow({
+      description,
+      type: "System",
+      availability: "Available",
+      notificationVideo: { ...VIVI_CAMERA_ALARM_VIDEO }
+    })
+  );
+}
+
+/**
  * Ensure every site library includes Traccar defaults (IDs 1..N), without
  * importing overspeed / harsh braking. Existing custom/system rows keep their
  * IDs when unique; missing defaults are inserted.
@@ -712,6 +757,14 @@ export function ensureSiteTraccarDefaultNotifications(items: NotificationRow[]):
       byKey.set(key, { ...row, eventId: def.eventId, type: "Default" });
       changed = true;
     }
+  }
+
+  // VIVI camera alarms: add only when missing, so site edits (rename, video window, availability) stay.
+  for (const row of buildViviCameraAlarmNotificationRows()) {
+    const key = notificationKey(row.description);
+    if (byKey.has(key)) continue;
+    byKey.set(key, row);
+    changed = true;
   }
 
   const orderedDefaults = defaults

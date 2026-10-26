@@ -68,6 +68,17 @@ data class LiveStreamConfig(
   val channelNames: List<String> = listOf("Main")
 )
 
+/**
+ * GPS reporting while the camera is awake. Defaults mirror the device binding defaults
+ * (Send AVL in trip every 40 s, out of trip every 30 min); pending-settings overrides them.
+ */
+data class LocationReportConfig(
+  val enabled: Boolean = true,
+  val tripIntervalSec: Int = 40,
+  val outOfTripEnabled: Boolean = true,
+  val outOfTripIntervalSec: Int = 1_800
+)
+
 data class AppConfig(
   val deviceId: String = "",
   val tenantId: String = "",
@@ -77,27 +88,26 @@ data class AppConfig(
   val talkback: TalkbackConfig = TalkbackConfig(),
   val camera: CameraBehaviorConfig = CameraBehaviorConfig(),
   val remoteSync: RemoteSyncConfig = RemoteSyncConfig(),
-  val liveStream: LiveStreamConfig = LiveStreamConfig()
+  val liveStream: LiveStreamConfig = LiveStreamConfig(),
+  val location: LocationReportConfig = LocationReportConfig()
 )
 
 object AppConfigLoader {
   const val EXTRA_CONFIG_PATH = "config_path"
-  const val DEFAULT_CONFIG_PATH = "/sdcard/vivitel/intercom/config.json"
+  /** Passing this path means "find config.json on the removable SD card first" (see DeployLocation). */
+  const val DEFAULT_CONFIG_PATH = DeployLocation.LEGACY_DIR + "/" + DeployLocation.CONFIG_NAME
   private const val PREFS_NAME = "vivitel_camera_runtime"
   private const val PREF_RUNTIME_CONFIG = "runtime_config"
+  private const val PREF_SD_CONFIG_CACHE = "sd_config_cache"
+
+  fun resolveConfigFile(context: Context?, configPath: String): File {
+    if (configPath != DEFAULT_CONFIG_PATH) return File(configPath)
+    val dir = DeployLocation.findDeployDir(context) ?: return File(DEFAULT_CONFIG_PATH)
+    return File(dir, DeployLocation.CONFIG_NAME)
+  }
 
   fun load(context: Context? = null, configPath: String = DEFAULT_CONFIG_PATH): AppConfig {
-    val file = File(configPath)
-    val base = if (!file.exists()) {
-      AppConfig()
-    } else {
-      try {
-        val json = JSONObject(file.readText(Charsets.UTF_8))
-        parse(json)
-      } catch (_: Exception) {
-        AppConfig()
-      }
-    }
+    val base = loadSdConfig(context, resolveConfigFile(context, configPath))
 
     if (context == null) return base
     val raw = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).getString(PREF_RUNTIME_CONFIG, "")?.trim().orEmpty()
@@ -106,6 +116,45 @@ object AppConfigLoader {
       mergeConfigs(base, parse(JSONObject(raw)))
     } catch (_: Exception) {
       base
+    }
+  }
+
+  /**
+   * Reads config.json from the card and caches it so the unit keeps working after the card is
+   * removed. The published pack ships without an API key: it comes from api-key.txt next to
+   * config.json, or from the key cached by an earlier provisioning.
+   */
+  private fun loadSdConfig(context: Context?, file: File): AppConfig {
+    val prefs = context?.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    val cached = try {
+      prefs?.getString(PREF_SD_CONFIG_CACHE, "")?.trim()?.takeIf { it.isNotEmpty() }?.let { parse(JSONObject(it)) }
+    } catch (_: Exception) {
+      null
+    }
+
+    val fromFile = try {
+      if (file.isFile) parse(JSONObject(file.readText(Charsets.UTF_8))) else null
+    } catch (_: Exception) {
+      null
+    } ?: return cached ?: AppConfig()
+
+    val apiKey = fromFile.server.apiKey
+      .ifBlank { readApiKeyFile(File(file.parentFile, DeployLocation.API_KEY_NAME)) }
+      .ifBlank { cached?.server?.apiKey.orEmpty() }
+    val resolved = fromFile.copy(server = fromFile.server.copy(apiKey = apiKey))
+    try {
+      prefs?.edit()?.putString(PREF_SD_CONFIG_CACHE, toJson(resolved).toString())?.apply()
+    } catch (_: Exception) {
+      // Cache is best effort; the card is still the source this boot.
+    }
+    return resolved
+  }
+
+  private fun readApiKeyFile(file: File): String {
+    return try {
+      if (file.isFile) file.readText(Charsets.UTF_8).trim() else ""
+    } catch (_: Exception) {
+      ""
     }
   }
 
@@ -121,7 +170,8 @@ object AppConfigLoader {
       talkback = mergeTalkback(base.talkback, runtime.talkback),
       camera = mergeCamera(base.camera, runtime.camera),
       remoteSync = mergeRemoteSync(base.remoteSync, runtime.remoteSync),
-      liveStream = mergeLiveStream(base.liveStream, runtime.liveStream)
+      liveStream = mergeLiveStream(base.liveStream, runtime.liveStream),
+      location = runtime.location
     )
   }
 
@@ -205,6 +255,7 @@ object AppConfigLoader {
     val cameraJson = json.optJSONObject("camera") ?: JSONObject()
     val remoteSyncJson = json.optJSONObject("remoteSync") ?: JSONObject()
     val liveStreamJson = json.optJSONObject("liveStream") ?: JSONObject()
+    val locationJson = json.optJSONObject("location") ?: JSONObject()
 
     return AppConfig(
       deviceId = json.optString("deviceId", "").trim(),
@@ -244,9 +295,19 @@ object AppConfigLoader {
         streamUrl = liveStreamJson.optString("streamUrl", "").trim(),
         channelUrls = parseStringArray(liveStreamJson.optJSONArray("channelUrls")),
         channelNames = parseStringArray(liveStreamJson.optJSONArray("channelNames")).ifEmpty { listOf("Main") }
+      ),
+      location = LocationReportConfig(
+        enabled = locationJson.optBoolean("enabled", true),
+        tripIntervalSec = clampTripInterval(locationJson.optInt("tripIntervalSec", 40)),
+        outOfTripEnabled = locationJson.optBoolean("outOfTripEnabled", true),
+        outOfTripIntervalSec = clampOutOfTripInterval(locationJson.optInt("outOfTripIntervalSec", 1_800))
       )
     )
   }
+
+  fun clampTripInterval(seconds: Int): Int = seconds.coerceIn(10, 3_600)
+
+  fun clampOutOfTripInterval(seconds: Int): Int = seconds.coerceIn(60, 86_400)
 
   private fun parseStringArray(array: JSONArray?): List<String> {
     if (array == null) return emptyList()
@@ -303,6 +364,12 @@ object AppConfigLoader {
         put("streamUrl", config.liveStream.streamUrl)
         put("channelUrls", JSONArray(config.liveStream.channelUrls))
         put("channelNames", JSONArray(config.liveStream.channelNames))
+      })
+      put("location", JSONObject().apply {
+        put("enabled", config.location.enabled)
+        put("tripIntervalSec", config.location.tripIntervalSec)
+        put("outOfTripEnabled", config.location.outOfTripEnabled)
+        put("outOfTripIntervalSec", config.location.outOfTripIntervalSec)
       })
     }
   }

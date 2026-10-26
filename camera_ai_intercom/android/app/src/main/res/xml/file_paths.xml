@@ -3,4 +3,7 @@
     <external-path
         name="external_storage"
         path="." />
+    <cache-path
+        name="staged_deploy"
+        path="deploy/" />
 </paths>

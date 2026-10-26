@@ -17,6 +17,7 @@ class MainActivity : AppCompatActivity() {
     setContentView(R.layout.activity_main)
     activeConfig = AppConfigLoader.load(this, configPath)
     ensureMicPermission()
+    LocationReportService.sync(this, configPath, activeConfig)
 
     findViewById<android.view.View>(R.id.btnStartIntercom).setOnClickListener {
       startForegroundService(Intent(this, IntercomService::class.java).putExtra(AppConfigLoader.EXTRA_CONFIG_PATH, configPath))
@@ -33,7 +34,14 @@ class MainActivity : AppCompatActivity() {
   }
 
   private fun ensureMicPermission() {
-    if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) return
-    ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.RECORD_AUDIO), 100)
+    // READ_EXTERNAL_STORAGE lets the app read config.json / app.apk from the removable SD card.
+    val missing = arrayOf(
+      Manifest.permission.RECORD_AUDIO,
+      Manifest.permission.READ_EXTERNAL_STORAGE,
+      Manifest.permission.ACCESS_FINE_LOCATION
+    )
+      .filter { ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED }
+    if (missing.isEmpty()) return
+    ActivityCompat.requestPermissions(this, missing.toTypedArray(), 100)
   }
 }

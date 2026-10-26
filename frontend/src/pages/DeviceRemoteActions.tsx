@@ -2053,32 +2053,32 @@ const alarmNotifyRows = [
 ];
 
 const bsdRows = [
-  { name: "Right blind spot detection", enabled: false, alarmType: "Alarm" },
-  { name: "Left blind spot detection", enabled: false, alarmType: "Alarm" },
-  { name: "Front Blind Area", enabled: false, alarmType: "Alarm" },
-  { name: "Rear blind spot", enabled: false, alarmType: "Alarm" }
+  { name: "Right blind spot detection", enabled: true, alarmType: "Alarm" },
+  { name: "Left blind spot detection", enabled: true, alarmType: "Alarm" },
+  { name: "Front Blind Area", enabled: true, alarmType: "Alarm" },
+  { name: "Rear blind spot", enabled: true, alarmType: "Alarm" }
 ];
 
 const dmsRows = [
   { name: "Driver Fatigue", enabled: true, source: "DMS", alarmType: "Alarm" },
-  { name: "No Driver", enabled: false, source: "Combined", alarmType: "Alarm" },
+  { name: "No Driver", enabled: true, source: "Combined", alarmType: "Alarm" },
   { name: "Handheld Devices", enabled: true, source: "Combined", alarmType: "Alarm" },
   { name: "Smoking", enabled: true, source: "DMS", alarmType: "Alarm" },
   { name: "Distraction", enabled: true, source: "DMS", alarmType: "Alarm" },
   { name: "Yawn", enabled: true, source: "DMS", alarmType: "Alarm" },
   { name: "Seatbelt", enabled: true, source: "DMS", alarmType: "Alarm" },
-  { name: "No Mask", enabled: false, source: "DMS", alarmType: "Alarm" },
-  { name: "Infrared Blocked", enabled: false, source: "DMS", alarmType: "Alarm" },
-  { name: "Device Disconnected", enabled: false, source: "DMS", alarmType: "Alarm" }
+  { name: "No Mask", enabled: true, source: "DMS", alarmType: "Alarm" },
+  { name: "Infrared Blocked", enabled: true, source: "DMS", alarmType: "Alarm" },
+  { name: "Device Disconnected", enabled: true, source: "DMS", alarmType: "Alarm" }
 ];
 
 const adasRows = [
   { name: "LDW", enabled: true, source: "DMS", alarmType: "Alarm" },
   { name: "FCW", enabled: true, source: "DMS", alarmType: "Alarm" },
-  { name: "Overspeed", enabled: false, source: "DMS", alarmType: "Alarm" },
+  { name: "Overspeed", enabled: true, source: "DMS", alarmType: "Alarm" },
   { name: "HMW", enabled: true, source: "DMS", alarmType: "Alarm" },
-  { name: "PCW", enabled: false, source: "DMS", alarmType: "Alarm" },
-  { name: "Rolling Stop", enabled: false, source: "DMS", alarmType: "Alarm" }
+  { name: "PCW", enabled: true, source: "DMS", alarmType: "Alarm" },
+  { name: "Rolling Stop", enabled: true, source: "DMS", alarmType: "Alarm" }
 ];
 
 const alarmVideoRows = [

@@ -87,6 +87,7 @@ class IntercomService : Service() {
       stopCapture()
       activeConfig = AppConfigLoader.load(this, activeConfigPath)
       transport = IntercomTransport(this, activeConfig, ::scheduleConfigReload)
+      LocationReportService.sync(this, activeConfigPath, activeConfig)
       if (activeConfig.camera.autoStartNetworkStatus) {
         startForegroundService(
           Intent(this, NetworkStatusService::class.java)

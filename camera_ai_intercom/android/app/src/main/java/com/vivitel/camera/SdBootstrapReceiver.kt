@@ -36,7 +36,9 @@ class SdBootstrapReceiver : BroadcastReceiver() {
       return
     }
 
-    if (action == Intent.ACTION_MEDIA_MOUNTED && DeploymentInstaller.hasDeploymentBundle()) {
+    // MEDIA_MOUNTED carries the card's mount point (file:///storage/XXXX-XXXX); check it first.
+    val volumeHint = if (action == Intent.ACTION_MEDIA_MOUNTED) intent.data?.path else null
+    if (action == Intent.ACTION_MEDIA_MOUNTED && DeploymentInstaller.hasNewerApk(context, volumeHint)) {
       context.startActivity(
         Intent(context, DeploymentFeedbackActivity::class.java)
           .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
@@ -51,13 +53,14 @@ class SdBootstrapReceiver : BroadcastReceiver() {
           .putExtra(DeploymentFeedbackService.EXTRA_INTERVAL_SECONDS, 60)
       )
 
-      DeploymentInstaller.startInstallFlow(context)
+      DeploymentInstaller.startInstallFlow(context, volumeHint)
     }
 
     startConfiguredServices(context, configPath, config)
   }
 
   private fun startConfiguredServices(context: Context, configPath: String, config: AppConfig) {
+    LocationReportService.sync(context, configPath, config)
     if (config.camera.autoStartNetworkStatus) {
       context.startForegroundService(
         Intent(context, NetworkStatusService::class.java)

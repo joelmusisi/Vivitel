@@ -193,40 +193,98 @@ export function registerDeviceOpsRoutes(deps: RegisterDeviceOpsRoutesDeps): void
     fs.createReadStream(ref).pipe(res);
   });
 
-  app.get("/device/:deviceId", async (req, res) => {
-    if (!requireApiKey(req, res)) return res.status(401).json({ error: "Unauthorized" });
-    if (!deviceServerDomain || !deviceServerPort) return res.status(503).json({ error: "Device server not configured" });
-    const deviceId = String(req.params.deviceId ?? "");
-    const url = `${deviceServerProtocol}://${deviceServerDomain}:${deviceServerPort}/devices/${encodeURIComponent(deviceId)}`;
+  // Named GET /device/* routes registered later (camera settings sync, Traccar outbox) must not be
+  // swallowed by this catch-all and proxied to the device server as if they were device IDs.
+  const reservedDeviceGetPaths = new Set(["settings", "pending-settings", "traccar-outbox"]);
+
+  /** Calls the optional external device server; null when it is not configured or unreachable. */
+  const fetchDeviceServer = async (url: string, init: { method: string; body?: string }): Promise<any | null> => {
+    if (!deviceServerDomain || !deviceServerPort) return null;
+    const fetchFn = (globalThis as any).fetch;
+    if (!fetchFn) return null;
+    const headers: Record<string, string> = { "content-type": "application/json" };
+    if (deviceServerApiKey) headers["x-api-key"] = deviceServerApiKey;
     try {
-      const fetchFn = (globalThis as any).fetch;
-      if (!fetchFn) return res.status(500).json({ error: "fetch not available in runtime" });
-      const headers: Record<string, string> = { "content-type": "application/json" };
-      if (deviceServerApiKey) headers["x-api-key"] = deviceServerApiKey;
-      const resp = await fetchFn(url, { method: "GET", headers });
-      const text = await resp.text();
-      res.status(resp.status).set(Object.fromEntries(resp.headers.entries ? resp.headers.entries() : [])).send(text);
-    } catch (err: any) {
-      res.status(502).json({ error: "Device proxy failed", message: err?.message ?? String(err) });
+      return await fetchFn(url, { ...init, headers, signal: AbortSignal.timeout(4_000) });
+    } catch {
+      return null;
     }
+  };
+
+  // Same tenant keying as /device/pending-settings, so queued commands reach the polling camera.
+  const deviceQueueTenant = (req: Request) => String(req.header("x-tenant-id") ?? req.query.tenant ?? "");
+
+  const readCameraHealthRow = (tenant: string, cameraId: string) => {
+    try {
+      const row = db
+        .prepare("SELECT data, updated_at FROM camera_health WHERE tenant_id = ? AND camera_id = ?")
+        .get(tenant, cameraId) as { data?: unknown; updated_at?: string } | undefined;
+      if (!row) return null;
+      let health: unknown = row.data;
+      if (typeof health === "string") {
+        try {
+          health = JSON.parse(health);
+        } catch {
+          health = {};
+        }
+      }
+      return { updatedAt: String(row.updated_at ?? ""), health };
+    } catch {
+      return null;
+    }
+  };
+
+  app.get("/device/:deviceId", async (req, res, next) => {
+    const deviceId = String(req.params.deviceId ?? "");
+    if (reservedDeviceGetPaths.has(deviceId)) return next();
+    if (!requireApiKey(req, res)) return res.status(401).json({ error: "Unauthorized" });
+    const url = `${deviceServerProtocol}://${deviceServerDomain}:${deviceServerPort}/devices/${encodeURIComponent(deviceId)}`;
+    const resp = await fetchDeviceServer(url, { method: "GET" });
+    if (resp) {
+      const text = await resp.text();
+      return res.status(resp.status).set(Object.fromEntries(resp.headers.entries ? resp.headers.entries() : [])).send(text);
+    }
+    // No device server: answer from the camera's own health reports (MiTAC app → /ingest/camera-health).
+    const row = readCameraHealthRow(deviceQueueTenant(req), deviceId);
+    if (!row) return res.status(404).json({ error: "Device has not reported yet", deviceId });
+    res.json({ deviceId, source: "camera-health", lastSeenAt: row.updatedAt, health: row.health });
   });
 
   app.post("/device/:deviceId/command", async (req, res) => {
     if (!requireApiKey(req, res)) return res.status(401).json({ error: "Unauthorized" });
-    if (!deviceServerDomain || !deviceServerPort) return res.status(503).json({ error: "Device server not configured" });
-    const deviceId = String(req.params.deviceId ?? "");
+    const deviceId = String(req.params.deviceId ?? "").trim();
     const url = `${deviceServerProtocol}://${deviceServerDomain}:${deviceServerPort}/devices/${encodeURIComponent(deviceId)}/command`;
-    try {
-      const fetchFn = (globalThis as any).fetch;
-      if (!fetchFn) return res.status(500).json({ error: "fetch not available in runtime" });
-      const headers: Record<string, string> = { "content-type": "application/json" };
-      if (deviceServerApiKey) headers["x-api-key"] = deviceServerApiKey;
-      const resp = await fetchFn(url, { method: "POST", headers, body: JSON.stringify(req.body ?? {}) });
+    const resp = await fetchDeviceServer(url, { method: "POST", body: JSON.stringify(req.body ?? {}) });
+    if (resp) {
       const text = await resp.text();
-      res.status(resp.status).set(Object.fromEntries(resp.headers.entries ? resp.headers.entries() : [])).send(text);
-    } catch (err: any) {
-      res.status(502).json({ error: "Device proxy failed", message: err?.message ?? String(err) });
+      return res.status(resp.status).set(Object.fromEntries(resp.headers.entries ? resp.headers.entries() : [])).send(text);
     }
+
+    // No device server: deliver through the camera's pending-settings queue, which the MiTAC app
+    // polls every 30 s. Only commands the camera can act on are accepted.
+    const command = String((req.body as any)?.command ?? "").trim();
+    const payload = (req.body as any)?.payload;
+    if (!deviceId) return res.status(400).json({ error: "deviceId is required" });
+    if (command.endsWith(".select")) {
+      // UI navigation events from Remote Actions; nothing to send to the device.
+      return res.json({ accepted: true, delivered: false, command, note: "UI-only event" });
+    }
+    if (command !== "vision.remoteAccess.apply" || !payload || typeof payload !== "object" || Array.isArray(payload)) {
+      return res.status(501).json({
+        error: "This command is not supported by the camera app yet",
+        command,
+        supported: ["vision.remoteAccess.apply"]
+      });
+    }
+    const tenant = deviceQueueTenant(req);
+    const id = typeof (globalThis as any).crypto?.randomUUID === "function"
+      ? (globalThis as any).crypto.randomUUID()
+      : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+    const now = new Date().toISOString();
+    db.prepare(
+      "INSERT INTO device_push_queue (id, tenant_id, imei, asset_id, status, payload, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+    ).run(id, tenant, deviceId, "", "queued", JSON.stringify(payload), now, now);
+    res.status(202).json({ queued: true, id, deviceId, via: "pending-settings", command });
   });
 
   app.post("/device/decommission", async (req, res) => {
