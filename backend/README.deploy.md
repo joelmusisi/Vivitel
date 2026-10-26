@@ -243,3 +243,16 @@ B2_ARCHIVE_PREFIX = "telemetry-archive"
 ```
 
 When enabled, each telemetry event is uploaded to the Track bucket (or default fallback) and indexed in D1 table `telemetry_archives` with storage metadata (`storage`, `storage_key`, `size_bytes`). Object paths are unchanged; reads dual-fall back to the legacy bucket.
+
+**VIVI Mobile push notifications** (FCM HTTP v1; iOS goes through APNs configured in the same Firebase project):
+
+```bash
+# Firebase console → Project settings → Service accounts → Generate new private key.
+# Paste the whole JSON file as the value. Never commit it.
+wrangler secret put FCM_SERVICE_ACCOUNT_JSON
+```
+
+The secret is read by the Worker only (alert dispatch runs in the Worker cron and Traccar ingest). The VPS needs nothing. When it is unset, push is skipped and in-app/email alerts work as before.
+
+- `POST /api/mobile/push-tokens` / `DELETE /api/mobile/push-tokens` with `{ "token", "platform": "ios" | "android" }`, authenticated with the user's `x-api-key` session and `x-tenant-id`. Tokens are kept per tenant + user in the VPS-backed `ViviTEL` store (`vivi:push-tokens:<tenant>:<user>`), not in Cloudflare KV/D1.
+- Every new in-app alert for a person on an alert's in-app recipient list is also pushed to their devices with `data.screen = "map"`. Tokens FCM reports as `UNREGISTERED` are removed.

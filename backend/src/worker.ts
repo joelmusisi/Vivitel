@@ -88,6 +88,7 @@ import {
   processTraccarUserAlertEventIngest,
   readUserAlertsForUser
 } from "./shared/userAlertDispatch";
+import { handlePushTokenRequest } from "./shared/mobilePushTokens";
 import {
   appendHosPunch,
   readHosAlerts,
@@ -234,6 +235,8 @@ export interface Env {
   MAIL_FROM?: string;
   MAIL_FROM_NAME?: string;
   RESEND_API_KEY?: string;
+  /** Firebase service-account JSON (secret) for VIVI Mobile push notifications. */
+  FCM_SERVICE_ACCOUNT_JSON?: string;
   /** Comma-separated support inboxes. Never return this value to the client. */
   DEMO_SUPPORT_NOTIFY_EMAILS?: string;
   ADMIN_EMAIL?: string;
@@ -12759,6 +12762,17 @@ async function handleWorkerFetch(request: Request, rawEnv: Env, ctx: ExecutionCo
         }
 
         return badRequest("Use GET or POST for user alerts.", 405);
+      }
+
+      case "/api/mobile/push-tokens": {
+        // VIVI Mobile registers its FCM token on sign-in (POST) and forgets it on sign-out (DELETE).
+        const result = await handlePushTokenRequest(env.ViviTEL, {
+          method: request.method,
+          principal: await getPrincipal(request, env),
+          tenantId: getTenantId(request, url),
+          body: await readJsonBody(request)
+        });
+        return json(result.body, { status: result.status });
       }
 
       case "/hos/rules": {

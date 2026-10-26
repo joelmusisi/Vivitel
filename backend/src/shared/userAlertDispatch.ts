@@ -12,6 +12,7 @@ import {
   sendAlertEmailOnce
 } from "./alertEmailDelivery";
 import { buildAlertMapAttachment } from "./alertMapImage";
+import { sendPushToUser } from "./mobilePushTokens";
 import {
   buildAlertMapImageUrl,
   buildDeviceAlertEmailHtml,
@@ -69,7 +70,7 @@ export type ViviUserAlertRecord = {
   createdAt: string;
   traccarEventId?: number;
   traccarDeviceId?: number;
-  channels: { email?: boolean; inApp?: boolean; sms?: boolean };
+  channels: { email?: boolean; inApp?: boolean; sms?: boolean; push?: boolean };
   read?: boolean;
   action?: ViviUserAlertAction;
 };
@@ -89,6 +90,8 @@ export type UserAlertDispatchEnv = {
   AFRICASTALKING_USERNAME?: string;
   AFRICASTALKING_API_KEY?: string;
   AFRICASTALKING_SENDER_ID?: string;
+  /** Firebase service-account JSON for VIVI Mobile push (FCM HTTP v1). Push is off when unset. */
+  FCM_SERVICE_ACCOUNT_JSON?: string;
 };
 
 type TraccarFetchResult = { ok: boolean; status: number; body: unknown };
@@ -236,6 +239,20 @@ async function listAlertRecipients(env: UserAlertDispatchEnv, tenantId: string, 
   return recipients;
 }
 
+/** Push payload for an in-app alert: tapping it opens the live map in VIVI Mobile. */
+export function buildUserAlertPushNotification(record: ViviUserAlertRecord) {
+  const where = [record.locationName, record.site].map((part) => String(part ?? "").trim()).filter(Boolean)[0];
+  return {
+    title: record.eventLabel || "Vivitel alert",
+    body: [record.assetLabel, where].filter(Boolean).join(" · ") || record.message.split("\n")[0] || "New alert",
+    data: { screen: "map", alertId: record.id }
+  };
+}
+
+/**
+ * Add the alert to the user's in-app list. The first time an alert is added (retried polls
+ * re-append the same id) it is also pushed to the user's VIVI Mobile devices.
+ */
 export async function appendInAppAlert(env: UserAlertDispatchEnv, record: ViviUserAlertRecord) {
   const key = userAlertsKvKey(record.tenantId, record.userId);
   const raw = await env.ViviTEL.get(key);
@@ -248,8 +265,16 @@ export async function appendInAppAlert(env: UserAlertDispatchEnv, record: ViviUs
       list = [];
     }
   }
+  const isNew = !list.some((row) => row.id === record.id);
   list = [record, ...list.filter((row) => row.id !== record.id)].slice(0, 200);
   await env.ViviTEL.put(key, JSON.stringify(list));
+  if (isNew && !isAlertTooOldToEmail(record.createdAt)) {
+    await sendPushToUser(env, env.ViviTEL, {
+      tenantId: record.tenantId,
+      userId: record.userId,
+      notification: buildUserAlertPushNotification(record)
+    });
+  }
 }
 
 export async function readUserAlertsForUser(
