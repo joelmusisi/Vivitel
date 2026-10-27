@@ -1,4 +1,6 @@
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
+import SortableColumnHeader from "../../components/SortableColumnHeader";
+import { useColumnSort } from "../../hooks/useColumnSort";
 import { useNavigate } from "react-router-dom";
 import "../../index.css";
 
@@ -17,53 +19,22 @@ type QueueRow = {
   count: number;
 };
 
-const messages: MessageRow[] = [
-  {
-    id: "msg-1",
-    channel: "SMS",
-    subject: "Breakdown reported by driver",
-    sender: "+256 701 334 112",
-    received: "2 min ago",
-    status: "new"
-  },
-  {
-    id: "msg-2",
-    channel: "In-app",
-    subject: "Service request: tyre change",
-    sender: "Driver - KBX 214T",
-    received: "18 min ago",
-    status: "open"
-  },
-  {
-    id: "msg-3",
-    channel: "Email",
-    subject: "Route update confirmation",
-    sender: "dispatch@vivi.co",
-    received: "1 hr ago",
-    status: "resolved"
-  },
-  {
-    id: "msg-4",
-    channel: "In-app",
-    subject: "Late delivery alert",
-    sender: "Customer Care",
-    received: "2 hrs ago",
-    status: "open"
-  }
-];
-
-const queues: QueueRow[] = [
-  { id: "queue-1", label: "Inbox", count: 18 },
-  { id: "queue-2", label: "Priority", count: 6 },
-  { id: "queue-3", label: "Resolved", count: 24 },
-  { id: "queue-4", label: "Escalations", count: 3 }
-];
-
 export default function MessageBox() {
   const navigate = useNavigate();
   const [activeQueue, setActiveQueue] = useState("Inbox");
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
+  const messages: MessageRow[] = [];
+
+  const queues: QueueRow[] = useMemo(
+    () => [
+      { id: "queue-1", label: "Inbox", count: 0 },
+      { id: "queue-2", label: "Priority", count: 0 },
+      { id: "queue-3", label: "Resolved", count: 0 },
+      { id: "queue-4", label: "Escalations", count: 0 }
+    ],
+    []
+  );
 
   const filteredMessages = useMemo(() => {
     return messages.filter((row) => {
@@ -73,24 +44,26 @@ export default function MessageBox() {
       const matchesStatus = statusFilter === "all" || row.status === statusFilter;
       return matchesSearch && matchesStatus;
     });
-  }, [search, statusFilter]);
+  }, [messages, search, statusFilter]);
 
-  const summary = useMemo(
-    () => [
-      { label: "New", value: messages.filter((row) => row.status === "new").length },
-      { label: "Open", value: messages.filter((row) => row.status === "open").length },
-      { label: "Resolved", value: messages.filter((row) => row.status === "resolved").length },
-      { label: "Avg response", value: "14m" }
-    ],
-    []
-  );
+  const hasActiveFilters = search.trim().length > 0 || statusFilter !== "all";
+
+  const getMessageSortValue = useCallback((row: MessageRow, key: string) => {
+    if (key === "channel") return row.channel;
+    if (key === "subject") return row.subject;
+    if (key === "sender") return row.sender;
+    if (key === "received") return row.received;
+    if (key === "status") return row.status;
+    return "";
+  }, []);
+  const messageSort = useColumnSort({ rows: filteredMessages, getValue: getMessageSortValue });
 
   return (
     <div className="page message-box-page">
       <div className="message-box-topbar">
         <div>
           <div className="message-box-title">Message box</div>
-          <div className="message-box-path">Monitor / Jobs & Messaging / Message box</div>
+          <div className="message-box-path">Track / Jobs & Messaging / Message box</div>
         </div>
         <div className="message-box-actions">
           <button
@@ -98,7 +71,7 @@ export default function MessageBox() {
             className="message-box-btn ghost"
             onClick={() =>
               navigate(
-                "/measure/insights/reports?category=Notification%20Reports&report=Overview%20Notification%20Report"
+                "/Analyze/insights/reports?category=Notification%20Reports&report=Overview%20Notification%20Report"
               )
             }
           >
@@ -118,15 +91,6 @@ export default function MessageBox() {
           </button>
         </div>
       </div>
-
-      <section className="message-box-summary">
-        {summary.map((card) => (
-          <div key={card.label} className="message-box-summary-card">
-            <div className="message-box-summary-label">{card.label}</div>
-            <div className="message-box-summary-value">{card.value}</div>
-          </div>
-        ))}
-      </section>
 
       <section className="message-box-layout">
         <aside className="message-box-panel">
@@ -151,7 +115,7 @@ export default function MessageBox() {
           </div>
           <div className="message-box-panel-footer">
             <button type="button" className="message-box-link">
-              Manage queues
+              Control queues
             </button>
           </div>
         </aside>
@@ -183,17 +147,19 @@ export default function MessageBox() {
           </div>
           <div className="message-box-table">
             <div className="message-box-row message-box-row-head">
-              <span>Channel</span>
-              <span>Subject</span>
-              <span>Sender</span>
-              <span>Received</span>
-              <span>Status</span>
+              <SortableColumnHeader as="span" label="Channel" {...messageSort.getHeaderProps("channel")} />
+              <SortableColumnHeader as="span" label="Subject" {...messageSort.getHeaderProps("subject")} />
+              <SortableColumnHeader as="span" label="Sender" {...messageSort.getHeaderProps("sender")} />
+              <SortableColumnHeader as="span" label="Received" {...messageSort.getHeaderProps("received")} />
+              <SortableColumnHeader as="span" label="Status" {...messageSort.getHeaderProps("status")} />
               <span>Actions</span>
             </div>
-            {filteredMessages.length === 0 ? (
-              <div className="message-box-empty">No messages match the filters.</div>
+            {messageSort.sortedRows.length === 0 ? (
+              <div className="message-box-empty">
+                {hasActiveFilters ? "No messages match the filters." : "No records yet."}
+              </div>
             ) : (
-              filteredMessages.map((row) => (
+              messageSort.sortedRows.map((row) => (
                 <div key={row.id} className="message-box-row">
                   <span className="message-box-channel">{row.channel}</span>
                   <span className="message-box-subject">{row.subject}</span>

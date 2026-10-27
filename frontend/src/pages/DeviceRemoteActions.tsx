@@ -1,5 +1,6 @@
 /*
 import { useEffect, useMemo, useState } from "react";
+import VTLoader from "../components/VTLoader";
 import { useNavigate } from "react-router-dom";
                 <div className="remote-access-playback">
                   <div className="remote-access-playback-header">Select Date:</div>
@@ -1524,7 +1525,7 @@ import { useNavigate } from "react-router-dom";
                     )}
                   </section>
               ) : (
-                <div className="remote-access-empty">Select Preferences to configure settings.</div>
+                null
               )}
             </div>
           </div>
@@ -1535,9 +1536,16 @@ import { useNavigate } from "react-router-dom";
 }
 */
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import VTLoader from "../components/VTLoader";
+import SortableColumnHeader from "../components/SortableColumnHeader";
+import { useColumnSort } from "../hooks/useColumnSort";
 import { useNavigate } from "react-router-dom";
-import { getDeviceDetails, loadFromApi, saveToApi, sendDeviceCommand } from "../utils/api";
+import { getAssetsFromApi, getCamerasFromApi, getDeviceDetails, loadFromApi, saveToApi, sendDeviceCommand, pushDeviceSettings, callCmsv6, getCmsv6Config, saveCmsv6Config, connectCmsv6Sso, readSignedInUser, type Cmsv6Config } from "../utils/api";
+import { cms808VehicleToAssetRecord, loadCms808Position, loadCms808VehiclesForActiveHierarchy } from "../utils/cms808";
+import Cms808DeviceSettings from "../components/Cms808DeviceSettings";
+import { readActiveSiteName } from "../utils/tenantContext";
+import { computeAssetDotStatus } from "../utils/assetStatus";
 import { showToast } from "../utils/toast";
 import "../index.css";
 
@@ -1562,80 +1570,311 @@ type ColumnDef = {
   locked?: boolean;
 };
 
-const deviceRows: DeviceRow[] = [
-  {
-    id: "dev-1",
-    status: "off-line",
-    plate: "T878 DHC",
-    fleet: "MS/AFR-Tanzania-HV-D (SSF)",
-    deviceId: "002B1063A3",
-    moduleType: "-",
-    masterVersion: "-",
-    chipVersion: "-",
-    powerBoxVersion: "-",
-    ipc: "-"
-  },
-  {
-    id: "dev-2",
-    status: "off-line",
-    plate: "T538 ECC",
-    fleet: "TTL Spot Trucks",
-    deviceId: "002B106B76",
-    moduleType: "-",
-    masterVersion: "-",
-    chipVersion: "-",
-    powerBoxVersion: "-",
-    ipc: "-"
-  },
-  {
-    id: "dev-3",
-    status: "off-line",
-    plate: "T841EMJ",
-    fleet: "CPP_TZ/Telecom",
-    deviceId: "00D205FFAB",
-    moduleType: "GPS",
-    masterVersion: "V3.5.8.19_R25070903",
-    chipVersion: "-",
-    powerBoxVersion: "ADPP-P21-N32-MCU-T24031201",
-    ipc: "-"
-  },
-  {
-    id: "dev-4",
-    status: "off-line",
-    plate: "T850ENK",
-    fleet: "CPP_TZ/Coating",
-    deviceId: "00D205FECB",
-    moduleType: "GPS",
-    masterVersion: "V3.5.8.19_R25070903",
-    chipVersion: "-",
-    powerBoxVersion: "ADPP-P21-N32-MCU-T24031201",
-    ipc: "-"
-  },
-  {
-    id: "dev-5",
-    status: "off-line",
-    plate: "T443ELY",
-    fleet: "CPP_TZ/Telecom",
-    deviceId: "00D204DD32",
-    moduleType: "GPS",
-    masterVersion: "V3.5.8.19_RC25052860",
-    chipVersion: "-",
-    powerBoxVersion: "ADPP-P21-N32-MCU-T24031201",
-    ipc: "-"
-  },
-  {
-    id: "dev-6",
-    status: "off-line",
-    plate: "T874 DHC",
-    fleet: "TTL Spot Trucks",
-    deviceId: "002B106149",
-    moduleType: "GPS",
-    masterVersion: "C6DAI_V3.5.6.8_T240219.70",
-    chipVersion: "-",
-    powerBoxVersion: "-",
-    ipc: "-"
-  }
+type CalendarMarkerTone = "alarm" | "normal" | "locked";
+
+type CalendarCell = {
+  day: number;
+  monthOffset: -1 | 0 | 1;
+  tone?: CalendarMarkerTone;
+  isToday: boolean;
+};
+
+const REMOTE_CALENDAR_MONTHS = [
+  "January",
+  "February",
+  "March",
+  "April",
+  "May",
+  "June",
+  "July",
+  "August",
+  "September",
+  "October",
+  "November",
+  "December"
 ];
+
+const REMOTE_CALENDAR_WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+const REMOTE_CALENDAR_MARKERS: Record<number, CalendarMarkerTone> = {
+  9: "locked",
+  12: "normal",
+  15: "alarm",
+  17: "normal",
+  18: "normal",
+  20: "alarm",
+  22: "locked",
+  24: "normal"
+};
+
+const shiftCalendarMonth = (monthIndex: number, year: number, delta: number) => {
+  const next = new Date(year, monthIndex + delta, 1);
+  return { monthIndex: next.getMonth(), year: next.getFullYear() };
+};
+
+const buildCalendarCells = (monthIndex: number, year: number): CalendarCell[] => {
+  const firstDay = new Date(year, monthIndex, 1);
+  const start = new Date(year, monthIndex, 1 - firstDay.getDay());
+  const today = new Date();
+  const cells: CalendarCell[] = [];
+
+  for (let index = 0; index < 42; index += 1) {
+    const date = new Date(start);
+    date.setDate(start.getDate() + index);
+    const monthOffset = date.getMonth() < monthIndex && date.getFullYear() <= year
+      ? -1
+      : date.getMonth() > monthIndex || date.getFullYear() > year
+        ? 1
+        : 0;
+    cells.push({
+      day: date.getDate(),
+      monthOffset: monthOffset as -1 | 0 | 1,
+      tone: monthOffset === 0 ? REMOTE_CALENDAR_MARKERS[date.getDate()] : undefined,
+      isToday:
+        date.getDate() === today.getDate()
+        && date.getMonth() === today.getMonth()
+        && date.getFullYear() === today.getFullYear()
+    });
+  }
+
+  return cells;
+};
+
+const formatCalendarSelection = (day: string, monthIndex: number, year: number) => {
+  const numericDay = Number(day) || 1;
+  return `${REMOTE_CALENDAR_MONTHS[monthIndex]} ${numericDay}, ${year}`;
+};
+
+type RemoteAccessCalendarProps = {
+  title: string;
+  subtitle: string;
+  monthIndex: number;
+  year: number;
+  selectedDay: string;
+  onMonthChange: (delta: number) => void;
+  onSelectDay: (day: number, monthOffset: -1 | 0 | 1) => void;
+  onToday: () => void;
+  compact?: boolean;
+};
+
+function RemoteAccessCalendar({
+  title,
+  subtitle,
+  monthIndex,
+  year,
+  selectedDay,
+  onMonthChange,
+  onSelectDay,
+  onToday,
+  compact = false
+}: RemoteAccessCalendarProps) {
+  const cells = useMemo(() => buildCalendarCells(monthIndex, year), [monthIndex, year]);
+
+  return (
+    <div className={`remote-access-calendar-shell ${compact ? "compact" : ""}`}>
+      <div className="remote-access-calendar-header">
+        <div>
+          <div className="remote-access-calendar-title">{title}</div>
+          <div className="remote-access-calendar-subtitle">{subtitle}</div>
+        </div>
+        <button type="button" className="remote-access-calendar-today" onClick={onToday}>
+          Today
+        </button>
+      </div>
+
+      <div className="remote-access-calendar-toolbar">
+        <button type="button" className="remote-access-calendar-nav" onClick={() => onMonthChange(-1)} aria-label="Previous month">
+          ◀
+        </button>
+        <div className="remote-access-calendar-period">
+          <span className="remote-access-calendar-period-month">{REMOTE_CALENDAR_MONTHS[monthIndex]}</span>
+          <span className="remote-access-calendar-period-year">{year}</span>
+        </div>
+        <button type="button" className="remote-access-calendar-nav" onClick={() => onMonthChange(1)} aria-label="Next month">
+          ▶
+        </button>
+      </div>
+
+      <div className="remote-access-calendar-selected">
+        <span className="remote-access-calendar-selected-label">Selected</span>
+        <strong>{formatCalendarSelection(selectedDay, monthIndex, year)}</strong>
+      </div>
+
+      <div className="remote-access-calendar-week">
+        {REMOTE_CALENDAR_WEEKDAYS.map((day) => (
+          <span key={day}>{day}</span>
+        ))}
+      </div>
+
+      <div className="remote-access-calendar-grid">
+        {cells.map((cell, index) => {
+          const isActive = cell.monthOffset === 0 && selectedDay === String(cell.day);
+          return (
+            <button
+              key={`${cell.day}-${cell.monthOffset}-${index}`}
+              type="button"
+              className={`remote-access-calendar-day ${isActive ? "active" : ""} ${cell.monthOffset !== 0 ? "muted" : ""} ${cell.isToday ? "today" : ""}`}
+              onClick={() => onSelectDay(cell.day, cell.monthOffset)}
+            >
+              <span className="remote-access-calendar-day-number">{cell.day}</span>
+              {cell.tone && <span className={`remote-access-calendar-marker ${cell.tone}`} aria-hidden="true" />}
+            </button>
+          );
+        })}
+      </div>
+
+      <div className="remote-access-calendar-legend">
+        <span><i className="remote-access-calendar-legend-dot locked" /> Locked</span>
+        <span><i className="remote-access-calendar-legend-dot alarm" /> Alarm</span>
+        <span><i className="remote-access-calendar-legend-dot normal" /> Normal</span>
+      </div>
+    </div>
+  );
+}
+
+type SourceRecord = Record<string, unknown>;
+
+const toText = (value: unknown): string => String(value ?? "").trim();
+
+const isYes = (value: unknown): boolean => toText(value).toLowerCase() === "yes";
+
+const isNonEmptyValue = (value: unknown): boolean => {
+  const raw = toText(value).toLowerCase();
+  return Boolean(raw && raw !== "-" && raw !== "--" && raw !== "n/a" && raw !== "na" && raw !== "none" && raw !== "null" && raw !== "undefined");
+};
+
+const isStandaloneRecord = (row: SourceRecord): boolean => {
+  if (isYes(row.standaloneMode)) return true;
+  return Boolean(
+    toText(row.cameraId) && !toText(row.assetId) && !toText(row.registration) && !toText(row.registrationNumber)
+  );
+};
+
+const hasInstalledCamera = (row: SourceRecord): boolean => {
+  if (isYes(row.hasCamera) || isStandaloneRecord(row)) return true;
+  return [
+    row.camera,
+    row.cameraId,
+    row.cameraModel,
+    row.cameraSerial,
+    row.cameraStatus,
+    row.cameraFirmware,
+    row.forward,
+    row.forwardCamera,
+    row.inCab,
+    row.inCabCamera,
+    row.externalL,
+    row.externalR,
+    row.camera3,
+    row.camera4,
+    row.camera5,
+    row.camera6,
+    row.camera7,
+    row.camera8,
+    row.camera9,
+    row.camera10
+  ].some(isNonEmptyValue);
+};
+
+const cameraIdentity = (row: SourceRecord): string => {
+  return (
+    toText(row.cameraSerial) ||
+    toText(row.cameraId) ||
+    toText(row.camera) ||
+    toText(row.id)
+  ).toLowerCase();
+};
+
+const normalizeCellValue = (value: unknown): string => {
+  const text = toText(value);
+  return text || "-";
+};
+
+const deriveRowStatus = (row: SourceRecord): DeviceRow["status"] => {
+  const explicit = toText(row.cameraStatus || row.status || row.availability).toLowerCase();
+  if (explicit === "online" || explicit === "active" || explicit === "connected") {
+    return "online";
+  }
+  const status = computeAssetDotStatus({
+    availability: row.status ?? row.availability,
+    lastSeen: row.lastSeen,
+    lastPosition: row.lastPosition,
+    lastTrip: row.lastTrip,
+    speed: row.speed,
+    staleHours: 2
+  });
+  return status === "online" ? "online" : "off-line";
+};
+
+const buildDeviceRow = (row: SourceRecord, source: "asset" | "camera"): DeviceRow => {
+  const deviceId =
+    toText(row.deviceId) ||
+    toText(row.imei) ||
+    toText(row.cameraId) ||
+    toText(row.cameraSerial) ||
+    toText(row.id);
+  const plate =
+    toText(row.registration) ||
+    toText(row.registrationNumber) ||
+    toText(row.plate) ||
+    toText(row.licensePlate) ||
+    toText(row.assetDescription) ||
+    toText(row.name) ||
+    toText(row.cameraSerial) ||
+    deviceId ||
+    (source === "camera" ? "Camera device" : "Unknown device");
+
+  return {
+    id: `${source}:${toText(row.assetId) || toText(row.id) || toText(row.cameraId) || deviceId || plate}`,
+    status: deriveRowStatus(row),
+    plate,
+    registrationNumber: normalizeCellValue(row.registrationNumber || row.registration || row.plate || row.licensePlate),
+    fleet: normalizeCellValue(row.database || row.siteName || row.customerName || row.orgName || row.company || row.tenantId),
+    deviceModel: normalizeCellValue(row.deviceModel || row.cameraModel || row.model),
+    deviceId: normalizeCellValue(deviceId),
+    cameraSerial: normalizeCellValue(row.cameraSerial || row.cameraId || deviceId),
+    macAddress: normalizeCellValue(row.macAddress || row.mac || row.deviceMac),
+    moduleType: normalizeCellValue(row.positioningModuleType || row.moduleType || row.gpsType || row.networkType),
+    masterVersion: normalizeCellValue(row.masterVersion || row.firmwareVersion || row.cameraFirmware),
+    chipVersion: normalizeCellValue(row.chipVersion || row.singleChipVersion),
+    powerBoxVersion: normalizeCellValue(row.powerBoxVersion || row.powerboxVersion),
+    ipc: normalizeCellValue(row.ipc),
+    ipc1Version: normalizeCellValue(row.ipc1Version),
+    ipc1Mac: normalizeCellValue(row.ipc1Mac),
+    ipc2Version: normalizeCellValue(row.ipc2Version),
+    ipc2Mac: normalizeCellValue(row.ipc2Mac),
+    ipc3Version: normalizeCellValue(row.ipc3Version),
+    ipc3Mac: normalizeCellValue(row.ipc3Mac),
+    ipc4Version: normalizeCellValue(row.ipc4Version),
+    ipc4Mac: normalizeCellValue(row.ipc4Mac),
+    ipc5Version: normalizeCellValue(row.ipc5Version),
+    ipc5Mac: normalizeCellValue(row.ipc5Mac),
+    ipc6Version: normalizeCellValue(row.ipc6Version),
+    ipc6Mac: normalizeCellValue(row.ipc6Mac),
+    ipc7Version: normalizeCellValue(row.ipc7Version),
+    ipc7Mac: normalizeCellValue(row.ipc7Mac)
+  };
+};
+
+const buildLiveDeviceRows = (assets: SourceRecord[], cameras: SourceRecord[]): DeviceRow[] => {
+  const eligibleAssets = assets.filter((row) => hasInstalledCamera(row) || isStandaloneRecord(row));
+  const boundCameraKeys = new Set(eligibleAssets.map((row) => cameraIdentity(row)).filter(Boolean));
+  const standaloneCameras = cameras.filter((row) => {
+    const key = cameraIdentity(row);
+    if (!key) return false;
+    return !boundCameraKeys.has(key);
+  });
+  const rows = [
+    ...eligibleAssets.map((row) => buildDeviceRow(row, "asset")),
+    ...standaloneCameras.map((row) => buildDeviceRow({ ...row, standaloneMode: "yes" }, "camera"))
+  ];
+  const deduped = new Map<string, DeviceRow>();
+  for (const row of rows) {
+    const key = `${row.deviceId}|${row.cameraSerial}|${row.plate}`.toLowerCase();
+    if (!deduped.has(key)) deduped.set(key, row);
+  }
+  return Array.from(deduped.values()).sort((a, b) => a.plate.localeCompare(b.plate));
+};
 
 const columns: ColumnDef[] = [
   { key: "status", label: "Online status", width: 140 },
@@ -1814,32 +2053,32 @@ const alarmNotifyRows = [
 ];
 
 const bsdRows = [
-  { name: "Right blind spot detection", enabled: false, alarmType: "Alarm" },
-  { name: "Left blind spot detection", enabled: false, alarmType: "Alarm" },
-  { name: "Front Blind Area", enabled: false, alarmType: "Alarm" },
-  { name: "Rear blind spot", enabled: false, alarmType: "Alarm" }
+  { name: "Right blind spot detection", enabled: true, alarmType: "Alarm" },
+  { name: "Left blind spot detection", enabled: true, alarmType: "Alarm" },
+  { name: "Front Blind Area", enabled: true, alarmType: "Alarm" },
+  { name: "Rear blind spot", enabled: true, alarmType: "Alarm" }
 ];
 
 const dmsRows = [
   { name: "Driver Fatigue", enabled: true, source: "DMS", alarmType: "Alarm" },
-  { name: "No Driver", enabled: false, source: "Combined", alarmType: "Alarm" },
+  { name: "No Driver", enabled: true, source: "Combined", alarmType: "Alarm" },
   { name: "Handheld Devices", enabled: true, source: "Combined", alarmType: "Alarm" },
   { name: "Smoking", enabled: true, source: "DMS", alarmType: "Alarm" },
   { name: "Distraction", enabled: true, source: "DMS", alarmType: "Alarm" },
   { name: "Yawn", enabled: true, source: "DMS", alarmType: "Alarm" },
   { name: "Seatbelt", enabled: true, source: "DMS", alarmType: "Alarm" },
-  { name: "No Mask", enabled: false, source: "DMS", alarmType: "Alarm" },
-  { name: "Infrared Blocked", enabled: false, source: "DMS", alarmType: "Alarm" },
-  { name: "Device Disconnected", enabled: false, source: "DMS", alarmType: "Alarm" }
+  { name: "No Mask", enabled: true, source: "DMS", alarmType: "Alarm" },
+  { name: "Infrared Blocked", enabled: true, source: "DMS", alarmType: "Alarm" },
+  { name: "Device Disconnected", enabled: true, source: "DMS", alarmType: "Alarm" }
 ];
 
 const adasRows = [
   { name: "LDW", enabled: true, source: "DMS", alarmType: "Alarm" },
   { name: "FCW", enabled: true, source: "DMS", alarmType: "Alarm" },
-  { name: "Overspeed", enabled: false, source: "DMS", alarmType: "Alarm" },
+  { name: "Overspeed", enabled: true, source: "DMS", alarmType: "Alarm" },
   { name: "HMW", enabled: true, source: "DMS", alarmType: "Alarm" },
-  { name: "PCW", enabled: false, source: "DMS", alarmType: "Alarm" },
-  { name: "Rolling Stop", enabled: false, source: "DMS", alarmType: "Alarm" }
+  { name: "PCW", enabled: true, source: "DMS", alarmType: "Alarm" },
+  { name: "Rolling Stop", enabled: true, source: "DMS", alarmType: "Alarm" }
 ];
 
 const alarmVideoRows = [
@@ -1925,10 +2164,11 @@ const sidebarMenuItems = [
       "Driver Picture"
     ]
   },
-  { label: "Surveillance", sub: ["Live View", "Record", "IPC Setup", "Camera Setup"] },
+  { label: "Surveillance", sub: ["Live View", "Record", "IPC Setup", "Camera Setup", "PTZ"] },
+  { label: "808 GPS", sub: ["Device Settings"] },
   { label: "Collection", sub: ["Collection"] },
   { label: "Alarm", sub: ["Video", "AI App"] },
-  { label: "Others", sub: ["General", "Preview", "Playback"] }
+  { label: "Others", sub: ["General", "Preview", "Playback", "Intercom"] }
 ];
 
 const generalTabs = ["General", "Basic Info", "Device Module", "Storage Device", "Version Info"];
@@ -1981,6 +2221,8 @@ const normalizeProtocolPair = (protocolType: unknown, videoProtocol: unknown): N
 
 export default function DeviceRemoteActions() {
   const navigate = useNavigate();
+  const [deviceRows, setDeviceRows] = useState<DeviceRow[]>([]);
+  const [deviceRowsLoading, setDeviceRowsLoading] = useState(true);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [showColumnChooser, setShowColumnChooser] = useState(false);
   const [columnQuery, setColumnQuery] = useState("");
@@ -1992,11 +2234,39 @@ export default function DeviceRemoteActions() {
   const [activeBasicInfoTab, setActiveBasicInfoTab] = useState("Calibration Status");
   const [openSidebarItem, setOpenSidebarItem] = useState<string | null>("General");
   const [activeSurveillanceSub, setActiveSurveillanceSub] = useState("Live View");
+  const [active808Sub, setActive808Sub] = useState("Device Settings");
+  const [cms808Status, setCms808Status] = useState("");
+  const [cms808Busy, setCms808Busy] = useState(false);
+  const [cms808Config, setCms808Config] = useState<Cmsv6Config>({
+    baseUrl: "https://gps.hboiot.com:8088",
+    account: "",
+    password: "",
+    language: "en",
+    mediaHost: "gps.hboiot.com",
+    mediaPort: 6603,
+    positioningProtocol: "JT/T808",
+    videoProtocol: "JT/T1078",
+    enabled: true
+  });
+  const [cms808PasswordSet, setCms808PasswordSet] = useState(false);
+  const [cms808StoredAccount, setCms808StoredAccount] = useState("");
+  const [cms808SsoUser, setCms808SsoUser] = useState(() => {
+    const user = readSignedInUser();
+    return user.email || user.name || "";
+  });
+  const [cms808SsoConnected, setCms808SsoConnected] = useState(false);
+  const [cms808TtsText, setCms808TtsText] = useState("Please drive carefully.");
   const [activeBasicSub, setActiveBasicSub] = useState("Time Setup");
   const [activeCollectionSub, setActiveCollectionSub] = useState("Collection");
   const [activeTimeTab, setActiveTimeTab] = useState("General");
   const [activeAppTab, setActiveAppTab] = useState("Download");
   const [activeNetworkTab, setActiveNetworkTab] = useState("Ports");
+  const [intercomUploadInterval, setIntercomUploadInterval] = useState("1000");
+  const [intercomAutoStart, setIntercomAutoStart] = useState(true);
+  const [liveStreamEnabled, setLiveStreamEnabled] = useState(true);
+  const [recordingEnabled, setRecordingEnabled] = useState(true);
+  const [selectedIntercomImei, setSelectedIntercomImei] = useState<string | null>(null);
+  const [intercomSaving, setIntercomSaving] = useState(false);
   type ServerTab = "Server1";
   type ServerConfig = {
     on: boolean;
@@ -2036,7 +2306,7 @@ export default function DeviceRemoteActions() {
   const [communicationModuleSettings, setCommunicationModuleSettings] = useState({
     lock: false,
     serverType: "LTE-FDD",
-    networkType: "Mix",
+    networkType: "VIVI",
     apn: "internet",
     userName: "guest",
     password: "******",
@@ -2068,23 +2338,10 @@ export default function DeviceRemoteActions() {
   const [linkageSelections, setLinkageSelections] = useState<Record<string, number[]>>({});
   const [openTriggerRow, setOpenTriggerRow] = useState<string | null>(null);
   const [triggerConfigs, setTriggerConfigs] = useState<Record<string, { minSpeed: string; maxSpeed: string; delay: string }>>({});
-  const playbackMonths = [
-    "January",
-    "February",
-    "March",
-    "April",
-    "May",
-    "June",
-    "July",
-    "August",
-    "September",
-    "October",
-    "November",
-    "December"
-  ];
-  const [playbackMonthIndex, setPlaybackMonthIndex] = useState(10);
-  const [playbackYear, setPlaybackYear] = useState(2025);
-  const [selectedPlaybackDay, setSelectedPlaybackDay] = useState("15");
+  const today = new Date();
+  const [playbackMonthIndex, setPlaybackMonthIndex] = useState(today.getMonth());
+  const [playbackYear, setPlaybackYear] = useState(today.getFullYear());
+  const [selectedPlaybackDay, setSelectedPlaybackDay] = useState(String(today.getDate()));
   const [activeCameraType, setActiveCameraType] = useState("ADAS");
   const [isMirrorOn, setIsMirrorOn] = useState(false);
   const [isFlipOn, setIsFlipOn] = useState(false);
@@ -2095,10 +2352,90 @@ export default function DeviceRemoteActions() {
   const [driverPictureFile, setDriverPictureFile] = useState<File | null>(null);
   const [driverPicturePreview, setDriverPicturePreview] = useState("");
   const [vehiclePlate, setVehiclePlate] = useState("");
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadDeviceRows = async () => {
+      setDeviceRowsLoading(true);
+      try {
+        const [assets, cameras, cmsVehicles] = await Promise.all([
+          getAssetsFromApi<SourceRecord>().catch(() => []),
+          getCamerasFromApi<SourceRecord>().catch(() => []),
+          loadCms808VehiclesForActiveHierarchy()
+        ]);
+        if (cancelled) return;
+        const cmsRecords = [];
+        for (const row of cmsVehicles) {
+          const gps = await loadCms808Position(row).catch(() => null);
+          cmsRecords.push(cms808VehicleToAssetRecord(row, gps));
+        }
+        setDeviceRows(buildLiveDeviceRows(Array.isArray(assets) ? assets : [], [...(Array.isArray(cameras) ? cameras : []), ...cmsRecords]));
+      } catch {
+        if (!cancelled) {
+          const fallbackVehicles = await loadCms808VehiclesForActiveHierarchy().catch(() => []);
+          setDeviceRows(buildLiveDeviceRows([], fallbackVehicles.map((row) => cms808VehicleToAssetRecord(row, null))));
+        }
+      } finally {
+        if (!cancelled) {
+          setDeviceRowsLoading(false);
+        }
+      }
+    };
+
+    void loadDeviceRows();
+    void getCmsv6Config().then((result) => {
+      if (cancelled || !result?.config) return;
+      setCms808Config((current) => ({ ...current, ...result.config, password: "" }));
+      setCms808StoredAccount(result.config.account ?? "");
+      setCms808PasswordSet(Boolean(result.config.passwordSet));
+      setCms808SsoConnected(Boolean(result.ssoConnected || result.config.sessionSet));
+      const user = readSignedInUser();
+      setCms808SsoUser(result.ssoUser || user.email || user.name || "");
+    }).catch((error: any) => {
+      if (!cancelled) setCms808Status(String(error?.message || "Could not load CMS808 settings."));
+    });
+    const handleOrgChange = () => {
+      void loadDeviceRows();
+    };
+    window.addEventListener("vivi:orgchange", handleOrgChange);
+    window.addEventListener("vivi:contextchange", handleOrgChange);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("vivi:orgchange", handleOrgChange);
+      window.removeEventListener("vivi:contextchange", handleOrgChange);
+    };
+  }, []);
+
+  useEffect(() => {
+    setSelectedIds((current) => {
+      const validIds = new Set(deviceRows.map((row) => row.id));
+      const next = current.filter((id) => validIds.has(id));
+      if (next.length > 0) return next;
+      return deviceRows[0] ? [deviceRows[0].id] : [];
+    });
+  }, [deviceRows]);
+
   const activeDevice = useMemo(() => {
     const selectedId = selectedIds[0];
-    return deviceRows.find((row) => row.id === selectedId) ?? deviceRows[0];
-  }, [selectedIds]);
+    return deviceRows.find((row) => row.id === selectedId) ?? deviceRows[0] ?? null;
+  }, [deviceRows, selectedIds]);
+  const handleCalendarMonthChange = (delta: number) => {
+    const next = shiftCalendarMonth(playbackMonthIndex, playbackYear, delta);
+    setPlaybackMonthIndex(next.monthIndex);
+    setPlaybackYear(next.year);
+  };
+  const handleCalendarDaySelect = (day: number, monthOffset: -1 | 0 | 1) => {
+    const next = shiftCalendarMonth(playbackMonthIndex, playbackYear, monthOffset);
+    setPlaybackMonthIndex(next.monthIndex);
+    setPlaybackYear(next.year);
+    setSelectedPlaybackDay(String(day));
+  };
+  const handleCalendarToday = () => {
+    const next = new Date();
+    setPlaybackMonthIndex(next.getMonth());
+    setPlaybackYear(next.getFullYear());
+    setSelectedPlaybackDay(String(next.getDate()));
+  };
   const handleFormatStorage = (name: string) => {
     const success = Math.random() > 0.25;
     setFormattingNotice({
@@ -2527,6 +2864,16 @@ export default function DeviceRemoteActions() {
     }
   };
 
+  const getDeviceSortValue = useCallback(
+    (row: DeviceRow, key: string) => row[key] ?? "",
+    []
+  );
+
+  const { sortedRows: sortedDeviceRows, getHeaderProps: getDeviceHeaderProps } = useColumnSort({
+    rows: deviceRows,
+    getValue: getDeviceSortValue
+  });
+
   const allSelected = selectedIds.length === deviceRows.length && deviceRows.length > 0;
   const selectedCount = selectedIds.length;
 
@@ -2560,7 +2907,7 @@ export default function DeviceRemoteActions() {
               </div>
               {dataColumns.map((column) => (
                 <div key={column.key} className="device-remote-cell">
-                  {column.label}
+                  <SortableColumnHeader label={column.label} {...getDeviceHeaderProps(column.key)} />
                 </div>
               ))}
               {operationColumn && (
@@ -2573,7 +2920,11 @@ export default function DeviceRemoteActions() {
               )}
             </div>
 
-            {deviceRows.map((row) => (
+            {deviceRowsLoading ? (
+              <VTLoader compact label="Loading live devices" />
+            ) : deviceRows.length === 0 ? (
+              <div className="remote-access-empty">No live devices available for remote actions.</div>
+            ) : sortedDeviceRows.map((row) => (
               <div key={row.id} className="device-remote-row" style={{ gridTemplateColumns: gridTemplate }}>
                 <div className="device-remote-cell checkbox">
                   <input
@@ -2731,7 +3082,7 @@ export default function DeviceRemoteActions() {
               </button>
             </div>
             <div className="remote-access-body">
-              {(["General", "Preview", "Playback"] as const).includes(activeRemoteTab as "General" | "Preview" | "Playback") ? (
+              {(["General", "Preview", "Playback", "Intercom"] as const).includes(activeRemoteTab as "General" | "Preview" | "Playback" | "Intercom") ? (
                 <div className="remote-access-general">
                   <aside className="remote-access-general-sidebar">
                     {sidebarMenuItems.map((item) => (
@@ -2765,6 +3116,8 @@ export default function DeviceRemoteActions() {
                                         ? "active"
                                     : item.label === "Alarm" && activeAlarmSub === sub
                                       ? "active"
+                                      : item.label === "808 GPS" && active808Sub === sub
+                                        ? "active"
                                       : item.label === "Others" && activeRemoteTab === sub
                                         ? "active"
                                       : ""
@@ -2778,6 +3131,8 @@ export default function DeviceRemoteActions() {
                                     setActiveCollectionSub(sub);
                                   } else if (item.label === "Alarm") {
                                     setActiveAlarmSub(sub);
+                                  } else if (item.label === "808 GPS") {
+                                    setActive808Sub(sub);
                                   } else if (item.label === "Others") {
                                     setActiveRemoteTab(sub);
                                   }
@@ -2796,7 +3151,250 @@ export default function DeviceRemoteActions() {
                     ))}
                   </aside>
                   <section className="remote-access-general-panel">
-                    {activeRemoteTab === "Preview" ? (
+                    {(activeGeneralMenu === "808 GPS" || (activeSurveillanceSub === "PTZ" && activeGeneralMenu === "Surveillance")) ? (
+                      <div className="cms808-card remote-access-network-form">
+                        <h2>808 GPS / JT808 standalone camera</h2>
+                        <p>
+                          Enter the CMS808 platform account here; it is separate from your VIVI login. VIVI sign-in only authorizes
+                          access to these settings. GPS opens Live Tracking, playback opens Historical Tracking, and live video and
+                          evidence stay on their current pages. Bindings and notification settings stay in param settings.
+                        </p>
+                        {cms808Status ? <div className="cms808-status">{cms808Status}</div> : null}
+                        {activeGeneralMenu === "808 GPS" && active808Sub === "Platform" ? (
+                          <div className="cms808-grid">
+                            <label>
+                              Base URL
+                              <input value={cms808Config.baseUrl ?? ""} onChange={(event) => setCms808Config((current) => ({ ...current, baseUrl: event.target.value }))} />
+                            </label>
+                            <label>
+                              Signed-in VIVI user
+                              <input value={cms808SsoUser ? `VIVI · ${cms808SsoUser}` : "Sign in to VIVI"} readOnly />
+                            </label>
+                            <label>
+                              Status
+                              <input value={cms808SsoConnected ? "CMS808 video session connected" : cms808PasswordSet ? "Credentials saved; connection needed" : "CMS808 credentials not configured"} readOnly />
+                            </label>
+                            <label>
+                              CMS808 account
+                              <input
+                                autoComplete="username"
+                                value={cms808Config.account ?? ""}
+                                onChange={(event) => {
+                                  setCms808Config((current) => ({ ...current, account: event.target.value }));
+                                  setCms808SsoConnected(false);
+                                }}
+                              />
+                            </label>
+                            <label>
+                              CMS808 password
+                              <input
+                                type="password"
+                                autoComplete="new-password"
+                                value={cms808Config.password ?? ""}
+                                onChange={(event) => {
+                                  setCms808Config((current) => ({ ...current, password: event.target.value }));
+                                  setCms808SsoConnected(false);
+                                }}
+                                placeholder={cms808PasswordSet ? "Saved; enter a new password to replace it" : "Enter CMS808 password"}
+                              />
+                              <small>Password is saved for the selected site and never shown again.</small>
+                            </label>
+                            <label>
+                              Media host
+                              <input value={cms808Config.mediaHost ?? ""} onChange={(event) => setCms808Config((current) => ({ ...current, mediaHost: event.target.value }))} />
+                            </label>
+                            <div className="cms808-actions">
+                              <button
+                                type="button"
+                                className="remote-access-action primary"
+                                disabled={cms808Busy}
+                                onClick={() => {
+                                  const account = String(cms808Config.account ?? "").trim();
+                                  const password = String(cms808Config.password ?? "").trim();
+                                  if (!account) {
+                                    setCms808Status("Enter the CMS808 platform account.");
+                                    return;
+                                  }
+                                  if ((!cms808PasswordSet || account !== cms808StoredAccount) && !password) {
+                                    setCms808Status("Enter the CMS808 password for this account.");
+                                    return;
+                                  }
+                                  setCms808Busy(true);
+                                  void saveCmsv6Config({ ...cms808Config, site: readActiveSiteName(), enabled: true, authMode: "sso" }).then((saved) => {
+                                    if (saved?.ok) {
+                                      setCms808Config((current) => ({ ...current, ...saved.config, password: "" }));
+                                      setCms808StoredAccount(saved.config?.account ?? account);
+                                      setCms808PasswordSet(Boolean(saved.config?.passwordSet));
+                                      setCms808SsoConnected(false);
+                                      setCms808Status(`CMS808 credentials saved for ${readActiveSiteName() || "the selected site"}.`);
+                                    } else {
+                                      setCms808Status(saved?.error || "Could not save CMS808 credentials.");
+                                    }
+                                  }).catch((error: any) => {
+                                    setCms808Status(String(error?.message || "Save failed."));
+                                  }).finally(() => {
+                                    setCms808Busy(false);
+                                  });
+                                }}
+                              >
+                                Save credentials
+                              </button>
+                              <button
+                                type="button"
+                                className="remote-access-action"
+                                disabled={cms808Busy}
+                                onClick={() => {
+                                  const account = String(cms808Config.account ?? "").trim();
+                                  const password = String(cms808Config.password ?? "").trim();
+                                  if (!account) {
+                                    setCms808Status("Enter the CMS808 platform account.");
+                                    return;
+                                  }
+                                  if ((!cms808PasswordSet || account !== cms808StoredAccount) && !password) {
+                                    setCms808Status("Enter the CMS808 password for this account.");
+                                    return;
+                                  }
+                                  setCms808Busy(true);
+                                  void (async () => {
+                                    try {
+                                      const saved = await saveCmsv6Config({
+                                        ...cms808Config,
+                                        site: readActiveSiteName(),
+                                        enabled: true,
+                                        authMode: "sso"
+                                      });
+                                      if (!saved?.ok) {
+                                        setCms808Status(saved?.error || "Could not save CMS808 credentials.");
+                                        return;
+                                      }
+                                      setCms808Config((current) => ({ ...current, ...saved.config, password: "" }));
+                                      setCms808StoredAccount(saved.config?.account ?? account);
+                                      setCms808PasswordSet(Boolean(saved.config?.passwordSet));
+                                      setCms808SsoConnected(false);
+                                      const result = await connectCmsv6Sso({ account, force: true });
+                                      const connected = Boolean(result?.ok && result?.session);
+                                      setCms808SsoConnected(connected);
+                                      setCms808Status(
+                                        connected
+                                          ? "CMS808 video connection established."
+                                          : result?.error || result?.message || "CMS808 did not accept the account and password. Check them and try again."
+                                      );
+                                    } catch (error: any) {
+                                      setCms808Status(String(error?.message || "CMS808 connection failed."));
+                                    } finally {
+                                      setCms808Busy(false);
+                                    }
+                                  })();
+                                }}
+                              >
+                                Save &amp; connect CMS808
+                              </button>
+                              <button type="button" className="remote-access-action" onClick={() => navigate("/Control/config/templates")}>
+                                Bindings
+                              </button>
+                              <button type="button" className="remote-access-action" onClick={() => navigate("/Control/notifications/device-Alerts")}>
+                                Notification settings
+                              </button>
+                            </div>
+                          </div>
+                        ) : null}
+                        {active808Sub === "Device Settings" ? (
+                          <Cms808DeviceSettings
+                            deviceId={String(activeDevice?.cameraSerial || activeDevice?.deviceId || "").trim()}
+                            plate={String(activeDevice?.plate ?? "")}
+                          />
+                        ) : null}
+                        {active808Sub === "GPS Status" ? (
+                          <div className="cms808-actions">
+                            <button type="button" className="remote-access-action" onClick={() => navigate("/Track/tracking/live")}>
+                              Open Live Tracking
+                            </button>
+                            <button
+                              type="button"
+                              className="remote-access-action"
+                              disabled={cms808Busy}
+                              onClick={() => {
+                                const device = String(activeDevice?.cameraSerial || activeDevice?.deviceId || "").trim();
+                                if (!device) {
+                                  setCms808Status("Select a camera with a serial / device id.");
+                                  return;
+                                }
+                                setCms808Busy(true);
+                                void callCmsv6(`/cmsv6/gps?devIdno=${encodeURIComponent(device)}`).then((result) => {
+                                  const gps = (result as any)?.gps;
+                                  const row = Array.isArray(gps) ? gps[0] : gps;
+                                  const summary = row ? ` ${row.vid || device} ${row.ol === 1 || row.ol === true ? "online" : "offline"} ${row.mlat || ""},${row.mlng || ""}` : "";
+                                  setCms808Status((result?.ok ? "GPS status loaded. Positions also appear on Live Tracking." : (result as any)?.message || "GPS request failed. Configure platform first.") + summary);
+                                  setCms808Busy(false);
+                                });
+                              }}
+                            >
+                              Refresh GPS
+                            </button>
+                          </div>
+                        ) : null}
+                        {active808Sub === "TTS" ? (
+                          <div>
+                            <textarea className="cms808-textarea" value={cms808TtsText} onChange={(event) => setCms808TtsText(event.target.value)} />
+                            <div className="cms808-actions">
+                              <button
+                                type="button"
+                                className="remote-access-action"
+                                disabled={cms808Busy}
+                                onClick={() => {
+                                  const device = String(activeDevice?.cameraSerial || activeDevice?.deviceId || "").trim();
+                                  if (!device) {
+                                    setCms808Status("Select a camera with a serial / device id.");
+                                    return;
+                                  }
+                                  setCms808Busy(true);
+                                  void callCmsv6("/cmsv6/tts", {
+                                    method: "POST",
+                                    body: JSON.stringify({ devIdno: device, text: cms808TtsText })
+                                  }).then((result) => {
+                                    setCms808Status(result?.ok ? "TTS sent to the 808 camera." : (result as any)?.message || "TTS failed.");
+                                    setCms808Busy(false);
+                                  });
+                                }}
+                              >
+                                Send TTS
+                              </button>
+                            </div>
+                          </div>
+                        ) : null}
+                        {(active808Sub === "PTZ" || (activeSurveillanceSub === "PTZ" && activeGeneralMenu === "Surveillance")) ? (
+                          <div className="cms808-actions">
+                            {[
+                              { label: "PTZ Up", command: 2 },
+                              { label: "PTZ Down", command: 3 },
+                              { label: "PTZ Left", command: 0 },
+                              { label: "PTZ Right", command: 1 },
+                              { label: "PTZ Stop", command: 19 }
+                            ].map((item) => (
+                              <button
+                                key={item.command}
+                                type="button"
+                                className="remote-access-action"
+                                disabled={cms808Busy}
+                                onClick={() => {
+                                  const device = String(activeDevice?.cameraSerial || activeDevice?.deviceId || "").trim();
+                                  setCms808Busy(true);
+                                  void callCmsv6("/cmsv6/ptz", {
+                                    method: "POST",
+                                    body: JSON.stringify({ DevIDNO: device, Chn: 0, Command: item.command, Speed: 5 })
+                                  }).then((result) => {
+                                    setCms808Status(result?.ok ? `${item.label} sent.` : (result as any)?.message || "PTZ failed.");
+                                    setCms808Busy(false);
+                                  });
+                                }}
+                              >
+                                {item.label}
+                              </button>
+                            ))}
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : activeRemoteTab === "Preview" ? (
                       <div className="remote-access-preview">
                         <div className="remote-access-preview-header">
                           <span>[ {displayPlate} ]</span>
@@ -2869,56 +3467,17 @@ export default function DeviceRemoteActions() {
                             </div>
                             {showPreviewCalendar && (
                               <div className="remote-access-preview-calendar">
-                                <div className="remote-access-preview-calendar-title">Select Date</div>
-                                <div className="remote-access-preview-week">
-                                  {"S M T W T F S".split(" ").map((day) => (
-                                    <span key={day}>{day}</span>
-                                  ))}
-                                </div>
-                                <div className="remote-access-preview-grid">
-                                  {[
-                                    "26",
-                                    "27",
-                                    "28",
-                                    "29",
-                                    "30",
-                                    "31",
-                                    "1",
-                                    "2",
-                                    "3",
-                                    "4",
-                                    "5",
-                                    "6",
-                                    "7",
-                                    "8",
-                                    "9",
-                                    "10",
-                                    "11",
-                                    "12",
-                                    "13",
-                                    "14",
-                                    "15",
-                                    "16",
-                                    "17",
-                                    "18",
-                                    "19",
-                                    "20",
-                                    "21",
-                                    "22",
-                                    "23",
-                                    "24",
-                                    "25",
-                                    "26",
-                                    "27",
-                                    "28",
-                                    "29",
-                                    "30"
-                                  ].map((day, index) => (
-                                    <div key={`${day}-${index}`} className="remote-access-preview-day">
-                                      {day}
-                                    </div>
-                                  ))}
-                                </div>
+                                <RemoteAccessCalendar
+                                  title="Preview Date"
+                                  subtitle="Pick a day for remote preview verification"
+                                  monthIndex={playbackMonthIndex}
+                                  year={playbackYear}
+                                  selectedDay={selectedPlaybackDay}
+                                  onMonthChange={handleCalendarMonthChange}
+                                  onSelectDay={handleCalendarDaySelect}
+                                  onToday={handleCalendarToday}
+                                  compact
+                                />
                               </div>
                             )}
                           </div>
@@ -2965,102 +3524,16 @@ export default function DeviceRemoteActions() {
                         <div className="remote-access-playback-body">
                           <div className="remote-access-playback-left-pane">
                             <div className="remote-access-playback-calendar">
-                              <div className="remote-access-playback-month">
-                                <button
-                                  type="button"
-                                  className="remote-access-playback-nav"
-                                  onClick={() =>
-                                    setPlaybackMonthIndex((current) => {
-                                      if (current === 0) {
-                                        setPlaybackYear((year) => year - 1);
-                                        return 11;
-                                      }
-                                      return current - 1;
-                                    })
-                                  }
-                                  aria-label="Previous month"
-                                >
-                                  ◀
-                                </button>
-                                <div className="remote-access-playback-month-label">
-                                  {playbackMonths[playbackMonthIndex]} {playbackYear}
-                                </div>
-                                <button
-                                  type="button"
-                                  className="remote-access-playback-nav"
-                                  onClick={() =>
-                                    setPlaybackMonthIndex((current) => {
-                                      if (current === 11) {
-                                        setPlaybackYear((year) => year + 1);
-                                        return 0;
-                                      }
-                                      return current + 1;
-                                    })
-                                  }
-                                  aria-label="Next month"
-                                >
-                                  ▶
-                                </button>
-                              </div>
-                              <div className="remote-access-playback-week">
-                                {"S M T W T F S".split(" ").map((day) => (
-                                  <span key={day}>{day}</span>
-                                ))}
-                              </div>
-                              <div className="remote-access-playback-grid">
-                                {[
-                                  "26",
-                                  "27",
-                                  "28",
-                                  "29",
-                                  "30",
-                                  "31",
-                                  "1",
-                                  "2",
-                                  "3",
-                                  "4",
-                                  "5",
-                                  "6",
-                                  "7",
-                                  "8",
-                                  "9",
-                                  "10",
-                                  "11",
-                                  "12",
-                                  "13",
-                                  "14",
-                                  "15",
-                                  "16",
-                                  "17",
-                                  "18",
-                                  "19",
-                                  "20",
-                                  "21",
-                                  "22",
-                                  "23",
-                                  "24",
-                                  "25",
-                                  "26",
-                                  "27",
-                                  "28",
-                                  "29",
-                                  "30"
-                                ].map((day, index) => (
-                                  <div
-                                    key={`${day}-${index}`}
-                                    className={`remote-access-playback-day ${
-                                      [15, 20].includes(Number(day))
-                                        ? "alarm"
-                                        : [17, 18, 21, 22].includes(Number(day))
-                                          ? "normal"
-                                          : ""
-                                    } ${selectedPlaybackDay === day ? "active" : ""}`}
-                                    onClick={() => setSelectedPlaybackDay(day)}
-                                  >
-                                    {day}
-                                  </div>
-                                ))}
-                              </div>
+                              <RemoteAccessCalendar
+                                title="Playback Calendar"
+                                subtitle="Search recorded footage by day and event type"
+                                monthIndex={playbackMonthIndex}
+                                year={playbackYear}
+                                selectedDay={selectedPlaybackDay}
+                                onMonthChange={handleCalendarMonthChange}
+                                onSelectDay={handleCalendarDaySelect}
+                                onToday={handleCalendarToday}
+                              />
                             </div>
                             <div className="remote-access-playback-side">
                               <div className="remote-access-playback-select">
@@ -3115,6 +3588,139 @@ export default function DeviceRemoteActions() {
                               <button type="button" className="remote-access-playback-action">Fullscreen</button>
                             </div>
                             <div className="remote-access-playback-screen-body">Video output</div>
+                          </div>
+                        </div>
+                      </div>
+                    ) : activeRemoteTab === "Intercom" ? (
+                      <div className="remote-access-intercom-settings">
+                        <div className="remote-access-form-header">
+                          <h3>Camera Intercom Settings</h3>
+                          <p>Configure intercom, recording, and streaming settings for the camera device</p>
+                        </div>
+                        <div className="remote-access-form-content">
+                          <div className="remote-access-form-section">
+                            <div className="remote-access-form-group">
+                              <label>
+                                <span>Select Camera (IMEI)</span>
+                                <select
+                                  value={selectedIntercomImei || ""}
+                                  onChange={(e) => setSelectedIntercomImei(e.target.value || null)}
+                                  className="remote-access-basic-input"
+                                >
+                                  <option value="">-- Select a camera --</option>
+                                  {deviceRows
+                                    .filter((row) => toText(row.imei))
+                                    .map((row) => (
+                                      <option key={row.registration || row.imei} value={row.imei}>
+                                        {row.registration || row.imei} ({row.imei})
+                                      </option>
+                                    ))}
+                                </select>
+                              </label>
+                            </div>
+
+                            <div className="remote-access-form-group">
+                              <label className="remote-access-checkbox">
+                                <input
+                                  type="checkbox"
+                                  checked={intercomAutoStart}
+                                  onChange={(e) => setIntercomAutoStart(e.target.checked)}
+                                />
+                                <span>Auto-start Intercom on Device Boot</span>
+                              </label>
+                            </div>
+
+                            <div className="remote-access-form-group">
+                              <label className="remote-access-checkbox">
+                                <input
+                                  type="checkbox"
+                                  checked={recordingEnabled}
+                                  onChange={(e) => setRecordingEnabled(e.target.checked)}
+                                />
+                                <span>Enable Recording</span>
+                              </label>
+                            </div>
+
+                            <div className="remote-access-form-group">
+                              <label className="remote-access-checkbox">
+                                <input
+                                  type="checkbox"
+                                  checked={liveStreamEnabled}
+                                  onChange={(e) => setLiveStreamEnabled(e.target.checked)}
+                                />
+                                <span>Enable Live Stream</span>
+                              </label>
+                            </div>
+
+                            <div className="remote-access-form-group">
+                              <label>
+                                <span>Upload Interval (ms)</span>
+                                <input
+                                  type="number"
+                                  value={intercomUploadInterval}
+                                  onChange={(e) => setIntercomUploadInterval(e.target.value)}
+                                  placeholder="1000"
+                                  min="500"
+                                  max="10000"
+                                  className="remote-access-basic-input"
+                                />
+                                <small>Interval for uploading audio chunks (500-10000 ms)</small>
+                              </label>
+                            </div>
+
+                            <div className="remote-access-form-footer">
+                              <button
+                                type="button"
+                                className="remote-access-action"
+                                onClick={() => {
+                                  setSelectedIntercomImei(null);
+                                  setIntercomUploadInterval("1000");
+                                  setIntercomAutoStart(true);
+                                  setLiveStreamEnabled(true);
+                                  setRecordingEnabled(true);
+                                }}
+                              >
+                                Reset
+                              </button>
+                              <button
+                                type="button"
+                                className="remote-access-action primary"
+                                onClick={async () => {
+                                  if (!selectedIntercomImei) {
+                                    alert("Please select a camera");
+                                    return;
+                                  }
+                                  setIntercomSaving(true);
+                                  try {
+                                    const result = await pushDeviceSettings(selectedIntercomImei, {
+                                      camera: {
+                                        autoStartIntercom: intercomAutoStart
+                                      },
+                                      intercom: {
+                                        uploadIntervalMs: parseInt(intercomUploadInterval, 10) || 1000,
+                                        enabled: recordingEnabled
+                                      },
+                                      liveStream: {
+                                        enabled: liveStreamEnabled
+                                      }
+                                    });
+                                    if (result.queued) {
+                                      showToast(`Settings pushed for camera ${selectedIntercomImei}. Device will fetch changes on next sync.`, "success");
+                                    } else {
+                                      showToast(`Failed to push settings: ${result.error}`, "error");
+                                    }
+                                  } catch (err) {
+                                    showToast(`Error pushing settings: ${String(err)}`, "error");
+                                  } finally {
+                                    setIntercomSaving(false);
+                                  }
+                                }}
+                                disabled={intercomSaving || !selectedIntercomImei}
+                              >
+                                {intercomSaving ? "Saving..." : "Save & Push to Device"}
+                              </button>
+                            </div>
+
                           </div>
                         </div>
                       </div>
@@ -3309,7 +3915,7 @@ export default function DeviceRemoteActions() {
                             </label>
                           </div>
                         ) : (
-                          <div className="remote-access-empty">Select a tab to configure time settings.</div>
+                          null
                         )}
                         <div className="remote-access-footer">
                           <button type="button" className="remote-access-action" onClick={handleRemoteAccessCancel}>Cancel</button>
@@ -3496,7 +4102,7 @@ export default function DeviceRemoteActions() {
                                   }))
                                 }
                               >
-                                <option>Mix</option>
+                                <option>VIVI</option>
                                 <option>LTE</option>
                                 <option>3G</option>
                               </select>
@@ -3835,6 +4441,9 @@ export default function DeviceRemoteActions() {
                                 <option>{VIDEO_PROTOCOL_JTT1078}</option>
                               </select>
                             </label>
+                            <p className="remote-access-network-hint">
+                              JT/T808 + JT/T1078 is the GPS/video pair used by CMS 808 standalone cameras. Use 808 GPS in this remote-access menu. Live GPS is on Live Tracking; evidence is in the video gallery.
+                            </p>
                             <label className="remote-access-network-row">
                               <span>TLS Enable</span>
                               <input
@@ -4010,7 +4619,7 @@ export default function DeviceRemoteActions() {
                             </label>
                           </div>
                         ) : (
-                          <div className="remote-access-empty">Select a tab to configure network settings.</div>
+                          null
                         )}
                         <div className="remote-access-footer">
                           <button type="button" className="remote-access-action" onClick={handleRemoteAccessCancel}>Cancel</button>
@@ -4298,7 +4907,7 @@ export default function DeviceRemoteActions() {
                             ))}
                           </div>
                         ) : (
-                          <div className="remote-access-empty">Select a tab to configure startup settings.</div>
+                          null
                         )}
                         <div className="remote-access-footer">
                           <button type="button" className="remote-access-action" onClick={handleRemoteAccessCancel}>Cancel</button>
@@ -5204,7 +5813,7 @@ export default function DeviceRemoteActions() {
                             ))}
                           </div>
                         ) : (
-                          <div className="remote-access-empty">Select a tab to configure AI settings.</div>
+                          null
                         )}
                         <div className="remote-access-footer">
                           <button type="button" className="remote-access-action" onClick={handleRemoteAccessCancel}>Cancel</button>
@@ -5979,3 +6588,4 @@ export default function DeviceRemoteActions() {
     </div>
   );
 }
+

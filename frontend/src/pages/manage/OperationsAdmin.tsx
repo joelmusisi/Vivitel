@@ -1,175 +1,165 @@
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import SortableColumnHeader from "../../components/SortableColumnHeader";
+import { useColumnSort } from "../../hooks/useColumnSort";
 import { useLocation } from "react-router-dom";
-import { saveToApi } from "../../utils/api";
+import {
+  addHierarchyDatabase,
+  addHierarchyDealer,
+  addHierarchyOrganisation,
+  getHierarchy,
+  renameHierarchyItem,
+  type HierarchyRoot
+} from "../../utils/api";
+import { loadSharedAdminRows, saveSharedAdminRows, type SharedAdminRow } from "../../utils/sharedRecords";
 import "../../index.css";
 
-type SummaryCard = { label: string; value: string | number };
 type AdminRow = { id: string; cells: string[]; status?: string };
 
 type AdminPageConfig = {
   title: string;
   pathLabel: string;
-  summary: SummaryCard[];
   columns: string[];
   rows: AdminRow[];
   statusOptions?: string[];
   formFields?: { label: string; placeholder?: string; options?: string[] }[];
 };
 
+const buildDealerRows = (hierarchy: HierarchyRoot): AdminRow[] =>
+  (hierarchy.dealers ?? [])
+    .filter((dealer) => String(dealer.name ?? "").trim())
+    .map((dealer) => ({
+      id: dealer.id,
+      cells: [dealer.name, "—", "Active"],
+      status: "active"
+    }));
+
+const buildDatabaseRows = (hierarchy: HierarchyRoot): AdminRow[] => {
+  const rows: AdminRow[] = [];
+  for (const dealer of hierarchy.dealers ?? []) {
+    for (const org of dealer.organisations ?? []) {
+      for (const db of org.databases ?? []) {
+        const name = String(db.name ?? "").trim();
+        if (!name) continue;
+        rows.push({
+          id: db.id,
+          cells: [name, dealer.name, String(org.name ?? "").trim() || "—", "—", "Active"],
+          status: "healthy"
+        });
+      }
+    }
+  }
+  return rows;
+};
+
+const buildOrganisationRows = (hierarchy: HierarchyRoot): AdminRow[] => {
+  const rows: AdminRow[] = [];
+  for (const dealer of hierarchy.dealers ?? []) {
+    for (const org of dealer.organisations ?? []) {
+      const name = String(org.name ?? "").trim();
+      if (!name) continue;
+      const databaseNames = (org.databases ?? [])
+        .map((db) => String(db.name ?? "").trim())
+        .filter(Boolean);
+      rows.push({
+        id: org.id,
+        cells: [name, databaseNames.join(", ") || "—", "—", "Active"],
+        status: "active"
+      });
+    }
+  }
+  return rows;
+};
+
+const HIERARCHY_OPERATION_PATHS = new Set([
+  "/Control/operations/database-administration",
+  "/Control/operations/dealer-administration",
+  "/Control/operations/organisation-groups"
+]);
+
 const pageConfigs: Record<string, AdminPageConfig> = {
-  "/manage/operations/database-administration": {
+  "/Control/operations/database-administration": {
     title: "Database administration",
-    pathLabel: "Manage / Operations / Database administration",
-    summary: [
-      { label: "Clusters", value: 4 },
-      { label: "Storage used", value: "68%" },
-      { label: "Backups", value: "12" },
-      { label: "Alerts", value: 1 }
-    ],
-    columns: ["Database Name", "Dealer", "Backup cadence", "Owner", "Status", "Actions"],
-    rows: [
-      { id: "db-1", cells: ["Primary", "EA-Transfleet Services-Tanzania", "Daily", "Platform", "Healthy"], status: "healthy" },
-      { id: "db-2", cells: ["Analytics", "EA-Transfleet Services-Rwanda", "Daily", "Platform", "Healthy"], status: "healthy" },
-      { id: "db-3", cells: ["Archive", "EA-Transfleet Services-Uganda", "Weekly", "Platform", "Warning"], status: "warning" }
-    ],
+    pathLabel: "Control / Operations / Database administration",
+    columns: ["Database Name", "Dealer", "Organisations", "Owner", "Status", "Actions"],
+    rows: [],
     statusOptions: ["healthy", "warning"],
     formFields: [
-      { label: "Database Name", placeholder: "Primary" },
+      { label: "Database Name", placeholder: "Database name" },
       { label: "Dealer" },
-      { label: "Backup cadence", placeholder: "Daily" },
+      { label: "Organisations", placeholder: "Organisation name" },
       { label: "Owner", placeholder: "Platform" }
     ]
   },
-  "/manage/operations/dealer-administration": {
+  "/Control/operations/dealer-administration": {
     title: "Dealer Administration",
-    pathLabel: "Manage / Operations / Dealer Administration",
-    summary: [
-      { label: "Dealers", value: 3 },
-      { label: "Active", value: 3 },
-      { label: "Regions", value: 5 },
-      { label: "Last update", value: "Jan 20" }
-    ],
+    pathLabel: "Control / Operations / Dealer Administration",
     columns: ["Dealer", "Region", "Status", "Actions"],
-    rows: [
-      { id: "dealer-1", cells: ["EA-Transfleet Services-Tanzania", "EA", "Active"], status: "active" },
-      { id: "dealer-2", cells: ["EA-Transfleet Services-Rwanda", "EA", "Active"], status: "active" },
-      { id: "dealer-3", cells: ["EA-Transfleet Services-Uganda", "EA", "Active"], status: "active" }
-    ],
+    rows: [],
     statusOptions: ["active", "inactive"],
     formFields: [
-      { label: "Dealer name", placeholder: "EA-Transfleet Services-Kenya" },
-      { label: "Region", placeholder: "EA" },
+      { label: "Dealer name", placeholder: "Dealer name" },
+      { label: "Region", placeholder: "Region" },
       { label: "Notes", placeholder: "Coverage details" }
     ]
   },
-  "/manage/operations/organisation-settings": {
+  "/Control/operations/organisation-settings": {
     title: "Organisation settings",
-    pathLabel: "Manage / Operations / Organisation settings",
-    summary: [
-      { label: "Active orgs", value: 12 },
-      { label: "Regions", value: 5 },
-      { label: "Policies", value: 9 },
-      { label: "Last update", value: "Jan 20" }
-    ],
+    pathLabel: "Control / Operations / Organisation settings",
     columns: ["Setting", "Owner", "Updated", "Status", "Actions"],
-    rows: [
-      { id: "os-1", cells: ["Data retention", "Compliance", "Jan 20", "Active"], status: "active" },
-      { id: "os-2", cells: ["Driver check-in", "Operations", "Jan 11", "Active"], status: "active" },
-      { id: "os-3", cells: ["Night shift rules", "HR", "Dec 20", "Draft"], status: "draft" }
-    ],
+    rows: [],
     statusOptions: ["active", "draft"],
     formFields: [
-      { label: "Setting name", placeholder: "Data retention" },
-      { label: "Owner", placeholder: "Compliance" },
+      { label: "Setting name", placeholder: "Setting name" },
+      { label: "Owner", placeholder: "Owner" },
       { label: "Notes", placeholder: "Policy summary" }
     ]
   },
-  "/manage/operations/data-exclusion": {
+  "/Control/operations/data-exclusion": {
     title: "Data exclusion",
-    pathLabel: "Manage / Operations / Data exclusion",
-    summary: [
-      { label: "Rules", value: 6 },
-      { label: "Assets", value: 18 },
-      { label: "Pending", value: 2 },
-      { label: "Last sync", value: "Today" }
-    ],
+    pathLabel: "Control / Operations / Data exclusion",
     columns: ["Rule", "Scope", "Updated", "Status", "Actions"],
-    rows: [
-      { id: "de-1", cells: ["Maintenance blackout", "Workshop", "Today 08:10", "Active"], status: "active" },
-      { id: "de-2", cells: ["Camera downtime", "Video", "Jan 16", "Active"], status: "active" },
-      { id: "de-3", cells: ["Legacy units", "Fleet", "Jan 04", "Draft"], status: "draft" }
-    ],
+    rows: [],
     statusOptions: ["active", "draft"],
     formFields: [
-      { label: "Rule name", placeholder: "Maintenance blackout" },
-      { label: "Scope", placeholder: "Workshop" },
-      { label: "Effective dates", placeholder: "Jan 22 - Jan 28" }
+      { label: "Rule name", placeholder: "Rule name" },
+      { label: "Scope", placeholder: "Scope" },
+      { label: "Effective dates", placeholder: "Start - End" }
     ]
   },
-  "/manage/operations/release-management": {
-    title: "Release management",
-    pathLabel: "Manage / Operations / Release management",
-    summary: [
-      { label: "Upcoming", value: 2 },
-      { label: "In progress", value: 1 },
-      { label: "Released", value: 8 },
-      { label: "Rollback", value: 0 }
-    ],
+  "/Control/operations/release-Controlment": {
+    title: "Release Controlment",
+    pathLabel: "Control / Operations / Release Controlment",
     columns: ["Release", "Window", "Owner", "Status", "Actions"],
-    rows: [
-      { id: "rm-1", cells: ["v3.4.1", "Jan 24", "Platform", "Scheduled"], status: "scheduled" },
-      { id: "rm-2", cells: ["v3.4.0", "Jan 10", "Platform", "Completed"], status: "completed" },
-      { id: "rm-3", cells: ["v3.3.9", "Dec 18", "Platform", "Completed"], status: "completed" }
-    ],
+    rows: [],
     statusOptions: ["scheduled", "completed"],
     formFields: [
-      { label: "Release version", placeholder: "v3.4.2" },
-      { label: "Window", placeholder: "Feb 02" },
-      { label: "Owner", placeholder: "Platform" }
+      { label: "Release version", placeholder: "v1.0.0" },
+      { label: "Window", placeholder: "Release window" },
+      { label: "Owner", placeholder: "Owner" }
     ]
   },
-  "/manage/operations/organisation-goals": {
+  "/Control/operations/organisation-goals": {
     title: "Organisation goals",
-    pathLabel: "Manage / Operations / Organisation goals",
-    summary: [
-      { label: "Active goals", value: 6 },
-      { label: "On track", value: 4 },
-      { label: "At risk", value: 2 },
-      { label: "Review cycle", value: "Monthly" }
-    ],
+    pathLabel: "Control / Operations / Organisation goals",
     columns: ["Goal", "Progress", "Owner", "Status", "Actions"],
-    rows: [
-      { id: "og-1", cells: ["Reduce idle time", "68%", "Ops", "On track"], status: "on-track" },
-      { id: "og-2", cells: ["Improve on-time", "52%", "Dispatch", "At risk"], status: "at-risk" },
-      { id: "og-3", cells: ["Lower incidents", "79%", "Safety", "On track"], status: "on-track" }
-    ],
+    rows: [],
     statusOptions: ["on-track", "at-risk"],
     formFields: [
-      { label: "Goal name", placeholder: "Reduce idle time" },
-      { label: "Owner", placeholder: "Ops" },
-      { label: "Target", placeholder: "80%" }
+      { label: "Goal name", placeholder: "Goal name" },
+      { label: "Owner", placeholder: "Owner" },
+      { label: "Target", placeholder: "Target" }
     ]
   },
-  "/manage/operations/organisation-groups": {
+  "/Control/operations/organisation-groups": {
     title: "Organisations",
-    pathLabel: "Manage / Operations / Organisations",
-    summary: [
-      { label: "Groups", value: 14 },
-      { label: "Managers", value: 9 },
-      { label: "Assets", value: 224 },
-      { label: "Last updated", value: "Jan 21" }
-    ],
+    pathLabel: "Control / Operations / Organisations",
     columns: ["Organisation", "Database", "Manager", "Status", "Actions"],
-    rows: [
-      { id: "org-1", cells: ["Northern Ops", "Primary", "M. Apio", "Active"], status: "active" },
-      { id: "org-2", cells: ["Port Ops", "Analytics", "S. Kato", "Active"], status: "active" },
-      { id: "org-3", cells: ["New region", "Archive", "A. Ken", "Draft"], status: "draft" }
-    ],
+    rows: [],
     statusOptions: ["active", "draft"],
     formFields: [
-      { label: "Organisation name", placeholder: "Northern Ops" },
+      { label: "Organisation name", placeholder: "Organisation name" },
       { label: "Database" },
-      { label: "Manager", placeholder: "M. Apio" },
+      { label: "Manager", placeholder: "Manager" },
       { label: "Notes", placeholder: "Coverage details" }
     ]
   }
@@ -184,17 +174,74 @@ export default function OperationsAdmin() {
   const [formDraft, setFormDraft] = useState<Record<string, string>>({});
   const [modalMode, setModalMode] = useState<"create" | "edit" | "view">("create");
   const [editingRowId, setEditingRowId] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState("");
+  const [saving, setSaving] = useState(false);
+  const hierarchyRef = useRef<HierarchyRoot | null>(null);
+  const hierarchyLoadToken = useRef(0);
   const [rowsByPath, setRowsByPath] = useState<Record<string, AdminRow[]>>(() =>
     Object.fromEntries(Object.entries(pageConfigs).map(([pathKey, config]) => [pathKey, [...config.rows]]))
   );
 
+  const reloadHierarchyRows = async () => {
+    const token = ++hierarchyLoadToken.current;
+    try {
+      const hierarchy = await getHierarchy();
+      if (token !== hierarchyLoadToken.current) return;
+      hierarchyRef.current = hierarchy;
+      setRowsByPath((current) => ({
+        ...current,
+        "/Control/operations/dealer-administration": buildDealerRows(hierarchy),
+        "/Control/operations/database-administration": buildDatabaseRows(hierarchy),
+        "/Control/operations/organisation-groups": buildOrganisationRows(hierarchy)
+      }));
+    } catch {
+      if (token !== hierarchyLoadToken.current) return;
+      setRowsByPath((current) => ({
+        ...current,
+        "/Control/operations/dealer-administration": [],
+        "/Control/operations/database-administration": [],
+        "/Control/operations/organisation-groups": []
+      }));
+    }
+  };
+
+  useEffect(() => {
+    void reloadHierarchyRows();
+    const handleOrgChange = () => {
+      void reloadHierarchyRows();
+    };
+    window.addEventListener("vivi:orgchange", handleOrgChange);
+    return () => {
+      window.removeEventListener("vivi:orgchange", handleOrgChange);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!page || HIERARCHY_OPERATION_PATHS.has(location.pathname)) return;
+    let cancelled = false;
+    const storageBase = `control:operations:${page.title}`;
+    const applyRows = (rows: SharedAdminRow[] | null) => {
+      if (cancelled || !rows) return;
+      setRowsByPath((current) => ({ ...current, [location.pathname]: rows }));
+    };
+    void loadSharedAdminRows(storageBase).then(applyRows);
+    const handleOrgChange = () => {
+      void loadSharedAdminRows(storageBase).then(applyRows);
+    };
+    window.addEventListener("vivi:orgchange", handleOrgChange);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("vivi:orgchange", handleOrgChange);
+    };
+  }, [location.pathname, page]);
+
   const databaseNames = useMemo(() => {
-    const rows = rowsByPath["/manage/operations/database-administration"] ?? [];
+    const rows = rowsByPath["/Control/operations/database-administration"] ?? [];
     return rows.map((row) => row.cells[0]).filter(Boolean);
   }, [rowsByPath]);
 
   const dealerNames = useMemo(() => {
-    const rows = rowsByPath["/manage/operations/dealer-administration"] ?? [];
+    const rows = rowsByPath["/Control/operations/dealer-administration"] ?? [];
     return rows.map((row) => row.cells[0]).filter(Boolean);
   }, [rowsByPath]);
 
@@ -208,6 +255,17 @@ export default function OperationsAdmin() {
     });
   }, [location.pathname, page, rowsByPath, search, statusFilter]);
 
+  const getAdminRowSortValue = useCallback(
+    (row: AdminRow, key: string) => {
+      const columns = page?.columns ?? [];
+      const index = columns.indexOf(key);
+      if (index < 0) return "";
+      return row.cells[index] ?? "";
+    },
+    [page]
+  );
+  const adminRowSort = useColumnSort({ rows: filteredRows, getValue: getAdminRowSortValue });
+
   if (!page) {
     return <div className="page admin-page">Page not found.</div>;
   }
@@ -219,7 +277,7 @@ export default function OperationsAdmin() {
       const field = fields[index];
       if (field) return formDraft[field.label] ?? "";
       if (col.toLowerCase() === "status") return "Draft";
-      return "—";
+      return "";
     });
     const statusIndex = columns.findIndex((col) => col.toLowerCase() === "status");
     const statusValue = statusIndex >= 0 ? String(cells[statusIndex] ?? "draft").toLowerCase() : undefined;
@@ -236,6 +294,78 @@ export default function OperationsAdmin() {
       acc[field.label] = row.cells[index] ?? "";
       return acc;
     }, {});
+  };
+
+  const hasActiveFilters = search.trim().length > 0 || statusFilter !== "all";
+
+  const hierarchyMutationError = (result: { ok?: boolean; error?: string } | null, fallback: string) => {
+    if (result && result.ok !== false && !result.error) return "";
+    return String(result?.error ?? fallback);
+  };
+
+  const resolveParentDealerId = () => {
+    const active = String(window.localStorage.getItem("vivi.activeDealerId") ?? "").trim();
+    const dealers = hierarchyRef.current?.dealers ?? [];
+    if (active && dealers.some((dealer) => dealer.id === active)) return active;
+    return String(dealers[0]?.id ?? "").trim();
+  };
+
+  const resolveParentOrganisationId = () => {
+    const active = String(window.localStorage.getItem("vivi.activeOrgId") ?? "").trim();
+    const dealers = hierarchyRef.current?.dealers ?? [];
+    if (active && dealers.some((dealer) => (dealer.organisations ?? []).some((org) => org.id === active))) return active;
+    const dealerName = String(formDraft["Dealer"] ?? "").trim().toLowerCase();
+    const orgName = String(formDraft["Organisations"] ?? "").trim().toLowerCase();
+    for (const dealer of dealers) {
+      if (dealerName && String(dealer.name ?? "").trim().toLowerCase() !== dealerName) continue;
+      for (const org of dealer.organisations ?? []) {
+        if (!orgName || String(org.name ?? "").trim().toLowerCase() === orgName) return String(org.id ?? "").trim();
+      }
+    }
+    for (const dealer of dealers) {
+      const first = String(dealer.organisations?.[0]?.id ?? "").trim();
+      if (first) return first;
+    }
+    return "";
+  };
+
+  const persistHierarchyEdits = async () => {
+    if (location.pathname === "/Control/operations/dealer-administration") {
+      const name = String(formDraft["Dealer name"] ?? "").trim();
+      if (!name) return "Enter a dealer name.";
+      const result =
+        modalMode === "edit" && editingRowId
+          ? await renameHierarchyItem("dealer", editingRowId, name)
+          : await addHierarchyDealer(name);
+      return hierarchyMutationError(result, "Could not save the dealer.");
+    }
+    if (location.pathname === "/Control/operations/organisation-groups") {
+      const name = String(formDraft["Organisation name"] ?? "").trim();
+      if (!name) return "Enter an organisation name.";
+      if (modalMode === "edit" && editingRowId) {
+        return hierarchyMutationError(
+          await renameHierarchyItem("organisation", editingRowId, name),
+          "Could not save the organisation."
+        );
+      }
+      const dealerId = resolveParentDealerId();
+      if (!dealerId) return "Select a dealer before creating an organisation.";
+      return hierarchyMutationError(await addHierarchyOrganisation(dealerId, name), "Could not save the organisation.");
+    }
+    if (location.pathname === "/Control/operations/database-administration") {
+      const name = String(formDraft["Database Name"] ?? "").trim();
+      if (!name) return "Enter a database name.";
+      if (modalMode === "edit" && editingRowId) {
+        return hierarchyMutationError(
+          await renameHierarchyItem("database", editingRowId, name),
+          "Could not save the database."
+        );
+      }
+      const organisationId = resolveParentOrganisationId();
+      if (!organisationId) return "Select an organisation before creating a database.";
+      return hierarchyMutationError(await addHierarchyDatabase(organisationId, name), "Could not save the database.");
+    }
+    return "";
   };
 
   return (
@@ -268,6 +398,7 @@ export default function OperationsAdmin() {
                 return acc;
               }, {});
               setFormDraft(initial);
+              setSaveError("");
               setModalMode("create");
               setEditingRowId(null);
               setModalOpen(true);
@@ -277,15 +408,6 @@ export default function OperationsAdmin() {
           </button>
         </div>
       </div>
-
-      <section className="admin-summary">
-        {page.summary.map((card) => (
-          <div key={card.label} className="admin-summary-card">
-            <div className="admin-summary-label">{card.label}</div>
-            <div className="admin-summary-value">{card.value}</div>
-          </div>
-        ))}
-      </section>
 
       <section className="admin-panel">
         <div className="admin-panel-header">
@@ -319,14 +441,20 @@ export default function OperationsAdmin() {
 
         <div className="admin-table" style={{ "--admin-cols": page.columns.length } as React.CSSProperties}>
           <div className="admin-row admin-row-head">
-            {page.columns.map((col) => (
-              <span key={col}>{col}</span>
-            ))}
+            {page.columns.map((col) =>
+              col === "Actions" ? (
+                <span key={col}>{col}</span>
+              ) : (
+                <SortableColumnHeader key={col} as="span" label={col} {...adminRowSort.getHeaderProps(col)} />
+              )
+            )}
           </div>
-          {filteredRows.length === 0 ? (
-            <div className="admin-empty">No rows match your filters.</div>
+          {adminRowSort.sortedRows.length === 0 ? (
+            <div className="admin-empty">
+              {hasActiveFilters ? "No rows match your filters." : "No records yet."}
+            </div>
           ) : (
-            filteredRows.map((row) => (
+            adminRowSort.sortedRows.map((row) => (
               <div key={row.id} className="admin-row">
                 {page.columns.map((col, index) => {
                   if (col === "Actions") {
@@ -467,39 +595,57 @@ export default function OperationsAdmin() {
                 </label>
               ))}
             </div>
+            {saveError ? <div className="admin-modal-sub">{saveError}</div> : null}
             <div className="admin-modal-actions">
-              <button type="button" className="admin-btn ghost" onClick={() => setModalOpen(false)}>
+              <button type="button" className="admin-btn ghost" onClick={() => setModalOpen(false)} disabled={saving}>
                 {modalMode === "view" ? "Close" : "Cancel"}
               </button>
               <button
                 type="button"
                 className="admin-btn"
+                disabled={saving}
                 onClick={() => {
                   if (modalMode === "view") {
                     setModalOpen(false);
                     return;
                   }
-                  void saveToApi(`manage:operations:${page.title}`, {
-                    title: page.title,
-                    values: formDraft,
-                    updatedAt: new Date().toISOString()
-                  });
+                  if (HIERARCHY_OPERATION_PATHS.has(location.pathname)) {
+                    setSaving(true);
+                    setSaveError("");
+                    void persistHierarchyEdits()
+                      .then(async (error) => {
+                        if (error) {
+                          setSaveError(error);
+                          return;
+                        }
+                        await reloadHierarchyRows();
+                        window.dispatchEvent(new Event("vivi:orgchange"));
+                        setModalOpen(false);
+                      })
+                      .catch(() => {
+                        setSaveError("Could not save. Check the connection and try again.");
+                      })
+                      .finally(() => setSaving(false));
+                    return;
+                  }
                   const nextRow = buildRowFromDraft();
                   setRowsByPath((current) => {
                     const rows = current[location.pathname] ?? [];
-                    if (modalMode === "edit" && editingRowId) {
-                      const existing = rows.find((r) => r.id === editingRowId);
-                      const updated = rows.map((r) =>
-                        r.id === editingRowId ? { ...nextRow, id: editingRowId, status: existing?.status } : r
-                      );
-                      return { ...current, [location.pathname]: updated };
-                    }
-                    return { ...current, [location.pathname]: [...rows, nextRow] };
+                    const next =
+                      modalMode === "edit" && editingRowId
+                        ? rows.map((row) => {
+                            if (row.id !== editingRowId) return row;
+                            const existing = rows.find((item) => item.id === editingRowId);
+                            return { ...nextRow, id: editingRowId, status: existing?.status };
+                          })
+                        : [...rows, nextRow];
+                    void saveSharedAdminRows(`control:operations:${page.title}`, next);
+                    return { ...current, [location.pathname]: next };
                   });
                   setModalOpen(false);
                 }}
               >
-                {modalMode === "view" ? "Close" : "Save"}
+                {modalMode === "view" ? "Close" : saving ? "Saving…" : "Save"}
               </button>
             </div>
           </div>

@@ -1,0 +1,661 @@
+/* Home ("/") fleet dashboard. Defaults to light; follows html[data-theme]
+   so dark mode is opt-in per account (Personal Settings / theme toggle). */
+
+.viv-dash {
+  --viv-bg: #f4f7fb;
+  --viv-panel: #ffffff;
+  --viv-panel-2: #eef3f8;
+  --viv-border: #d7e0ea;
+  --viv-text: #0f172a;
+  --viv-muted: #64748b;
+  --viv-accent: #16a34a;
+  --viv-accent-soft: rgba(22, 163, 74, 0.12);
+  --viv-amber: #d97706;
+  --viv-blue: #0284c7;
+  --viv-red: #dc2626;
+  --viv-slate: #64748b;
+
+  background: var(--viv-bg);
+  color: var(--viv-text);
+  min-height: 100%;
+  padding: 20px 22px 36px;
+  box-sizing: border-box;
+}
+
+[data-theme="dark"] .viv-dash {
+  --viv-bg: #0c1320;
+  --viv-panel: #121c2b;
+  --viv-panel-2: #0f1826;
+  --viv-border: #1f2c3d;
+  --viv-text: #e6edf6;
+  --viv-muted: #8aa0b8;
+  --viv-accent: #22c55e;
+  --viv-accent-soft: rgba(34, 197, 94, 0.16);
+  --viv-amber: #f59e0b;
+  --viv-blue: #38bdf8;
+  --viv-red: #ef4444;
+  --viv-slate: #64748b;
+}
+
+.viv-dash * {
+  box-sizing: border-box;
+}
+
+/* Header */
+.viv-dash-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  align-items: flex-start;
+  justify-content: space-between;
+  margin-bottom: 18px;
+}
+
+.viv-dash-title h1 {
+  margin: 0;
+  font-size: 1.5rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.viv-dash-sub {
+  margin-top: 4px;
+  color: var(--viv-muted);
+  font-size: 0.85rem;
+}
+
+.viv-dash-scope {
+  color: var(--viv-accent);
+  font-weight: 600;
+}
+
+.viv-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.viv-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--viv-panel);
+  border: 1px solid var(--viv-border);
+  color: var(--viv-text);
+  border-radius: 9px;
+  padding: 7px 12px;
+  font-size: 0.8rem;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+  text-decoration: none;
+}
+
+.viv-chip:hover {
+  border-color: var(--viv-accent);
+  background: var(--viv-accent-soft);
+}
+
+.viv-chip.viv-chip-accent {
+  background: var(--viv-accent);
+  color: #04210f;
+  border-color: var(--viv-accent);
+  font-weight: 600;
+}
+
+.viv-date-preset {
+  background: var(--viv-panel);
+  border: 1px solid var(--viv-border);
+  color: var(--viv-text);
+  border-radius: 9px;
+  padding: 7px 10px;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.viv-date-preset:focus {
+  outline: 2px solid var(--viv-accent);
+  outline-offset: 1px;
+}
+
+.viv-date-range {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--viv-panel);
+  border: 1px solid var(--viv-border);
+  color: var(--viv-text);
+  border-radius: 9px;
+  padding: 7px 12px;
+  font-size: 0.8rem;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.viv-date-range:hover {
+  border-color: var(--viv-accent);
+  background: var(--viv-accent-soft);
+}
+
+.viv-date-sep {
+  color: var(--viv-muted);
+  font-size: 0.85rem;
+  user-select: none;
+}
+
+/* Section label */
+.viv-section {
+  margin: 22px 0 12px;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--viv-text);
+}
+
+/* KPI strip */
+.viv-kpis {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 14px;
+}
+
+@media (max-width: 768px) {
+  .viv-kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+@media (max-width: 720px) {
+  .viv-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+.viv-kpi {
+  background: var(--viv-panel);
+  border: 1px solid var(--viv-border);
+  border-radius: 14px;
+  padding: 14px 16px;
+}
+
+.viv-kpi-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--viv-muted);
+  font-size: 0.78rem;
+  margin-bottom: 10px;
+}
+
+.viv-kpi-icon {
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  display: grid;
+  place-items: center;
+  background: var(--viv-accent-soft);
+  color: var(--viv-accent);
+}
+
+.viv-kpi-icon svg { width: 17px; height: 17px; }
+
+.viv-kpi-value {
+  font-size: 1.55rem;
+  font-weight: 700;
+  line-height: 1.1;
+}
+
+.viv-kpi-value .viv-unit {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--viv-muted);
+  margin-left: 3px;
+}
+
+.viv-kpi-foot {
+  margin-top: 4px;
+  font-size: 0.74rem;
+  color: var(--viv-muted);
+}
+
+/* Panels */
+.viv-panel {
+  background: var(--viv-panel);
+  border: 1px solid var(--viv-border);
+  border-radius: 14px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.viv-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 14px;
+}
+
+.viv-panel-head h3 {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.viv-link {
+  color: var(--viv-accent);
+  font-size: 0.78rem;
+  text-decoration: none;
+  cursor: pointer;
+  background: none;
+  border: none;
+  padding: 0;
+}
+
+.viv-link:hover { text-decoration: underline; }
+
+/* Grid rows */
+.viv-grid {
+  display: grid;
+  gap: 14px;
+}
+
+.viv-grid-charts {
+  grid-template-columns: 1.1fr 1.1fr 1.1fr 1fr 1fr;
+}
+
+.viv-grid-mid {
+  grid-template-columns: 1.6fr 1fr 1fr;
+}
+
+.viv-grid-stats {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+@media (max-width: 768px) {
+  .viv-grid-charts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .viv-grid-mid { grid-template-columns: 1fr; }
+  .viv-grid-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 720px) {
+  .viv-grid-charts { grid-template-columns: 1fr; }
+  .viv-grid-stats { grid-template-columns: 1fr; }
+}
+
+/* Bar chart */
+.viv-bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  height: 150px;
+  padding-top: 6px;
+}
+
+.viv-bar-col {
+  flex: 1 1 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.viv-bar-track {
+  width: 100%;
+  height: 124px;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+}
+
+.viv-bar-fill {
+  width: 60%;
+  max-width: 26px;
+  min-height: 3px;
+  border-radius: 5px 5px 0 0;
+  background: linear-gradient(180deg, var(--viv-accent), #15803d);
+  transition: height 0.3s ease;
+}
+
+.viv-bar-fill.viv-bar-amber {
+  background: linear-gradient(180deg, #fbbf24, #b45309);
+}
+
+.viv-bar-label {
+  font-size: 0.66rem;
+  color: var(--viv-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
+.viv-chart-peak {
+  font-size: 0.74rem;
+  color: var(--viv-muted);
+  margin-bottom: 2px;
+}
+.viv-chart-peak b { color: var(--viv-text); }
+
+/* Area / utilization sparkline */
+.viv-area {
+  width: 100%;
+  height: 150px;
+}
+
+/* Line chart with connecting dots */
+.viv-linechart {
+  position: relative;
+  width: 100%;
+  height: 132px;
+}
+
+.viv-linechart-svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.viv-line-dot {
+  position: absolute;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--viv-panel, #0f1729);
+  border: 2px solid var(--viv-accent);
+  transform: translate(-50%, -50%);
+  box-shadow: 0 0 0 2px rgba(15, 23, 42, 0.55);
+  pointer-events: auto;
+}
+
+.viv-line-labels {
+  display: flex;
+  justify-content: space-between;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.viv-line-labels span {
+  flex: 1 1 0;
+  text-align: center;
+  font-size: 0.66rem;
+  color: var(--viv-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Lists (top drivers / routes / maintenance) */
+.viv-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.viv-list-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 0.85rem;
+}
+
+.viv-rank {
+  width: 22px;
+  height: 22px;
+  border-radius: 7px;
+  background: var(--viv-accent-soft);
+  color: var(--viv-accent);
+  display: grid;
+  place-items: center;
+  font-size: 0.74rem;
+  font-weight: 700;
+  flex: 0 0 auto;
+}
+
+.viv-list-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.viv-list-name {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.viv-list-sub {
+  color: var(--viv-muted);
+  font-size: 0.72rem;
+}
+
+.viv-list-val {
+  font-weight: 600;
+  color: var(--viv-text);
+  flex: 0 0 auto;
+}
+
+.viv-progress {
+  height: 5px;
+  border-radius: 4px;
+  background: var(--viv-border);
+  margin-top: 5px;
+  overflow: hidden;
+}
+
+.viv-progress > span {
+  display: block;
+  height: 100%;
+  border-radius: 4px;
+  background: var(--viv-accent);
+}
+
+/* Donut */
+.viv-donut-wrap {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  flex-wrap: wrap;
+}
+
+.viv-donut {
+  width: 132px;
+  height: 132px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+}
+
+.viv-donut-hole {
+  width: 92px;
+  height: 92px;
+  border-radius: 50%;
+  background: var(--viv-panel);
+  display: grid;
+  place-items: center;
+  text-align: center;
+}
+
+.viv-donut-hole b {
+  font-size: 1.5rem;
+  display: block;
+  line-height: 1;
+}
+
+.viv-donut-hole span {
+  font-size: 0.7rem;
+  color: var(--viv-muted);
+}
+
+.viv-legend {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 1;
+  min-width: 130px;
+}
+
+.viv-legend-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.82rem;
+}
+
+.viv-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+}
+
+.viv-legend-val {
+  margin-left: auto;
+  color: var(--viv-muted);
+}
+
+/* Live map */
+.viv-map {
+  height: 230px;
+  width: 100%;
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--viv-panel-2);
+}
+
+.viv-map .leaflet-container {
+  height: 100%;
+  width: 100%;
+  background: #0b1220;
+}
+
+.viv-map-empty {
+  height: 230px;
+  display: grid;
+  place-items: center;
+  color: var(--viv-muted);
+  font-size: 0.85rem;
+  border-radius: 10px;
+  background: var(--viv-panel-2);
+  border: 1px dashed var(--viv-border);
+}
+
+/* Standing time analysis */
+.viv-standing {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-height: 230px;
+}
+
+.viv-standing-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+@media (max-width: 720px) {
+  .viv-standing-summary { grid-template-columns: 1fr; }
+}
+
+.viv-standing-stat {
+  background: var(--viv-panel-2);
+  border: 1px solid var(--viv-border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.viv-standing-label {
+  font-size: 0.72rem;
+  color: var(--viv-muted);
+}
+
+.viv-standing-stat strong {
+  font-size: 1rem;
+  font-weight: 700;
+}
+
+.viv-standing-empty {
+  min-height: 120px;
+  height: auto;
+}
+
+.viv-standing-list {
+  margin-top: 4px;
+  padding-top: 12px;
+  border-top: 1px solid var(--viv-border);
+}
+
+/* Stat cards with sparkline */
+.viv-stat-top {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.viv-stat-value {
+  font-size: 1.7rem;
+  font-weight: 700;
+}
+
+.viv-stat-label {
+  color: var(--viv-muted);
+  font-size: 0.78rem;
+  margin-bottom: 10px;
+}
+
+.viv-spark-wrap {
+  position: relative;
+  width: 100%;
+  height: 46px;
+}
+
+.viv-spark {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.viv-spark-dot {
+  position: absolute;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--viv-panel, #0f1729);
+  border: 1.5px solid var(--viv-accent);
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+/* States */
+.viv-empty {
+  color: var(--viv-muted);
+  font-size: 0.82rem;
+  padding: 8px 0;
+}
+
+.viv-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--viv-panel);
+  border: 1px solid var(--viv-border);
+  border-radius: 12px;
+  padding: 12px 16px;
+  color: var(--viv-muted);
+  font-size: 0.85rem;
+  margin-bottom: 16px;
+}
+
+.viv-spin {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px solid var(--viv-border);
+  border-top-color: var(--viv-accent);
+  animation: viv-spin 0.8s linear infinite;
+  flex: 0 0 auto;
+}
+
+@keyframes viv-spin {
+  to { transform: rotate(360deg); }
+}

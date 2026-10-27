@@ -1,0 +1,87 @@
+syntax = "proto3";
+
+package vivi.telematics.telemetry.v1;
+
+message GeoPoint {
+  double lat = 1;
+  double lng = 2;
+}
+
+message AssetIdentity {
+  string tenant_id = 1;
+  string asset_id = 2;
+  string imei = 3;
+  string registration = 4;
+  string site = 5;
+  string make = 6;
+  string model = 7;
+  string config_group = 8;
+}
+
+message TelemetryLatest {
+  string occurred_at = 1;
+  GeoPoint point = 2;
+  double speed_kph = 3;
+  double heading = 4;
+  int32 satellites = 5;
+  bool ignition = 6;
+  double power_voltage = 7;
+  string movement = 8;
+  string location_name = 9;
+}
+
+message TelemetryEvent {
+  string event_id = 1;
+  string asset_id = 2;
+  string imei = 3;
+  string created_at = 4;
+  string payload_json = 5;
+}
+
+message TelemetryArchive {
+  string event_id = 1;
+  string asset_id = 2;
+  string imei = 3;
+  string created_at = 4;
+  string storage = 5;
+  string storage_key = 6;
+  string content_type = 7;
+  int64 size_bytes = 8;
+  string payload_json = 9;
+}
+
+message TelemetryLookupRequest {
+  string tenant_id = 1;
+  string imei = 2;
+  bool refresh_live = 3;
+}
+
+message TelemetryLookupResponse {
+  string tenant_id = 1;
+  string imei = 2;
+  repeated AssetIdentity assets = 3;
+  repeated TelemetryEvent events = 4;
+  TelemetryLatest latest = 5;
+}
+
+message TelemetryHistoryRequest {
+  string tenant_id = 1;
+  string imei = 2;
+  string asset_id = 3;
+  string from = 4;
+  string to = 5;
+  int32 limit = 6;
+  bool include_archive = 7;
+  bool include_archive_payload = 8;
+}
+
+message TelemetryHistoryResponse {
+  string tenant_id = 1;
+  repeated TelemetryEvent events = 2;
+  repeated TelemetryArchive archives = 3;
+}
+
+service TelemetryQueryService {
+  rpc LookupTelemetry(TelemetryLookupRequest) returns (TelemetryLookupResponse);
+  rpc ReadTelemetryHistory(TelemetryHistoryRequest) returns (TelemetryHistoryResponse);
+}

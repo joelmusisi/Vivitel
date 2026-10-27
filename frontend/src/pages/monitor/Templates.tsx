@@ -1,4 +1,6 @@
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
+import SortableColumnHeader from "../../components/SortableColumnHeader";
+import { useColumnSort } from "../../hooks/useColumnSort";
 import { useNavigate } from "react-router-dom";
 import "../../index.css";
 
@@ -12,59 +14,11 @@ type TemplateRow = {
   status: "active" | "draft" | "archived";
 };
 
-const templates: TemplateRow[] = [
-  {
-    id: "tpl-1",
-    name: "Incident acknowledgement",
-    category: "Safety",
-    channel: "SMS",
-    updated: "08 Jan 2026",
-    owner: "Ops Comms",
-    status: "active"
-  },
-  {
-    id: "tpl-2",
-    name: "Shift handover summary",
-    category: "Operations",
-    channel: "Email",
-    updated: "18 Dec 2025",
-    owner: "Dispatch",
-    status: "draft"
-  },
-  {
-    id: "tpl-3",
-    name: "Route delay update",
-    category: "Logistics",
-    channel: "In-app",
-    updated: "12 Jan 2026",
-    owner: "Control",
-    status: "active"
-  },
-  {
-    id: "tpl-4",
-    name: "Maintenance completion",
-    category: "Workshop",
-    channel: "Email",
-    updated: "05 Jan 2026",
-    owner: "Workshop",
-    status: "archived"
-  }
-];
-
 export default function Templates() {
   const navigate = useNavigate();
   const [search, setSearch] = useState("");
   const [channelFilter, setChannelFilter] = useState("all");
-
-  const summary = useMemo(
-    () => [
-      { label: "Active", value: templates.filter((row) => row.status === "active").length },
-      { label: "Drafts", value: templates.filter((row) => row.status === "draft").length },
-      { label: "Archived", value: templates.filter((row) => row.status === "archived").length },
-      { label: "Total templates", value: templates.length }
-    ],
-    []
-  );
+  const templates: TemplateRow[] = [];
 
   const filtered = useMemo(() => {
     return templates.filter((row) => {
@@ -72,14 +26,27 @@ export default function Templates() {
       const matchesChannel = channelFilter === "all" || row.channel === channelFilter;
       return matchesSearch && matchesChannel;
     });
-  }, [search, channelFilter]);
+  }, [templates, search, channelFilter]);
+
+  const hasActiveFilters = search.trim().length > 0 || channelFilter !== "all";
+
+  const getTemplateSortValue = useCallback((row: TemplateRow, key: string) => {
+    if (key === "template") return row.name;
+    if (key === "category") return row.category;
+    if (key === "channel") return row.channel;
+    if (key === "owner") return row.owner;
+    if (key === "updated") return row.updated;
+    if (key === "status") return row.status;
+    return "";
+  }, []);
+  const templateSort = useColumnSort({ rows: filtered, getValue: getTemplateSortValue });
 
   return (
     <div className="page templates-page">
       <div className="templates-topbar">
         <div>
           <div className="templates-title">Templates</div>
-          <div className="templates-path">Monitor / Task management / Templates</div>
+          <div className="templates-path">Track / Task Controlment / Templates</div>
         </div>
         <div className="templates-actions">
           <button
@@ -87,7 +54,7 @@ export default function Templates() {
             className="templates-btn ghost"
             onClick={() =>
               navigate(
-                "/measure/insights/reports?category=List%20Reports&report=Job%20Detail%20Report"
+                "/Analyze/insights/reports?category=List%20Reports&report=Job%20Detail%20Report"
               )
             }
           >
@@ -107,15 +74,6 @@ export default function Templates() {
           </button>
         </div>
       </div>
-
-      <section className="templates-summary">
-        {summary.map((card) => (
-          <div key={card.label} className="templates-summary-card">
-            <div className="templates-summary-label">{card.label}</div>
-            <div className="templates-summary-value">{card.value}</div>
-          </div>
-        ))}
-      </section>
 
       <section className="templates-panel">
         <div className="templates-panel-header">
@@ -144,18 +102,20 @@ export default function Templates() {
         </div>
         <div className="templates-table">
           <div className="templates-row templates-row-head">
-            <span>Template</span>
-            <span>Category</span>
-            <span>Channel</span>
-            <span>Owner</span>
-            <span>Updated</span>
-            <span>Status</span>
+            <SortableColumnHeader as="span" label="Template" {...templateSort.getHeaderProps("template")} />
+            <SortableColumnHeader as="span" label="Category" {...templateSort.getHeaderProps("category")} />
+            <SortableColumnHeader as="span" label="Channel" {...templateSort.getHeaderProps("channel")} />
+            <SortableColumnHeader as="span" label="Owner" {...templateSort.getHeaderProps("owner")} />
+            <SortableColumnHeader as="span" label="Updated" {...templateSort.getHeaderProps("updated")} />
+            <SortableColumnHeader as="span" label="Status" {...templateSort.getHeaderProps("status")} />
             <span>Actions</span>
           </div>
-          {filtered.length === 0 ? (
-            <div className="templates-empty">No templates match your filters.</div>
+          {templateSort.sortedRows.length === 0 ? (
+            <div className="templates-empty">
+              {hasActiveFilters ? "No templates match your filters." : "No records yet."}
+            </div>
           ) : (
-            filtered.map((row) => (
+            templateSort.sortedRows.map((row) => (
               <div key={row.id} className="templates-row">
                 <span className="templates-title-cell">{row.name}</span>
                 <span>{row.category}</span>

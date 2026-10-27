@@ -1,17 +1,194 @@
-name = "vivi-telematic-api"
+# Deploy (`wrangler deploy`) updates Worker code only — not D1/KV contents.
+# Never run destructive `wrangler d1` / KV delete against production. See ../DEPLOYMENT_DATA_SAFETY.md
+
+name = "vivi-telematics-api"
 main = "src/worker.ts"
 compatibility_date = "2024-12-03"
 tsconfig = "tsconfig.json"
-routes = ["https://api.vivitelematics.ca/*"]
+workers_dev = true
+preview_urls = true
+
+# Production custom domain + same-origin API routes on each regional app host (avoids CORS).
+# US keeps Traccar. ZA is the 808 server. Other regions are independent login hosts.
+routes = [
+  { pattern = "api.vivitelematics.ca/*", zone_name = "vivitelematics.ca" },
+  { pattern = "us.vivitelematics.ca/api/*", zone_name = "vivitelematics.ca" },
+  { pattern = "us.vivitelematics.ca/auth/*", zone_name = "vivitelematics.ca" },
+  { pattern = "us.vivitelematics.ca/rbac/*", zone_name = "vivitelematics.ca" },
+  { pattern = "us.vivitelematics.ca/hos/*", zone_name = "vivitelematics.ca" },
+  { pattern = "us.vivitelematics.ca/d1/*", zone_name = "vivitelematics.ca" },
+  { pattern = "us.vivitelematics.ca/kv/*", zone_name = "vivitelematics.ca" },
+  { pattern = "us.vivitelematics.ca/b2/*", zone_name = "vivitelematics.ca" },
+  { pattern = "us.vivitelematics.ca/libraries/*", zone_name = "vivitelematics.ca" },
+  { pattern = "us.vivitelematics.ca/config/*", zone_name = "vivitelematics.ca" },
+  { pattern = "us.vivitelematics.ca/telemetry/*", zone_name = "vivitelematics.ca" },
+  { pattern = "us.vivitelematics.ca/ingest/*", zone_name = "vivitelematics.ca" },
+  { pattern = "us.vivitelematics.ca/support/*", zone_name = "vivitelematics.ca" },
+  { pattern = "us.vivitelematics.ca/stream/*", zone_name = "vivitelematics.ca" },
+  { pattern = "us.vivitelematics.ca/ws", zone_name = "vivitelematics.ca" },
+  { pattern = "us.vivitelematics.ca/ws/*", zone_name = "vivitelematics.ca" },
+  { pattern = "us.vivitelematics.ca/device/*", zone_name = "vivitelematics.ca" },
+  { pattern = "us.vivitelematics.ca/downloads/*", zone_name = "vivitelematics.ca" },
+  { pattern = "us.vivitelematics.ca/share/*", zone_name = "vivitelematics.ca" },
+  { pattern = "us.vivitelematics.ca/camera/*", zone_name = "vivitelematics.ca" },
+  { pattern = "us.vivitelematics.ca/health*", zone_name = "vivitelematics.ca" },
+  { pattern = "us.vivitelematics.ca/pat/*", zone_name = "vivitelematics.ca" },
+  { pattern = "us.vivitelematics.ca/admin/*", zone_name = "vivitelematics.ca" },
+  { pattern = "us.vivitelematics.ca/echo", zone_name = "vivitelematics.ca" },
+  { pattern = "za.vivitelematics.ca/api/*", zone_name = "vivitelematics.ca" },
+  { pattern = "za.vivitelematics.ca/auth/*", zone_name = "vivitelematics.ca" },
+  { pattern = "za.vivitelematics.ca/rbac/*", zone_name = "vivitelematics.ca" },
+  { pattern = "za.vivitelematics.ca/hos/*", zone_name = "vivitelematics.ca" },
+  { pattern = "za.vivitelematics.ca/d1/*", zone_name = "vivitelematics.ca" },
+  { pattern = "za.vivitelematics.ca/kv/*", zone_name = "vivitelematics.ca" },
+  { pattern = "za.vivitelematics.ca/b2/*", zone_name = "vivitelematics.ca" },
+  { pattern = "za.vivitelematics.ca/libraries/*", zone_name = "vivitelematics.ca" },
+  { pattern = "za.vivitelematics.ca/config/*", zone_name = "vivitelematics.ca" },
+  { pattern = "za.vivitelematics.ca/telemetry/*", zone_name = "vivitelematics.ca" },
+  { pattern = "za.vivitelematics.ca/ingest/*", zone_name = "vivitelematics.ca" },
+  { pattern = "za.vivitelematics.ca/support/*", zone_name = "vivitelematics.ca" },
+  { pattern = "za.vivitelematics.ca/stream/*", zone_name = "vivitelematics.ca" },
+  { pattern = "za.vivitelematics.ca/ws", zone_name = "vivitelematics.ca" },
+  { pattern = "za.vivitelematics.ca/ws/*", zone_name = "vivitelematics.ca" },
+  { pattern = "za.vivitelematics.ca/device/*", zone_name = "vivitelematics.ca" },
+  { pattern = "za.vivitelematics.ca/downloads/*", zone_name = "vivitelematics.ca" },
+  { pattern = "za.vivitelematics.ca/share/*", zone_name = "vivitelematics.ca" },
+  { pattern = "za.vivitelematics.ca/camera/*", zone_name = "vivitelematics.ca" },
+  { pattern = "za.vivitelematics.ca/health*", zone_name = "vivitelematics.ca" },
+  { pattern = "za.vivitelematics.ca/pat/*", zone_name = "vivitelematics.ca" },
+  { pattern = "za.vivitelematics.ca/admin/*", zone_name = "vivitelematics.ca" },
+  { pattern = "za.vivitelematics.ca/echo", zone_name = "vivitelematics.ca" },
+  { pattern = "za.vivitelematics.ca/cmsv6/*", zone_name = "vivitelematics.ca" },
+  { pattern = "za.vivitelematics.ca/intercom/*", zone_name = "vivitelematics.ca" },
+  { pattern = "ent.vivitelematics.ca/api/*", zone_name = "vivitelematics.ca" },
+  { pattern = "ent.vivitelematics.ca/auth/*", zone_name = "vivitelematics.ca" },
+  { pattern = "ent.vivitelematics.ca/rbac/*", zone_name = "vivitelematics.ca" },
+  { pattern = "ent.vivitelematics.ca/hos/*", zone_name = "vivitelematics.ca" },
+  { pattern = "ent.vivitelematics.ca/d1/*", zone_name = "vivitelematics.ca" },
+  { pattern = "ent.vivitelematics.ca/kv/*", zone_name = "vivitelematics.ca" },
+  { pattern = "ent.vivitelematics.ca/b2/*", zone_name = "vivitelematics.ca" },
+  { pattern = "ent.vivitelematics.ca/libraries/*", zone_name = "vivitelematics.ca" },
+  { pattern = "ent.vivitelematics.ca/config/*", zone_name = "vivitelematics.ca" },
+  { pattern = "ent.vivitelematics.ca/telemetry/*", zone_name = "vivitelematics.ca" },
+  { pattern = "ent.vivitelematics.ca/ingest/*", zone_name = "vivitelematics.ca" },
+  { pattern = "ent.vivitelematics.ca/support/*", zone_name = "vivitelematics.ca" },
+  { pattern = "ent.vivitelematics.ca/stream/*", zone_name = "vivitelematics.ca" },
+  { pattern = "ent.vivitelematics.ca/ws", zone_name = "vivitelematics.ca" },
+  { pattern = "ent.vivitelematics.ca/ws/*", zone_name = "vivitelematics.ca" },
+  { pattern = "ent.vivitelematics.ca/device/*", zone_name = "vivitelematics.ca" },
+  { pattern = "ent.vivitelematics.ca/downloads/*", zone_name = "vivitelematics.ca" },
+  { pattern = "ent.vivitelematics.ca/share/*", zone_name = "vivitelematics.ca" },
+  { pattern = "ent.vivitelematics.ca/camera/*", zone_name = "vivitelematics.ca" },
+  { pattern = "ent.vivitelematics.ca/health*", zone_name = "vivitelematics.ca" },
+  { pattern = "ent.vivitelematics.ca/pat/*", zone_name = "vivitelematics.ca" },
+  { pattern = "ent.vivitelematics.ca/admin/*", zone_name = "vivitelematics.ca" },
+  { pattern = "ent.vivitelematics.ca/echo", zone_name = "vivitelematics.ca" },
+  { pattern = "ae.vivitelematics.ca/api/*", zone_name = "vivitelematics.ca" },
+  { pattern = "ae.vivitelematics.ca/auth/*", zone_name = "vivitelematics.ca" },
+  { pattern = "ae.vivitelematics.ca/rbac/*", zone_name = "vivitelematics.ca" },
+  { pattern = "ae.vivitelematics.ca/hos/*", zone_name = "vivitelematics.ca" },
+  { pattern = "ae.vivitelematics.ca/d1/*", zone_name = "vivitelematics.ca" },
+  { pattern = "ae.vivitelematics.ca/kv/*", zone_name = "vivitelematics.ca" },
+  { pattern = "ae.vivitelematics.ca/b2/*", zone_name = "vivitelematics.ca" },
+  { pattern = "ae.vivitelematics.ca/libraries/*", zone_name = "vivitelematics.ca" },
+  { pattern = "ae.vivitelematics.ca/config/*", zone_name = "vivitelematics.ca" },
+  { pattern = "ae.vivitelematics.ca/telemetry/*", zone_name = "vivitelematics.ca" },
+  { pattern = "ae.vivitelematics.ca/ingest/*", zone_name = "vivitelematics.ca" },
+  { pattern = "ae.vivitelematics.ca/support/*", zone_name = "vivitelematics.ca" },
+  { pattern = "ae.vivitelematics.ca/stream/*", zone_name = "vivitelematics.ca" },
+  { pattern = "ae.vivitelematics.ca/ws", zone_name = "vivitelematics.ca" },
+  { pattern = "ae.vivitelematics.ca/ws/*", zone_name = "vivitelematics.ca" },
+  { pattern = "ae.vivitelematics.ca/device/*", zone_name = "vivitelematics.ca" },
+  { pattern = "ae.vivitelematics.ca/downloads/*", zone_name = "vivitelematics.ca" },
+  { pattern = "ae.vivitelematics.ca/share/*", zone_name = "vivitelematics.ca" },
+  { pattern = "ae.vivitelematics.ca/camera/*", zone_name = "vivitelematics.ca" },
+  { pattern = "ae.vivitelematics.ca/health*", zone_name = "vivitelematics.ca" },
+  { pattern = "ae.vivitelematics.ca/pat/*", zone_name = "vivitelematics.ca" },
+  { pattern = "ae.vivitelematics.ca/admin/*", zone_name = "vivitelematics.ca" },
+  { pattern = "ae.vivitelematics.ca/echo", zone_name = "vivitelematics.ca" },
+  { pattern = "uk.vivitelematics.ca/api/*", zone_name = "vivitelematics.ca" },
+  { pattern = "uk.vivitelematics.ca/auth/*", zone_name = "vivitelematics.ca" },
+  { pattern = "uk.vivitelematics.ca/rbac/*", zone_name = "vivitelematics.ca" },
+  { pattern = "uk.vivitelematics.ca/hos/*", zone_name = "vivitelematics.ca" },
+  { pattern = "uk.vivitelematics.ca/d1/*", zone_name = "vivitelematics.ca" },
+  { pattern = "uk.vivitelematics.ca/kv/*", zone_name = "vivitelematics.ca" },
+  { pattern = "uk.vivitelematics.ca/b2/*", zone_name = "vivitelematics.ca" },
+  { pattern = "uk.vivitelematics.ca/libraries/*", zone_name = "vivitelematics.ca" },
+  { pattern = "uk.vivitelematics.ca/config/*", zone_name = "vivitelematics.ca" },
+  { pattern = "uk.vivitelematics.ca/telemetry/*", zone_name = "vivitelematics.ca" },
+  { pattern = "uk.vivitelematics.ca/ingest/*", zone_name = "vivitelematics.ca" },
+  { pattern = "uk.vivitelematics.ca/support/*", zone_name = "vivitelematics.ca" },
+  { pattern = "uk.vivitelematics.ca/stream/*", zone_name = "vivitelematics.ca" },
+  { pattern = "uk.vivitelematics.ca/ws", zone_name = "vivitelematics.ca" },
+  { pattern = "uk.vivitelematics.ca/ws/*", zone_name = "vivitelematics.ca" },
+  { pattern = "uk.vivitelematics.ca/device/*", zone_name = "vivitelematics.ca" },
+  { pattern = "uk.vivitelematics.ca/downloads/*", zone_name = "vivitelematics.ca" },
+  { pattern = "uk.vivitelematics.ca/share/*", zone_name = "vivitelematics.ca" },
+  { pattern = "uk.vivitelematics.ca/camera/*", zone_name = "vivitelematics.ca" },
+  { pattern = "uk.vivitelematics.ca/health*", zone_name = "vivitelematics.ca" },
+  { pattern = "uk.vivitelematics.ca/pat/*", zone_name = "vivitelematics.ca" },
+  { pattern = "uk.vivitelematics.ca/admin/*", zone_name = "vivitelematics.ca" },
+  { pattern = "uk.vivitelematics.ca/echo", zone_name = "vivitelematics.ca" },
+  { pattern = "uk.vivitelematics.ca/gpsiot/*", zone_name = "vivitelematics.ca" }
+  # Do NOT route regional hosts /marketing/* to this Worker — Pages serves those files.
+]
 
 [vars]
-APP_NAME = "Vivi Telematic API"
-
-[[kv_namespaces]]
-binding = "ViviTEL"
-id = "59c105de17714e69a5d64cbb06d953a6"
+APP_NAME = "Vivi telematics API"
+MAIL_FROM = "no-reply@vivitelematics.ca"
+MAIL_FROM_NAME = "Vivi Telematics"
+ADMIN_EMAIL = "kizzajamesmusis@gmail.com"
+DEFAULT_TENANT_ID = "west-africa"
+DEVICE_SERVER_DOMAIN = "162.35.186.103"
+# Self-hosted Traccar. Workers cannot fetch bare IPs — use a DNS hostname in this zone
+# pointing at the VPS (DNS-only A record). Create: traccar.vivitelematics.ca -> 162.35.186.103
+TRACCAR_BASE_URL = "http://traccar.vivitelematics.ca"
+DEVICE_SERVER_PORT = "6574"
+DEVICE_SERVER_PROTOCOL = "http"
+# Operational data (assets, bindings, config, telemetry metadata) → VPS SQLite/Valkey/B2.
+# Dedicated DNS-only A record with Caddy TLS; do not reuse the Traccar hostname.
+VPS_ORIGIN = "https://vps-api.vivitelematics.ca"
+VPS_HOSTNAME = "vps-api.vivitelematics.ca"
+VPS_PORT = "443"
+VPS_PROTOCOL = "https"
+# Used when TRACCAR_TOKEN is sent as Basic auth password (Traccar default pattern).
+TRACCAR_USERNAME = "admin"
+# Emergency-only switch to allow /auth/admin/bootstrap (still requires x-api-key).
+# Keep this disabled unless you are actively recovering admin access.
+ALLOW_ADMIN_BOOTSTRAP = "false"
+TRACCAR_ALLOW_UNSIGNED_WEBHOOKS = "false"
+# United Kingdom GPS IoT keys are worker secrets, not vars:
+#   wrangler secret put GPSIOT_WEB_API_KEY
+#   wrangler secret put GPSIOT_WEB_SECRET_KEY
+# They are used only for requests on uk.vivitelematics.ca.
+# Optional: used when the browser Origin header isn't available.
+# APP_BASE_URL = "https://us.vivitelematics.ca"
+# Demo onboarding mail. Keep the four support inboxes on the worker, never in frontend code.
+# wrangler secret put DEMO_SUPPORT_NOTIFY_EMAILS
+# Value is a comma-separated list of up to four support inboxes.
 
 [[d1_databases]]
 binding = "VIVI_D1"
-database_name = "vivi_telematic"
+database_name = "vivi_telematics"
 database_id = "67899d57-c409-4df1-a4a3-ea68c70bb34c"
+
+[[durable_objects.bindings]]
+name = "REALTIME_HUB"
+class_name = "ViviRealtimeHub"
+
+[[durable_objects.bindings]]
+name = "TRACCAR_SOCKET_BRIDGE"
+class_name = "TraccarSocketBridge"
+
+[[migrations]]
+tag = "v1-vivi-realtime-hub"
+new_sqlite_classes = ["ViviRealtimeHub"]
+
+[[migrations]]
+tag = "v2-traccar-socket-bridge"
+new_sqlite_classes = ["TraccarSocketBridge"]
+
+# Poll Traccar for new events and dispatch Vivitel user alerts (email via Resend, in-app KV).
+# Serverless cron runs async via ctx.waitUntil — cold starts warmed by scheduleServerlessWarm.
+[triggers]
+crons = ["*/2 * * * *"]

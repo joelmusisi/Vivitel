@@ -1,0 +1,356 @@
+# Reusable pattern: four Deployments from one image, different VIVI_SERVICE_ROLE.
+# Image is set via CI (ghcr.io/<org>/vivitel-vps:<tag>).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vivitel-track
+  namespace: vivitel
+  labels:
+    app: vivitel-track
+    vivitel.io/service: track
+spec:
+  # Start at 1 while SQLite PVC is ReadWriteOnce on a single node.
+  # Raise to 2+ after moving operational state to Valkey/Postgres.
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vivitel-track
+  template:
+    metadata:
+      labels:
+        app: vivitel-track
+        vivitel.io/service: track
+    spec:
+      containers:
+        - name: track
+          image: ghcr.io/vivitel/vivitel-vps:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8787
+          envFrom:
+            - configMapRef:
+                name: vivitel-shared
+            - secretRef:
+                name: vivitel-secrets
+          env:
+            - name: VIVI_SERVICE_ROLE
+              value: track
+            - name: DB_PATH
+              value: /data/vivitel.sqlite
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: http
+            initialDelaySeconds: 8
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 2
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 15
+            timeoutSeconds: 3
+            failureThreshold: 5
+          startupProbe:
+            httpGet:
+              path: /health/live
+              port: http
+            failureThreshold: 30
+            periodSeconds: 5
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "sleep 5"]
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+      terminationGracePeriodSeconds: 45
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: vivitel-sqlite-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vivitel-track
+  namespace: vivitel
+  labels:
+    vivitel.io/service: track
+spec:
+  selector:
+    app: vivitel-track
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+  sessionAffinity: ClientIP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vivitel-control
+  namespace: vivitel
+  labels:
+    app: vivitel-control
+    vivitel.io/service: control
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: vivitel-control
+  template:
+    metadata:
+      labels:
+        app: vivitel-control
+        vivitel.io/service: control
+    spec:
+      containers:
+        - name: control
+          image: ghcr.io/vivitel/vivitel-vps:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8787
+          envFrom:
+            - configMapRef:
+                name: vivitel-shared
+            - secretRef:
+                name: vivitel-secrets
+          env:
+            - name: VIVI_SERVICE_ROLE
+              value: control
+            - name: DB_PATH
+              value: /data/vivitel.sqlite
+            - name: VPS_MAX_IN_FLIGHT
+              value: "400"
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 2
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: http
+            periodSeconds: 15
+            failureThreshold: 5
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "sleep 5"]
+          resources:
+            requests:
+              cpu: 200m
+              memory: 384Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+      terminationGracePeriodSeconds: 45
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: vivitel-sqlite-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vivitel-control
+  namespace: vivitel
+  labels:
+    vivitel.io/service: control
+spec:
+  selector:
+    app: vivitel-control
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+  sessionAffinity: ClientIP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vivitel-analyse
+  namespace: vivitel
+  labels:
+    app: vivitel-analyse
+    vivitel.io/service: analyse
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: vivitel-analyse
+  template:
+    metadata:
+      labels:
+        app: vivitel-analyse
+        vivitel.io/service: analyse
+    spec:
+      containers:
+        - name: analyse
+          image: ghcr.io/vivitel/vivitel-vps:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8787
+          envFrom:
+            - configMapRef:
+                name: vivitel-shared
+            - secretRef:
+                name: vivitel-secrets
+          env:
+            - name: VIVI_SERVICE_ROLE
+              value: analyse
+            - name: DB_PATH
+              value: /data/vivitel.sqlite
+            - name: VPS_MAX_IN_FLIGHT
+              value: "400"
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: http
+            periodSeconds: 5
+            failureThreshold: 2
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: http
+            periodSeconds: 15
+            failureThreshold: 5
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "sleep 5"]
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+      terminationGracePeriodSeconds: 45
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: vivitel-sqlite-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vivitel-analyse
+  namespace: vivitel
+  labels:
+    vivitel.io/service: analyse
+spec:
+  selector:
+    app: vivitel-analyse
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+  sessionAffinity: ClientIP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vivitel-deliver
+  namespace: vivitel
+  labels:
+    app: vivitel-deliver
+    vivitel.io/service: deliver
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: vivitel-deliver
+  template:
+    metadata:
+      labels:
+        app: vivitel-deliver
+        vivitel.io/service: deliver
+    spec:
+      containers:
+        - name: deliver
+          image: ghcr.io/vivitel/vivitel-vps:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8787
+          envFrom:
+            - configMapRef:
+                name: vivitel-shared
+            - secretRef:
+                name: vivitel-secrets
+          env:
+            - name: VIVI_SERVICE_ROLE
+              value: deliver
+            - name: DB_PATH
+              value: /data/vivitel.sqlite
+            - name: VPS_MAX_IN_FLIGHT
+              value: "400"
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: http
+            periodSeconds: 5
+            failureThreshold: 2
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: http
+            periodSeconds: 15
+            failureThreshold: 5
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "sleep 5"]
+          resources:
+            requests:
+              cpu: 150m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+      terminationGracePeriodSeconds: 45
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: vivitel-sqlite-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vivitel-deliver
+  namespace: vivitel
+  labels:
+    vivitel.io/service: deliver
+spec:
+  selector:
+    app: vivitel-deliver
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+  sessionAffinity: ClientIP

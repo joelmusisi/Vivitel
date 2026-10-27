@@ -1,0 +1,15 @@
+{
+  "applinks": {
+    "details": [
+      {
+        "appIDs": ["REPLACE_WITH_APPLE_TEAM_ID.com.vivitel.telematics"],
+        "components": [
+          { "/": "/mobile", "comment": "Overview" },
+          { "/": "/mobile/profile", "comment": "Profile" },
+          { "/": "/Track/tracking/live", "comment": "Live map" },
+          { "/": "/Track/fleet/assets", "comment": "Assets" }
+        ]
+      }
+    ]
+  }
+}

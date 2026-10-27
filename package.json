@@ -1,0 +1,20 @@
+{
+  "name": "vivi-telematics",
+  "private": true,
+  "scripts": {
+    "build": "npm run build --prefix frontend && npm run build --prefix backend",
+    "build:frontend": "npm run build --prefix frontend",
+    "build:backend": "npm run build --prefix backend",
+    "dev:frontend": "npm run dev --prefix frontend",
+    "dev:backend": "npm run dev --prefix backend",
+    "deploy:safety": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\Test-DeploymentDataSafety.ps1",
+    "predeploy": "npm run deploy:safety",
+    "deploy": "npm run build:frontend && npm run deploy --prefix backend && npm run deploy --prefix frontend",
+    "deploy:worker": "npm run deploy --prefix backend",
+    "deploy:frontend": "npm run deploy --prefix frontend",
+    "deploy:cloudflare": "npm run deploy:safety && powershell -NoProfile -ExecutionPolicy Bypass -File ..\\deploy-both.ps1 -Environment main",
+    "deploy:vps": "npm run deploy:safety && powershell -NoProfile -ExecutionPolicy Bypass -File ..\\deploy-vps-backend-safe.ps1",
+    "deploy:policy": "powershell -NoProfile -Command \"Get-Content .\\DEPLOYMENT_DATA_SAFETY.md | Select-Object -First 40\"",
+    "typecheck": "npm run typecheck --prefix frontend && npm run typecheck --prefix backend"
+  }
+}

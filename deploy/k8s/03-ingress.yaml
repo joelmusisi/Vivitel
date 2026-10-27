@@ -1,0 +1,312 @@
+# Ingress gateway: client → edge (Cloudflare Worker/Pages) → these paths on the VPS cluster.
+# Path routing keeps Track / Control / Analyse / Deliver independent so one failure
+# does not take down the other modules.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: vivitel-gateway
+  namespace: vivitel
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "64m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-http-version: "1.1"
+    nginx.ingress.kubernetes.io/proxy-next-upstream: "error timeout http_502 http_503 http_504"
+    nginx.ingress.kubernetes.io/proxy-next-upstream-tries: "3"
+    nginx.ingress.kubernetes.io/affinity: "cookie"
+    nginx.ingress.kubernetes.io/session-cookie-name: "VIVI_AFFINITY"
+    nginx.ingress.kubernetes.io/load-balance: "ewma"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: vps.vivitelematics.ca
+      http:
+        paths:
+          # Track — live telemetry, assets, devices, ingest, streams
+          - path: /ingest
+            pathType: Prefix
+            backend:
+              service:
+                name: vivitel-track
+                port:
+                  number: 80
+          - path: /stream
+            pathType: Prefix
+            backend:
+              service:
+                name: vivitel-track
+                port:
+                  number: 80
+          - path: /device
+            pathType: Prefix
+            backend:
+              service:
+                name: vivitel-track
+                port:
+                  number: 80
+          - path: /d1/assets
+            pathType: Prefix
+            backend:
+              service:
+                name: vivitel-track
+                port:
+                  number: 80
+          # Control — RBAC, auth identity, KV/PAT, alerts, support
+          - path: /rbac
+            pathType: Prefix
+            backend:
+              service:
+                name: vivitel-control
+                port:
+                  number: 80
+          - path: /auth
+            pathType: Prefix
+            backend:
+              service:
+                name: vivitel-control
+                port:
+                  number: 80
+          - path: /kv
+            pathType: Prefix
+            backend:
+              service:
+                name: vivitel-control
+                port:
+                  number: 80
+          - path: /pat
+            pathType: Prefix
+            backend:
+              service:
+                name: vivitel-control
+                port:
+                  number: 80
+          - path: /support
+            pathType: Prefix
+            backend:
+              service:
+                name: vivitel-control
+                port:
+                  number: 80
+          # Analyse — history / query / metrics
+          - path: /metrics
+            pathType: Prefix
+            backend:
+              service:
+                name: vivitel-analyse
+                port:
+                  number: 80
+          - path: /d1/telemetry
+            pathType: Prefix
+            backend:
+              service:
+                name: vivitel-analyse
+                port:
+                  number: 80
+          # Deliver — drones / orders / platform
+          - path: /deliver
+            pathType: Prefix
+            backend:
+              service:
+                name: vivitel-deliver
+                port:
+                  number: 80
+          # Default health / root → Control
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: vivitel-control
+                port:
+                  number: 80
+    - host: vps-api.vivitelematics.ca
+      http:
+        paths:
+          - path: /ingest
+            pathType: Prefix
+            backend:
+              service:
+                name: vivitel-track
+                port:
+                  number: 80
+          - path: /stream
+            pathType: Prefix
+            backend:
+              service:
+                name: vivitel-track
+                port:
+                  number: 80
+          - path: /device
+            pathType: Prefix
+            backend:
+              service:
+                name: vivitel-track
+                port:
+                  number: 80
+          - path: /d1/assets
+            pathType: Prefix
+            backend:
+              service:
+                name: vivitel-track
+                port:
+                  number: 80
+          - path: /rbac
+            pathType: Prefix
+            backend:
+              service:
+                name: vivitel-control
+                port:
+                  number: 80
+          - path: /auth
+            pathType: Prefix
+            backend:
+              service:
+                name: vivitel-control
+                port:
+                  number: 80
+          - path: /kv
+            pathType: Prefix
+            backend:
+              service:
+                name: vivitel-control
+                port:
+                  number: 80
+          - path: /pat
+            pathType: Prefix
+            backend:
+              service:
+                name: vivitel-control
+                port:
+                  number: 80
+          - path: /support
+            pathType: Prefix
+            backend:
+              service:
+                name: vivitel-control
+                port:
+                  number: 80
+          - path: /operational
+            pathType: Prefix
+            backend:
+              service:
+                name: vivitel-control
+                port:
+                  number: 80
+          - path: /metrics
+            pathType: Prefix
+            backend:
+              service:
+                name: vivitel-analyse
+                port:
+                  number: 80
+          - path: /d1/telemetry
+            pathType: Prefix
+            backend:
+              service:
+                name: vivitel-analyse
+                port:
+                  number: 80
+          - path: /reports
+            pathType: Prefix
+            backend:
+              service:
+                name: vivitel-analyse
+                port:
+                  number: 80
+          - path: /deliver
+            pathType: Prefix
+            backend:
+              service:
+                name: vivitel-deliver
+                port:
+                  number: 80
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: vivitel-control
+                port:
+                  number: 80
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: vivitel-track-pdb
+  namespace: vivitel
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: vivitel-track
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: vivitel-control-pdb
+  namespace: vivitel
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: vivitel-control
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: vivitel-analyse-pdb
+  namespace: vivitel
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: vivitel-analyse
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: vivitel-deliver-pdb
+  namespace: vivitel
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: vivitel-deliver
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: vivitel-track-hpa
+  namespace: vivitel
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: vivitel-track
+  minReplicas: 1
+  maxReplicas: 4
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: vivitel-control-hpa
+  namespace: vivitel
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: vivitel-control
+  minReplicas: 1
+  maxReplicas: 4
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70

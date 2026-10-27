@@ -1,0 +1,3 @@
+# SPA fallback — real files in dist win; Worker routes own /rbac /auth /d1 /api etc.
+/marketing/*  /marketing/:splat  200
+/*  /index.html  200

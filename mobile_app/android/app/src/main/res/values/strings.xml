@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Vivi Mobile</string>
+    <string name="title_activity_main">Vivi Mobile</string>
+    <string name="package_name">com.vivitel.telematics</string>
+    <string name="custom_url_scheme">com.vivitel.telematics</string>
+</resources>

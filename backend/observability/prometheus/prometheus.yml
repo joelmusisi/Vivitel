@@ -1,0 +1,35 @@
+global:
+  scrape_interval: 15s
+  scrape_timeout: 10s
+  external_labels:
+    monitor: vivi-telematics
+
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+scrape_configs:
+  # Prometheus self-monitoring.
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # Vivitel VPS Express server (/metrics).
+  #
+  # Local dev: the server runs on the Docker host, reachable via
+  # host.docker.internal:8787 (see extra_hosts in docker-compose).
+  #
+  # Production: replace the target with your VPS host/IP and port, e.g.
+  #   targets: ["162.35.186.103:8787"]
+  # If the VPS serves HTTPS, also set: scheme: https
+  - job_name: vivi-vps
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["host.docker.internal:8787"]
+        labels:
+          service: vivi-telematics-vps
+          environment: local
+      # Production VPS — uncomment and set your host:
+      # - targets: ["162.35.186.103:8787"]
+      #   labels:
+      #     service: vivi-telematics-vps
+      #     environment: production

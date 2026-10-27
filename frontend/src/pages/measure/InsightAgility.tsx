@@ -16,7 +16,7 @@ export default function InsightAgility() {
             <button
               type="button"
               className="btn ghost"
-              onClick={() => navigate("/measure/insights/reports?category=Custom%20Reports")}
+              onClick={() => navigate("/Analyze/insights/reports?category=Custom%20Reports")}
             >
               Open custom reports
             </button>

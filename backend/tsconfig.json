@@ -8,8 +8,10 @@
     "types": ["@cloudflare/workers-types"],
     "forceConsistentCasingInFileNames": true,
     "skipLibCheck": true,
+    "allowImportingTsExtensions": true,
     "allowSyntheticDefaultImports": true,
     "noEmit": true
   },
-  "include": ["src"]
+  "include": ["src"],
+  "exclude": ["src/vps_server.ts", "build", "node_modules", "src/**/*.test.ts"]
 }

@@ -1,6 +1,17 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import VTLoader from "../components/VTLoader";
+import SortableColumnHeader from "../components/SortableColumnHeader";
+import { useColumnSort } from "../hooks/useColumnSort";
 import { useNavigate } from "react-router-dom";
-import { saveToApi } from "../utils/api";
+import { deleteDriverFromApi, getDriversFromApi, upsertDriverDetailed } from "../utils/api";
+import { countryOptions } from "../data/countryOptions";
+import { showToast } from "../utils/toast";
+import { runOptimisticUpdate } from "../utils/optimisticUpdate";
+import { readUserPref, USER_PREF_KEYS, writeUserPref } from "../utils/userAppPrefs";
+import { filterRecordsForActiveSelection, siteScopesMatch } from "../utils/scopeStorage";
+import { readActiveSiteName, subscribeScopeChange } from "../utils/tenantContext";
+import { readCachedDrivers, type SharedDriverRecord } from "../utils/driverStore";
+import { createHierarchyArranger } from "../utils/viviCategories";
 import "../index.css";
 
 type DriverRow = {
@@ -15,354 +26,85 @@ type DriverRow = {
   lastTrip: string;
   timeSinceLastTrip: string;
   site: string;
+  driverType: string;
+  licenceNo: string;
+  licenseExpiryDate: string;
+  driverDob: string;
+  timeZone: string;
   autoCreated?: boolean;
   remindersStatus?: "due-soon" | "overdue" | "none";
 };
 
-const initialDrivers: DriverRow[] = [
-  {
-    id: "4",
-    name: "AutoCreated",
-    driverId: "18",
-    extendedDriverId: "—",
-    employeeNumber: "—",
-    mobileNumber: "—",
-    country: "—",
-    email: "—",
-    lastTrip: "15/09/2025 11:30 (EAT)",
-    timeSinceLastTrip: "127-20:42:32",
-    site: "Default Site",
-    autoCreated: true,
-    remindersStatus: "overdue"
-  },
-  {
-    id: "5",
-    name: "Installer",
-    driverId: "-2",
-    extendedDriverId: "—",
-    employeeNumber: "—",
-    mobileNumber: "—",
-    country: "—",
-    email: "—",
-    lastTrip: "07/08/2020 18:11 (EAT)",
-    timeSinceLastTrip: "1992-14:01:29",
-    site: "Default Site",
-    remindersStatus: "none"
-  },
-  {
-    id: "6",
-    name: "James Byaruhanga",
-    driverId: "19",
-    extendedDriverId: "—",
-    employeeNumber: "—",
-    mobileNumber: "+256 774732913",
-    country: "Uganda",
-    email: "james_byaruhanga@bat.com",
-    lastTrip: "29/12/2025 14:28 (EAT)",
-    timeSinceLastTrip: "22-17:44:39",
-    site: "BAT Uganda",
-    remindersStatus: "none"
-  },
-  {
-    id: "7",
-    name: "Mathu Kiunjuri",
-    driverId: "21",
-    extendedDriverId: "—",
-    employeeNumber: "—",
-    mobileNumber: "+256 775510557",
-    country: "Uganda",
-    email: "—",
-    lastTrip: "20/01/2026 21:21 (EAT)",
-    timeSinceLastTrip: "0-10:51:45",
-    site: "BAT Uganda",
-    remindersStatus: "none"
-  },
-  {
-    id: "8",
-    name: "NTEGE SHARIF",
-    driverId: "5",
-    extendedDriverId: "—",
-    employeeNumber: "—",
-    mobileNumber: "—",
-    country: "Uganda",
-    email: "—",
-    lastTrip: "29/03/2021 17:47 (EAT)",
-    timeSinceLastTrip: "1758-14:26:03",
-    site: "C&G Andjies",
-    remindersStatus: "none"
-  },
-  {
-    id: "9",
-    name: "Unknown",
-    driverId: "0",
-    extendedDriverId: "—",
-    employeeNumber: "—",
-    mobileNumber: "—",
-    country: "—",
-    email: "—",
-    lastTrip: "04/03/2025 18:51 (EAT)",
-    timeSinceLastTrip: "322-13:21:32",
-    site: "Default Site",
-    remindersStatus: "none"
-  },
-  {
-    id: "10",
-    name: "Unmatched Extended DriverID",
-    driverId: "1",
-    extendedDriverId: "—",
-    employeeNumber: "—",
-    mobileNumber: "—",
-    country: "—",
-    email: "—",
-    lastTrip: "—",
-    timeSinceLastTrip: "—",
-    site: "Default Site",
-    remindersStatus: "none"
-  },
-  {
-    id: "11",
-    name: "Vita Nasur",
-    driverId: "3",
-    extendedDriverId: "—",
-    employeeNumber: "—",
-    mobileNumber: "—",
-    country: "—",
-    email: "—",
-    lastTrip: "03/04/2021 11:10 (EAT)",
-    timeSinceLastTrip: "1753-21:02:55",
-    site: "C&G Andjies",
-    remindersStatus: "none"
-  }
-];
-
-const filters = ["All", "Automatically created", "Reminders due soon", "Reminders overdue"] as const;
-
-type FilterKey = (typeof filters)[number];
-
+type FilterKey = "All" | "Automatically created" | "Reminders due soon" | "Reminders overdue";
 type ColumnKey = keyof DriverRow;
 
-type Column = {
-  key: keyof DriverRow;
-  label: string;
-};
+const DRIVER_TYPE_OPTIONS = ["NONE", "ibutton", "RFID", "Beacon"] as const;
 
-const columns: Column[] = [
-  { key: "name", label: "Name" },
+const columns: Array<{ key: ColumnKey; label: string }> = [
+  { key: "name", label: "Driver name" },
   { key: "driverId", label: "Driver ID" },
-  { key: "extendedDriverId", label: "Extended Driver ID" },
+  { key: "extendedDriverId", label: "Extended driver ID" },
   { key: "employeeNumber", label: "Employee number" },
   { key: "mobileNumber", label: "Mobile number" },
+  { key: "driverType", label: "Driver type" },
+  { key: "driverDob", label: "Date of birth" },
+  { key: "licenceNo", label: "Licence number" },
+  { key: "licenseExpiryDate", label: "Licence expiry" },
+  { key: "timeZone", label: "Time zone" },
   { key: "country", label: "Country" },
-  { key: "email", label: "Email address" },
+  { key: "email", label: "Email" },
+  { key: "site", label: "Site" },
   { key: "lastTrip", label: "Last trip" },
-  { key: "timeSinceLastTrip", label: "Time since last trip (dd-hh:mm:ss)" },
-  { key: "site", label: "Site" }
+  { key: "timeSinceLastTrip", label: "Time since last trip" }
 ];
 
-const countryOptions = [
-  "Afghanistan",
-  "Albania",
-  "Algeria",
-  "Andorra",
-  "Angola",
-  "Antigua and Barbuda",
-  "Argentina",
-  "Armenia",
-  "Australia",
-  "Austria",
-  "Azerbaijan",
-  "Bahamas",
-  "Bahrain",
-  "Bangladesh",
-  "Barbados",
-  "Belarus",
-  "Belgium",
-  "Belize",
-  "Benin",
-  "Bhutan",
-  "Bolivia",
-  "Bosnia and Herzegovina",
-  "Botswana",
-  "Brazil",
-  "Brunei",
-  "Bulgaria",
-  "Burkina Faso",
-  "Burundi",
-  "Cabo Verde",
-  "Cambodia",
-  "Cameroon",
-  "Canada",
-  "Central African Republic",
-  "Chad",
-  "Chile",
-  "China",
-  "Colombia",
-  "Comoros",
-  "Congo, Democratic Republic of the",
-  "Congo, Republic of the",
-  "Costa Rica",
-  "Côte d’Ivoire",
-  "Croatia",
-  "Cuba",
-  "Cyprus",
-  "Czechia",
-  "Denmark",
-  "Djibouti",
-  "Dominica",
-  "Dominican Republic",
-  "Ecuador",
-  "Egypt",
-  "El Salvador",
-  "Equatorial Guinea",
-  "Eritrea",
-  "Estonia",
-  "Eswatini",
-  "Ethiopia",
-  "Fiji",
-  "Finland",
-  "France",
-  "Gabon",
-  "Gambia",
-  "Georgia",
-  "Germany",
-  "Ghana",
-  "Greece",
-  "Grenada",
-  "Guatemala",
-  "Guinea",
-  "Guinea-Bissau",
-  "Guyana",
-  "Haiti",
-  "Honduras",
-  "Hungary",
-  "Iceland",
-  "India",
-  "Indonesia",
-  "Iran",
-  "Iraq",
-  "Ireland",
-  "Israel",
-  "Italy",
-  "Jamaica",
-  "Japan",
-  "Jordan",
-  "Kazakhstan",
-  "Kenya",
-  "Kiribati",
-  "Korea, North",
-  "Korea, South",
-  "Kosovo",
-  "Kuwait",
-  "Kyrgyzstan",
-  "Laos",
-  "Latvia",
-  "Lebanon",
-  "Lesotho",
-  "Liberia",
-  "Libya",
-  "Liechtenstein",
-  "Lithuania",
-  "Luxembourg",
-  "Madagascar",
-  "Malawi",
-  "Malaysia",
-  "Maldives",
-  "Mali",
-  "Malta",
-  "Marshall Islands",
-  "Mauritania",
-  "Mauritius",
-  "Mexico",
-  "Micronesia",
-  "Moldova",
-  "Monaco",
-  "Mongolia",
-  "Montenegro",
-  "Morocco",
-  "Mozambique",
-  "Myanmar",
-  "Namibia",
-  "Nauru",
-  "Nepal",
-  "Netherlands",
-  "New Zealand",
-  "Nicaragua",
-  "Niger",
-  "Nigeria",
-  "North Macedonia",
-  "Norway",
-  "Oman",
-  "Pakistan",
-  "Palau",
-  "Palestine",
-  "Panama",
-  "Papua New Guinea",
-  "Paraguay",
-  "Peru",
-  "Philippines",
-  "Poland",
-  "Portugal",
-  "Qatar",
-  "Romania",
-  "Russia",
-  "Rwanda",
-  "Saint Kitts and Nevis",
-  "Saint Lucia",
-  "Saint Vincent and the Grenadines",
-  "Samoa",
-  "San Marino",
-  "Sao Tome and Principe",
-  "Saudi Arabia",
-  "Senegal",
-  "Serbia",
-  "Seychelles",
-  "Sierra Leone",
-  "Singapore",
-  "Slovakia",
-  "Slovenia",
-  "Solomon Islands",
-  "Somalia",
-  "South Africa",
-  "Spain",
-  "Sri Lanka",
-  "Sudan",
-  "Sudan, South",
-  "Suriname",
-  "Sweden",
-  "Switzerland",
-  "Syria",
-  "Taiwan",
-  "Tajikistan",
-  "Tanzania",
-  "Thailand",
-  "Timor-Leste",
-  "Togo",
-  "Tonga",
-  "Trinidad and Tobago",
-  "Tunisia",
-  "Turkey",
-  "Turkmenistan",
-  "Tuvalu",
-  "Uganda",
-  "Ukraine",
-  "United Arab Emirates",
-  "United Kingdom",
-  "United States",
-  "Uruguay",
-  "Uzbekistan",
-  "Vanuatu",
-  "Vatican City",
-  "Venezuela",
-  "Vietnam",
-  "Yemen",
-  "Zambia",
-  "Zimbabwe"
-];
+const filters: FilterKey[] = ["All", "Automatically created", "Reminders due soon", "Reminders overdue"];
+
+function nextAvailableNumericId(values: string[]): string {
+  const used = new Set<number>();
+  for (const v of values) {
+    const n = Number(String(v ?? "").trim());
+    if (Number.isFinite(n) && n > 0) used.add(Math.floor(n));
+  }
+  let i = 1;
+  while (used.has(i)) i += 1;
+  return String(i);
+}
+
+function toDriverRow(row: SharedDriverRecord): DriverRow {
+  return {
+    id: String(row.id ?? ""),
+    name: String(row.name ?? ""),
+    driverId: String(row.driverId ?? ""),
+    extendedDriverId: String(row.extendedDriverId ?? ""),
+    employeeNumber: String(row.employeeNumber ?? ""),
+    mobileNumber: String(row.mobileNumber ?? ""),
+    country: String(row.country ?? ""),
+    email: String(row.email ?? ""),
+    lastTrip: String(row.lastTrip ?? ""),
+    timeSinceLastTrip: String(row.timeSinceLastTrip ?? ""),
+    site: String(row.site ?? ""),
+    driverType: String(row.driverType ?? "NONE"),
+    licenceNo: String(row.licenceNo ?? ""),
+    licenseExpiryDate: String(row.licenseExpiryDate ?? ""),
+    driverDob: String(row.driverDob ?? ""),
+    timeZone: String(row.timeZone ?? "UTC"),
+    autoCreated: row.autoCreated,
+    remindersStatus:
+      row.remindersStatus === "due-soon" || row.remindersStatus === "overdue" ? row.remindersStatus : "none"
+  };
+}
+
+function cachedDriverRows(): DriverRow[] {
+  return filterRecordsForActiveSelection(readCachedDrivers().map(toDriverRow));
+}
 
 export default function Drivers() {
   const navigate = useNavigate();
   const bulkImportRef = useRef<HTMLInputElement | null>(null);
-  const [driverRows, setDriverRows] = useState<DriverRow[]>(initialDrivers);
+  const [driverRows, setDriverRows] = useState<DriverRow[]>(() => cachedDriverRows());
+  const [driversLoading, setDriversLoading] = useState(() => cachedDriverRows().length === 0);
+  const [searchQuery, setSearchQuery] = useState("");
   const [activeFilter, setActiveFilter] = useState<FilterKey>("All");
   const [openRowMenu, setOpenRowMenu] = useState<string | null>(null);
   const [showColumns, setShowColumns] = useState(false);
@@ -391,12 +133,58 @@ export default function Drivers() {
     .filter(Boolean);
 
   const filteredDrivers = useMemo(() => {
-    if (activeFilter === "All") return driverRows;
-    if (activeFilter === "Automatically created") return driverRows.filter((d) => d.autoCreated);
-    if (activeFilter === "Reminders due soon") return driverRows.filter((d) => d.remindersStatus === "due-soon");
-    if (activeFilter === "Reminders overdue") return driverRows.filter((d) => d.remindersStatus === "overdue");
-    return driverRows;
-  }, [activeFilter, driverRows]);
+    let rows = driverRows;
+    if (activeFilter === "Automatically created") rows = driverRows.filter((d) => d.autoCreated);
+    else if (activeFilter === "Reminders due soon") rows = driverRows.filter((d) => d.remindersStatus === "due-soon");
+    else if (activeFilter === "Reminders overdue") rows = driverRows.filter((d) => d.remindersStatus === "overdue");
+
+    const q = searchQuery.trim().toLowerCase();
+    const matched = !q
+      ? rows
+      : rows.filter((driver) =>
+          columns.some((col) => String(driver[col.key] ?? "").toLowerCase().includes(q))
+        );
+    return matched;
+  }, [activeFilter, driverRows, searchQuery]);
+
+  const getDriverSortValue = useCallback(
+    (row: DriverRow, key: ColumnKey) => row[key],
+    []
+  );
+
+  const {
+    sortedRows: sortedFilteredDrivers,
+    sort: driverTableSort,
+    getHeaderProps: getDriverHeaderProps
+  } = useColumnSort({
+    rows: filteredDrivers,
+    getValue: getDriverSortValue
+  });
+
+  const driverTableItems = useMemo(() => {
+    if (driverTableSort) {
+      return sortedFilteredDrivers.map((driver) => ({ type: "driver" as const, driver }));
+    }
+    const arranger = createHierarchyArranger();
+    const sites = new Set(filteredDrivers.map((driver) => String(driver.site ?? "").trim().toLowerCase()));
+    const showGroups = sites.size > 1;
+    const items: Array<
+      | { type: "group"; key: string; title: string; path: string }
+      | { type: "driver"; driver: DriverRow }
+    > = [];
+    let lastKey = "";
+    for (const driver of filteredDrivers) {
+      if (showGroups) {
+        const group = arranger.groupFor(driver);
+        if (group.key !== lastKey) {
+          items.push({ type: "group", ...group });
+          lastKey = group.key;
+        }
+      }
+      items.push({ type: "driver", driver });
+    }
+    return items;
+  }, [driverTableSort, filteredDrivers, sortedFilteredDrivers]);
 
   const countFor = (label: FilterKey) => {
     if (label === "All") return driverRows.length;
@@ -409,6 +197,8 @@ export default function Drivers() {
   const grid = `repeat(${activeCols.length}, minmax(0, 1fr)) 36px`;
 
   const siteOptions = useMemo(() => {
+    const activeSite = readActiveSiteName();
+    if (activeSite) return [activeSite];
     const unique = new Set(
       [...driverRows.map((driver) => driver.site), ...dbSites].filter(Boolean)
     );
@@ -432,24 +222,54 @@ export default function Drivers() {
     readDbSites();
     const handleOrgChange = () => readDbSites();
     window.addEventListener("vivi:orgchange", handleOrgChange as EventListener);
-    return () => window.removeEventListener("vivi:orgchange", handleOrgChange as EventListener);
+    window.addEventListener("vivi:contextchange", handleOrgChange as EventListener);
+    return () => {
+      window.removeEventListener("vivi:orgchange", handleOrgChange as EventListener);
+      window.removeEventListener("vivi:contextchange", handleOrgChange as EventListener);
+    };
   }, []);
 
-  const saveEditingDriver = () => {
+  const saveEditingDriver = async () => {
     if (!editingDriver) return;
-    setDriverRows((current) => {
-      const exists = current.some((row) => row.id === editingDriver.id);
-      if (exists) {
-        return current.map((row) => (row.id === editingDriver.id ? editingDriver : row));
-      }
-      return [...current, editingDriver];
-    });
-    void saveToApi(`drivers:${editingDriver.id}`, {
-      ...editingDriver,
-      updatedAt: new Date().toISOString()
-    });
+    const site = String(editingDriver.site ?? "").trim() || readActiveSiteName();
+    if (!site) {
+      showToast("Select a site before saving the driver.", "error");
+      return;
+    }
+    const name = String(editingDriver.name ?? "").trim();
+    if (!name) {
+      showToast("Driver name is required.", "error");
+      return;
+    }
+    const nextDriver = { ...editingDriver, name, site, updatedAt: new Date().toISOString() };
+
     setEditingDriver(null);
     setIsNewDriver(false);
+    await runOptimisticUpdate({
+      getSnapshot: () => driverRows,
+      apply: () =>
+        setDriverRows((current) => {
+          const exists = current.some((row) => row.id === nextDriver.id);
+          const next = exists
+            ? current.map((row) => (row.id === nextDriver.id ? nextDriver : row))
+            : [...current, nextDriver];
+          return filterRecordsForActiveSelection(next);
+        }),
+      rollback: (snapshot) => {
+        setDriverRows(snapshot);
+        setEditingDriver(nextDriver);
+        setIsNewDriver(isNewDriver);
+      },
+      request: () => upsertDriverDetailed(nextDriver),
+      errorMessage: (result) => {
+        const message =
+          typeof result === "object" ? String(result.error ?? "Unable to save driver.") : "Unable to save driver.";
+        if (typeof result === "object" && result.status === 409 && /driver email exists/i.test(message)) {
+          return "Driver Email Exists";
+        }
+        return message;
+      }
+    });
   };
 
   const cancelEditingDriver = () => {
@@ -508,6 +328,11 @@ export default function Drivers() {
       if (col.key === "extendedDriverId") return "EXT-1001";
       if (col.key === "employeeNumber") return "EMP-1001";
       if (col.key === "mobileNumber") return "+256 700000000";
+      if (col.key === "driverType") return "NONE";
+      if (col.key === "driverDob") return "1990-01-15";
+      if (col.key === "licenceNo") return "DL-1001";
+      if (col.key === "licenseExpiryDate") return "2027-06-07 21:00:00";
+      if (col.key === "timeZone") return "UTC";
       if (col.key === "country") return "Uganda";
       if (col.key === "email") return "jane.doe@example.com";
       if (col.key === "lastTrip") return "22/01/2026 10:00 (EAT)";
@@ -528,6 +353,7 @@ export default function Drivers() {
       if (labelIndex >= 0) acc[col.key] = labelIndex;
       return acc;
     }, {});
+    const activeSite = readActiveSiteName();
     const nextRows: DriverRow[] = rows.slice(1).map((line, idx) => {
       const values = parseCsvLine(line);
       const getValue = (key: ColumnKey) => {
@@ -536,138 +362,151 @@ export default function Drivers() {
       };
       return {
         id: `${Date.now()}-${idx}`,
-        name: getValue("name") || "—",
-        driverId: getValue("driverId") || "—",
-        extendedDriverId: getValue("extendedDriverId") || "—",
-        employeeNumber: getValue("employeeNumber") || "—",
-        mobileNumber: getValue("mobileNumber") || "—",
-        country: getValue("country") || "—",
-        email: getValue("email") || "—",
-        lastTrip: getValue("lastTrip") || "—",
-        timeSinceLastTrip: getValue("timeSinceLastTrip") || "—",
-        site: getValue("site") || "—",
+        name: getValue("name") || "",
+        driverId: getValue("driverId") || "",
+        extendedDriverId: getValue("extendedDriverId") || "",
+        employeeNumber: getValue("employeeNumber") || "",
+        mobileNumber: getValue("mobileNumber") || "",
+        country: getValue("country") || "",
+        email: getValue("email") || "",
+        lastTrip: getValue("lastTrip") || "",
+        timeSinceLastTrip: getValue("timeSinceLastTrip") || "",
+        site: getValue("site") || activeSite || "",
+        driverType: getValue("driverType") || "NONE",
+        licenceNo: getValue("licenceNo") || "",
+        licenseExpiryDate: getValue("licenseExpiryDate") || "",
+        driverDob: getValue("driverDob") || "",
+        timeZone: getValue("timeZone") || "UTC",
         remindersStatus: "none"
       };
     });
-    setDriverRows((current) => [...current, ...nextRows]);
+    const scopedImports = nextRows.filter((row) => String(row.site ?? "").trim() && String(row.name ?? "").trim());
+    if (scopedImports.length === 0) {
+      showToast("Imported drivers must include a name and site.", "error");
+      return;
+    }
+    const stored: DriverRow[] = [];
+    let failed = 0;
+    for (const row of scopedImports) {
+      const result = await upsertDriverDetailed(row);
+      if (result.stored) stored.push(row);
+      else failed += 1;
+    }
+    if (stored.length === 0) {
+      showToast("Unable to save imported drivers to the server.", "error");
+      return;
+    }
+    setDriverRows((current) => filterRecordsForActiveSelection([...current, ...stored]));
+    showToast(
+      failed > 0
+        ? `Imported ${stored.length} driver(s); ${failed} could not be saved.`
+        : `Imported ${stored.length} driver(s).`,
+      failed > 0 ? "info" : "success"
+    );
   };
 
   const setPersonContext = (name: string, site?: string) => {
-    const activeSite = site || localStorage.getItem("vivi.activeSite") || "";
+    const activeSite = site || readActiveSiteName() || "";
     const filteredRows = driverRows.filter((row) => {
-      if (activeSite) return row.site === activeSite;
-      if (dbSites.length > 0) return dbSites.includes(row.site);
-      return true;
+      if (activeSite) return siteScopesMatch(row.site, activeSite);
+      if (dbSites.length > 0) return dbSites.some((dbSite) => siteScopesMatch(row.site, dbSite));
+      return Boolean(String(row.site ?? "").trim());
     });
     const options = filteredRows
       .map((row) => ({ name: row.name, site: row.site }))
       .filter((row) => row.name);
-    localStorage.setItem("vivi.contextType", "driver");
-    localStorage.setItem("vivi.contextName", name);
+    writeUserPref(USER_PREF_KEYS.contextType, "driver");
+    writeUserPref(USER_PREF_KEYS.contextName, name);
     localStorage.setItem("vivi.contextOptions.driver", JSON.stringify(options));
     localStorage.setItem("vivi.contextOptions", JSON.stringify(options));
     window.dispatchEvent(new Event("vivi:contextchange"));
   };
 
+  const openNewDriver = () => {
+    const nextId = nextAvailableNumericId(driverRows.map((d) => d.driverId));
+    setEditingDriver({
+      id: `${Date.now()}`,
+      name: "",
+      driverId: nextId,
+      extendedDriverId: `EXT-${nextId}`,
+      employeeNumber: "",
+      mobileNumber: "",
+      country: "",
+      email: "",
+      lastTrip: "",
+      timeSinceLastTrip: "",
+      site: readActiveSiteName(),
+      driverType: "NONE",
+      licenceNo: "",
+      licenseExpiryDate: "",
+      driverDob: "",
+      timeZone: "UTC"
+    });
+    setIsNewDriver(true);
+  };
+
+  const loadDrivers = async () => {
+    const cached = cachedDriverRows();
+    if (cached.length) {
+      setDriverRows(cached);
+      setDriversLoading(false);
+    } else {
+      setDriversLoading(true);
+    }
+    try {
+      const rows = await getDriversFromApi<DriverRow>();
+      setDriverRows(filterRecordsForActiveSelection(Array.isArray(rows) ? rows : []));
+    } finally {
+      setDriversLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    const onAction = (event: Event) => {
+      const key = String((event as CustomEvent<{ key?: string }>).detail?.key ?? "");
+      if (key === "add") openNewDriver();
+      if (key === "export") handleExport();
+      if (key === "template") handleDownloadTemplate();
+      if (key === "import") bulkImportRef.current?.click();
+      if (key === "refresh") void loadDrivers();
+    };
+    const onSearch = (event: Event) => {
+      setSearchQuery(String((event as CustomEvent<{ value?: string }>).detail?.value ?? ""));
+    };
+    window.addEventListener("vivi.ribbon.action", onAction as EventListener);
+    window.addEventListener("vivi.ribbon.search", onSearch as EventListener);
+    return () => {
+      window.removeEventListener("vivi.ribbon.action", onAction as EventListener);
+      window.removeEventListener("vivi.ribbon.search", onSearch as EventListener);
+    };
+  }, [openNewDriver]);
+
+  useEffect(() => {
+    void loadDrivers();
+    const unsubscribeScope = subscribeScopeChange(() => void loadDrivers());
+    return () => unsubscribeScope();
+  }, []);
+
   return (
     <>
       <div className="page assets-page">
+      <input
+        ref={bulkImportRef}
+        type="file"
+        accept=".csv"
+        style={{ display: "none" }}
+        onChange={(event) => {
+          const file = event.target.files?.[0];
+          if (!file) return;
+          handleBulkImport(file);
+          event.currentTarget.value = "";
+        }}
+      />
+
       <div className="assets-toolbar">
         <div className="assets-toolbar-left">
-          <span>Drivers</span>
-          <span className="assets-toolbar-count">{driverRows.length}</span>
-        </div>
-        <div className="assets-toolbar-right">
-          <div className="assets-toolbar-search">
-            <input placeholder="Search" />
-            <span className="assets-toolbar-search-icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-                <circle cx="11" cy="11" r="7" />
-                <path d="M20 20l-3.5-3.5" />
-              </svg>
-            </span>
-          </div>
-          <button
-            className="assets-toolbar-icon"
-            aria-label="Export"
-            data-tooltip="Export"
-            type="button"
-            onClick={handleExport}
-          >
-            ⤓
-          </button>
-          <button
-            className="assets-toolbar-icon"
-            aria-label="Download template"
-            data-tooltip="Download template"
-            type="button"
-            onClick={handleDownloadTemplate}
-          >
-            ⬇️
-          </button>
-          <button
-            className="assets-toolbar-icon"
-            aria-label="Bulk import"
-            data-tooltip="Bulk import"
-            type="button"
-            onClick={() => bulkImportRef.current?.click()}
-          >
-            ⭱
-          </button>
-          <button
-            className="assets-toolbar-icon"
-            aria-label="Refresh"
-            data-tooltip="Refresh"
-            type="button"
-            onClick={() => setDriverRows(initialDrivers)}
-          >
-            ↻
-          </button>
-          <button
-            className="assets-toolbar-icon"
-            aria-label="Reports"
-            data-tooltip="Reports"
-            type="button"
-            data-nav="/measure/insights/reports?category=List%20Reports&report=Driver%20List%20Report"
-          >
-            📊
-          </button>
-          <button
-            className="assets-toolbar-add"
-            aria-label="Add"
-            data-tooltip="Add"
-            type="button"
-            onClick={() => {
-              setEditingDriver({
-                id: `${Date.now()}`,
-                name: "",
-                driverId: "",
-                extendedDriverId: "",
-                employeeNumber: "",
-                mobileNumber: "",
-                country: "",
-                email: "",
-                lastTrip: "",
-                timeSinceLastTrip: "",
-                site: ""
-              });
-              setIsNewDriver(true);
-            }}
-          >
-            +
-          </button>
-          <input
-            ref={bulkImportRef}
-            type="file"
-            accept=".csv"
-            style={{ display: "none" }}
-            onChange={(event) => {
-              const file = event.target.files?.[0];
-              if (!file) return;
-              handleBulkImport(file);
-              event.currentTarget.value = "";
-            }}
-          />
+          <span className="assets-toolbar-pill">{activeFilter}</span>
+          <span className="assets-toolbar-count">{filteredDrivers.length}</span>
         </div>
       </div>
 
@@ -717,7 +556,7 @@ export default function Drivers() {
                   }}
                   onDragEnd={() => setDragCol(null)}
                 >
-                  {col.label}
+                  <SortableColumnHeader label={col.label} {...getDriverHeaderProps(col.key)} />
                 </div>
               ))}
               <div className="assets-col-menu">
@@ -751,11 +590,24 @@ export default function Drivers() {
               </div>
             </div>
             <div className="assets-table-body">
-              {filteredDrivers.map((driver) => (
+              {driversLoading && filteredDrivers.length === 0 ? (
+                <VTLoader compact label="Loading drivers" />
+              ) : null}
+              {driverTableItems.map((entry) => {
+                if (entry.type === "group") {
+                  return (
+                  <div key={`group:${entry.key}`} className="drivers-hierarchy-group">
+                    <span className="drivers-hierarchy-group-title">{entry.title}</span>
+                    {entry.path ? <span className="drivers-hierarchy-group-path">{entry.path}</span> : null}
+                  </div>
+                  );
+                }
+                const driver = entry.driver;
+                return (
                 <div key={driver.id} className="assets-row" style={{ gridTemplateColumns: grid }}>
                   {activeCols.map((col) => (
                     <div key={col.key} className="assets-cell">
-                      {String(driver[col.key] ?? "—")}
+                      {String(driver[col.key] ?? "")}
                     </div>
                   ))}
                   <div className="assets-cell actions">
@@ -779,34 +631,44 @@ export default function Drivers() {
                             className="assets-row-menu-item"
                             type="button"
                             role="menuitem"
-                            onClick={() => {
+                            onClick={async () => {
                               if (item.label === "Edit") {
                                 setEditingDriver(driver);
+                                setIsNewDriver(false);
                                 setOpenRowMenu(null);
                               } else if (item.label === "Remove") {
                                 const confirmed = window.confirm(`Remove ${driver.name}?`);
                                 if (!confirmed) return;
-                                setDriverRows((current) => current.filter((row) => row.id !== driver.id));
                                 setOpenRowMenu(null);
+                                void runOptimisticUpdate({
+                                  getSnapshot: () => driverRows,
+                                  apply: () =>
+                                    setDriverRows((current) => current.filter((row) => row.id !== driver.id)),
+                                  rollback: (snapshot) => setDriverRows(snapshot),
+                                  request: () => deleteDriverFromApi(driver.id, driver.site),
+                                  errorMessage: "Unable to remove driver from the server.",
+                                  successFeedback: false,
+                                  onSuccess: () => showToast("Driver removed.", "success")
+                                });
                               } else if (item.label === "Show on trip timeline") {
-                                const currentAsset = localStorage.getItem("vivi.activeAsset");
+                                const currentAsset = readUserPref(USER_PREF_KEYS.activeAsset);
                                 if (!currentAsset) {
-                                  localStorage.setItem("vivi.activeAsset", driver.name);
+                                  writeUserPref(USER_PREF_KEYS.activeAsset, driver.name);
                                 }
-                                localStorage.setItem("vivi.activeRegistration", driver.driverId);
-                                localStorage.setItem("vivi.activeSite", driver.site ?? "—");
+                                writeUserPref(USER_PREF_KEYS.activeRegistration, driver.driverId);
+                                localStorage.setItem("vivi.activeSite", driver.site ?? "");
                                 setPersonContext(driver.name, driver.site);
-                                navigate("/monitor/activity/trip-timeline");
+                                navigate("/Track/activity/trip-timeline");
                               } else if (item.label === "Show on historical tracking") {
-                                const currentAsset = localStorage.getItem("vivi.activeAsset");
+                                const currentAsset = readUserPref(USER_PREF_KEYS.activeAsset);
                                 if (!currentAsset) {
-                                  localStorage.setItem("vivi.activeAsset", driver.name);
+                                  writeUserPref(USER_PREF_KEYS.activeAsset, driver.name);
                                 }
-                                localStorage.setItem("vivi.activeRegistration", driver.driverId);
-                                localStorage.setItem("vivi.activeSite", driver.site ?? "—");
+                                writeUserPref(USER_PREF_KEYS.activeRegistration, driver.driverId);
+                                localStorage.setItem("vivi.activeSite", driver.site ?? "");
                                 localStorage.setItem("vivi.historyTime", new Date().toISOString().slice(0, 16));
                                 setPersonContext(driver.name, driver.site);
-                                navigate("/monitor/tracking/historical");
+                                navigate("/Track/tracking/historical");
                               }
                             }}
                           >
@@ -820,7 +682,8 @@ export default function Drivers() {
                     )}
                   </div>
                 </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         </section>
@@ -828,9 +691,9 @@ export default function Drivers() {
       </div>
       {editingDriver && (
         <div className="assets-add-modal" role="dialog" aria-modal="true">
-          <div className="assets-add-card">
+          <div className="assets-add-card people-form-card">
             <div className="assets-add-header">
-              <div className="assets-add-title">Edit driver</div>
+              <div className="assets-add-title">{isNewDriver ? "Add driver" : "Edit driver"}</div>
               <div className="assets-add-actions">
                 <button className="assets-add-icon-btn" type="button" onClick={cancelEditingDriver}>
                   Cancel
@@ -849,6 +712,7 @@ export default function Drivers() {
               <div className="assets-add-grid">
                 <label>
                   Name
+                  <span className="assets-required"> *</span>
                   <input
                     value={editingDriver?.name ?? ""}
                     onChange={(event) =>
@@ -867,6 +731,7 @@ export default function Drivers() {
                         current ? { ...current, driverId: event.target.value } : current
                       )
                     }
+                    disabled
                   />
                 </label>
                 <label>
@@ -898,6 +763,69 @@ export default function Drivers() {
                     onChange={(event) =>
                       setEditingDriver((current) =>
                         current ? { ...current, mobileNumber: event.target.value } : current
+                      )
+                    }
+                  />
+                </label>
+                <label>
+                  Driver type
+                  <select
+                    value={editingDriver?.driverType || "NONE"}
+                    onChange={(event) =>
+                      setEditingDriver((current) =>
+                        current ? { ...current, driverType: event.target.value } : current
+                      )
+                    }
+                  >
+                    {DRIVER_TYPE_OPTIONS.map((option) => (
+                      <option key={option} value={option}>
+                        {option}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  Date of birth
+                  <input
+                    type="date"
+                    value={String(editingDriver?.driverDob ?? "").slice(0, 10)}
+                    onChange={(event) =>
+                      setEditingDriver((current) =>
+                        current ? { ...current, driverDob: event.target.value } : current
+                      )
+                    }
+                  />
+                </label>
+                <label>
+                  Licence number
+                  <input
+                    value={editingDriver?.licenceNo ?? ""}
+                    onChange={(event) =>
+                      setEditingDriver((current) =>
+                        current ? { ...current, licenceNo: event.target.value } : current
+                      )
+                    }
+                  />
+                </label>
+                <label>
+                  Licence expiry
+                  <input
+                    value={editingDriver?.licenseExpiryDate ?? ""}
+                    placeholder="2027-06-07 21:00:00"
+                    onChange={(event) =>
+                      setEditingDriver((current) =>
+                        current ? { ...current, licenseExpiryDate: event.target.value } : current
+                      )
+                    }
+                  />
+                </label>
+                <label>
+                  Time zone
+                  <input
+                    value={editingDriver?.timeZone || "UTC"}
+                    onChange={(event) =>
+                      setEditingDriver((current) =>
+                        current ? { ...current, timeZone: event.target.value } : current
                       )
                     }
                   />

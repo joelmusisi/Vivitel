@@ -1,4 +1,6 @@
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
+import SortableColumnHeader from "../../components/SortableColumnHeader";
+import { useColumnSort } from "../../hooks/useColumnSort";
 import { useNavigate } from "react-router-dom";
 import "../../index.css";
 
@@ -12,50 +14,11 @@ type WorkerRow = {
   lastActive: string;
 };
 
-const workers: WorkerRow[] = [
-  {
-    id: "wrk-1",
-    name: "Grace Nanyonga",
-    role: "Dispatcher",
-    region: "Northern",
-    status: "busy",
-    activeTasks: 4,
-    lastActive: "2 min ago"
-  },
-  {
-    id: "wrk-2",
-    name: "Amos Kigozi",
-    role: "Workshop Lead",
-    region: "Central",
-    status: "available",
-    activeTasks: 1,
-    lastActive: "5 min ago"
-  },
-  {
-    id: "wrk-3",
-    name: "Vivi Support",
-    role: "Support",
-    region: "East",
-    status: "offline",
-    activeTasks: 0,
-    lastActive: "1 hr ago"
-  }
-];
-
 export default function Workers() {
   const navigate = useNavigate();
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
-
-  const summary = useMemo(
-    () => [
-      { label: "Available", value: workers.filter((row) => row.status === "available").length },
-      { label: "Busy", value: workers.filter((row) => row.status === "busy").length },
-      { label: "Offline", value: workers.filter((row) => row.status === "offline").length },
-      { label: "Total workers", value: workers.length }
-    ],
-    []
-  );
+  const workers: WorkerRow[] = [];
 
   const filtered = useMemo(() => {
     return workers.filter((row) => {
@@ -65,14 +28,27 @@ export default function Workers() {
       const matchesStatus = statusFilter === "all" || row.status === statusFilter;
       return matchesSearch && matchesStatus;
     });
-  }, [search, statusFilter]);
+  }, [workers, search, statusFilter]);
+
+  const hasActiveFilters = search.trim().length > 0 || statusFilter !== "all";
+
+  const getWorkerSortValue = useCallback((row: WorkerRow, key: string) => {
+    if (key === "name") return row.name;
+    if (key === "role") return row.role;
+    if (key === "region") return row.region;
+    if (key === "status") return row.status;
+    if (key === "activeTasks") return row.activeTasks;
+    if (key === "lastActive") return row.lastActive;
+    return "";
+  }, []);
+  const workerSort = useColumnSort({ rows: filtered, getValue: getWorkerSortValue });
 
   return (
     <div className="page workers-page">
       <div className="workers-topbar">
         <div>
           <div className="workers-title">Workers</div>
-          <div className="workers-path">Monitor / Task management / Workers</div>
+          <div className="workers-path">Track / Task Controlment / Workers</div>
         </div>
         <div className="workers-actions">
           <button
@@ -80,7 +56,7 @@ export default function Workers() {
             className="workers-btn ghost"
             onClick={() =>
               navigate(
-                "/measure/insights/reports?category=List%20Reports&report=Driver%20List%20Report"
+                "/Analyze/insights/reports?category=List%20Reports&report=Driver%20List%20Report"
               )
             }
           >
@@ -101,20 +77,11 @@ export default function Workers() {
         </div>
       </div>
 
-      <section className="workers-summary">
-        {summary.map((card) => (
-          <div key={card.label} className="workers-summary-card">
-            <div className="workers-summary-label">{card.label}</div>
-            <div className="workers-summary-value">{card.value}</div>
-          </div>
-        ))}
-      </section>
-
       <section className="workers-panel">
         <div className="workers-panel-header">
           <div>
             <div className="workers-panel-title">Worker roster</div>
-            <div className="workers-panel-sub">Monitor availability and workload distribution.</div>
+            <div className="workers-panel-sub">Track availability and workload distribution.</div>
           </div>
           <div className="workers-filter-row">
             <input
@@ -138,18 +105,20 @@ export default function Workers() {
 
         <div className="workers-table">
           <div className="workers-row workers-row-head">
-            <span>Name</span>
-            <span>Role</span>
-            <span>Region</span>
-            <span>Status</span>
-            <span>Active tasks</span>
-            <span>Last active</span>
+            <SortableColumnHeader as="span" label="Name" {...workerSort.getHeaderProps("name")} />
+            <SortableColumnHeader as="span" label="Role" {...workerSort.getHeaderProps("role")} />
+            <SortableColumnHeader as="span" label="Region" {...workerSort.getHeaderProps("region")} />
+            <SortableColumnHeader as="span" label="Status" {...workerSort.getHeaderProps("status")} />
+            <SortableColumnHeader as="span" label="Active tasks" {...workerSort.getHeaderProps("activeTasks")} />
+            <SortableColumnHeader as="span" label="Last active" {...workerSort.getHeaderProps("lastActive")} />
             <span>Actions</span>
           </div>
-          {filtered.length === 0 ? (
-            <div className="workers-empty">No workers match your filters.</div>
+          {workerSort.sortedRows.length === 0 ? (
+            <div className="workers-empty">
+              {hasActiveFilters ? "No workers match your filters." : "No records yet."}
+            </div>
           ) : (
-            filtered.map((row) => (
+            workerSort.sortedRows.map((row) => (
               <div key={row.id} className="workers-row">
                 <span className="workers-name">{row.name}</span>
                 <span>{row.role}</span>

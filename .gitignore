@@ -1,6 +1,8 @@
 node_modules
 dist
 .wrangler
+.dev.vars
+backend/.env.vps
 .turbo
 .parcel-cache
 pnpm-lock.yaml
@@ -8,3 +10,20 @@ package-lock.json
 yarn.lock
 .DS_Store
 *.log
+
+# Generated output and local runtime data (not source)
+backend/build/
+backend/.dryrun-out/
+backend/data/
+backend/telemetry-archive/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+
+# Third-party Windows vendor tool (exe/dll bundle, ~40 MB)
+camera_ai_intercom/Mitac_Version_VVT/
+
+# Local env files hold credentials; commit only *.example templates
+frontend/.env
+frontend/.env.local
+frontend/.env.*.local

@@ -1,141 +1,193 @@
-export type NavItem = {
-  title: string;
-  items: { label: string; path: string }[];
+export type NavLinkItem = {
+  label: string;
+  path: string;
+  /** When set, clicking the nav item downloads this API path instead of routing. */
+  downloadPath?: string;
+  /** Suggested filename for browser download (defaults on the client). */
+  downloadFilename?: string;
 };
 
-export const manageNav: NavItem[] = [
+export type NavItem = {
+  title: string;
+  items: NavLinkItem[];
+};
+
+export const ControlNav: NavItem[] = [
   {
-    title: "CONFIG ADMIN",
+    title: "Config Admin",
     items: [
-      { label: "Libraries", path: "/manage/config/libraries" },
-      { label: "Bindings", path: "/manage/config/templates" },
-      { label: "Configuration groups", path: "/manage/config/configuration-groups" },
-      { label: "Vivi D-Monitor configuration", path: "/manage/config/Vivi-d-monitor-configuration" }
+      { label: "Libraries", path: "/Control/config/libraries" },
+      { label: "Bindings", path: "/Control/config/templates" },
+      { label: "Configuration Groups", path: "/Control/config/configuration-groups" },
+      { label: "Vivi D-Track Configuration", path: "/Control/config/Vivi-d-Track-configuration" }
     ]
   },
   {
-    title: "OPERATIONS",
+    title: "Operations",
     items: [
-      { label: "Database administration", path: "/manage/operations/database-administration" },
-      { label: "Dealer Administration", path: "/manage/operations/dealer-administration" },
-      { label: "Organisation goals", path: "/manage/operations/organisation-goals" },
-      { label: "Organisations", path: "/manage/operations/organisation-groups" }
+      { label: "Database Administration", path: "/Control/operations/database-administration" },
+      { label: "Dealer Administration", path: "/Control/operations/dealer-administration" },
+      { label: "Organisation Goals", path: "/Control/operations/organisation-goals" },
+      { label: "Organisations", path: "/Control/operations/organisation-groups" }
     ]
   },
   {
-    title: "CONTACTS",
-    items: [{ label: "Manage contacts", path: "/manage/contacts/manage-contacts" }]
+    title: "Contacts",
+    items: [{ label: "Control Contacts", path: "/Control/contacts/Control-contacts" }]
   },
   {
-    title: "MOBILE DEVICE ADMIN",
-    items: [{ label: "Mobile Device Admin", path: "/manage/mobile-device-admin" }]
-  },
-  {
-    title: "USER ADMIN",
+    title: "Mobile Device Admin",
     items: [
-      { label: "Users", path: "/manage/user-admin/users" },
-      { label: "Roles", path: "/manage/user-admin/roles" },
-      { label: "Security groups", path: "/manage/user-admin/security-groups" }
+      { label: "Mobile Device Admin", path: "/Control/mobile-device-admin" },
+      {
+        label: "Mitac software",
+        path: "/Control/mobile-device-admin/mitac-software",
+        downloadPath: "/downloads/mitac-software",
+        downloadFilename: "Vivitel_Mitac_Pack.zip"
+      }
     ]
   },
   {
-    title: "NOTIFICATIONS",
-    items: [{ label: "Satellite Assisted Notifications", path: "/manage/notifications/satellite-assisted-notifications" }]
+    title: "User Admin",
+    items: [
+      { label: "Users", path: "/Control/user-admin/users" },
+      { label: "Roles", path: "/Control/user-admin/roles" },
+      { label: "Security Groups", path: "/Control/user-admin/security-groups" }
+    ]
   },
   {
-    title: "USER SETTINGS",
+    title: "Alerts",
     items: [
-      { label: "User scoring", path: "/manage/user-settings/user-scoring" },
-      { label: "Personal access tokens", path: "/manage/user-settings/personal-access-tokens" },
-      { label: "Personal settings", path: "/manage/user-settings/personal-settings" }
+      { label: "Location Alerts", path: "/Control/notifications/satellite-assisted-notifications" },
+      { label: "Device Alerts", path: "/Control/notifications/device-Alerts" }
+    ]
+  },
+  {
+    title: "User Settings",
+    items: [
+      { label: "User Scoring", path: "/Control/user-settings/user-scoring" },
+      { label: "Personal Access Tokens", path: "/Control/user-settings/personal-access-tokens" },
+      { label: "Personal Settings", path: "/Control/user-settings/personal-settings" }
     ]
   }
 ];
 
-export const measureNav: NavItem[] = [
+export const AnalyzeNav: NavItem[] = [
   {
-    title: "INSIGHTS",
+    title: "Insights",
     items: [
-      { label: "Dashboards", path: "/measure/insights/dashboards" },
-      { label: "Reports", path: "/measure/insights/reports" },
-      { label: "Vivi Insight Agility", path: "/measure/insights/Vivi-insight-agility" },
-      { label: "Subscriptions", path: "/measure/insights/subscriptions" },
-      { label: "Notification Analyser", path: "/measure/insights/Notification-analyser" },
-      { label: "Location Analyser", path: "/measure/insights/location-analyser" }
+      { label: "Dashboards", path: "/Analyze/insights/dashboards" },
+      { label: "Reports", path: "/Analyze/insights/reports" },
+      { label: "Vivi Insight Agility", path: "/Analyze/insights/Vivi-insight-agility" },
+      { label: "Subscriptions", path: "/Analyze/insights/subscriptions" },
+      { label: "Notification Analyser", path: "/Analyze/insights/Notification-analyser" },
+      { label: "Location Analyser", path: "/Analyze/insights/location-analyser" }
     ]
   }
 ];
 
-export const monitorNav: NavItem[] = [
+export const TrackNav: NavItem[] = [
+  {
+    title: "FLEET OVERVIEW",
+    items: [{ label: "Command Center", path: "/Track/overview/fleet" }]
+  },
   {
     title: "ACTIVITY TIMELINE",
     items: [
-      { label: "Trip timeline", path: "/monitor/activity/trip-timeline" }
+      { label: "Trip Timeline", path: "/Track/activity/trip-timeline" }
     ]
   },
   {
-    title: "JOBS & MESSAGING",
+    title: "DRIVER COACHING",
     items: [
-      { label: "Default options", path: "/monitor/jobs/default-options" },
-      { label: "Message box", path: "/monitor/jobs/message-box" },
-      { label: "Instant messaging", path: "/monitor/jobs/instant-messaging" }
+      { label: "Driver Debrief", path: "/Track/coaching/driver-debrief" }
     ]
   },
   {
     title: "VIDEO TELEMATICS",
     items: [
-      { label: "Dashboard", path: "/monitor/videos/dashboard" }
+      { label: "Dashboard", path: "/Track/videos/dashboard" }
     ]
   },
   {
     title: "FLEET ADMIN",
     items: [
-      { label: "Assets", path: "/monitor/fleet/assets" },
-      { label: "Drivers", path: "/monitor/fleet/drivers" },
-      { label: "Passengers", path: "/monitor/fleet/passengers" },
-      { label: "Customers", path: "/monitor/fleet/customers" }
+      { label: "Assets", path: "/Track/fleet/assets" },
+      { label: "Drivers", path: "/Track/fleet/drivers" },
+      { label: "Passengers", path: "/Track/fleet/passengers" },
+      { label: "Customers", path: "/Track/fleet/customers" }
     ]
   },
   {
-    title: "JOURNEY MANAGEMENT",
+    title: "ROUTES",
     items: [
-      { label: "Workflow", path: "/monitor/journey/workflow" },
-      { label: "Libraries", path: "/monitor/journey/libraries" },
-      { label: "Monitoring", path: "/monitor/journey/monitoring" },
-      { label: "Resource allocation", path: "/monitor/journey/resource-allocation" }
+      { label: "Workflow", path: "/Track/routes/workflow" },
+      { label: "Route Libraries", path: "/Track/routes/libraries" },
+      { label: "Tracking", path: "/Track/routes/Tracking" },
+      { label: "Resource allocation", path: "/Track/routes/resource-allocation" }
     ]
   },
   {
     title: "HOURS OF SERVICE",
     items: [
-      { label: "HOS dashboard", path: "/monitor/hos/dashboard" },
-      { label: "HOS overview", path: "/monitor/hos/overview" },
-      { label: "Timeline", path: "/monitor/hos/timeline" },
-      { label: "Log viewer", path: "/monitor/hos/log-viewer" },
-      { label: "HOS notifications", path: "/monitor/hos/notifications" },
-      { label: "Timeclock", path: "/monitor/hos/timeclock" }
+      { label: "Hos Dashboard", path: "/Track/hos/dashboard" },
+      { label: "Hos Overview", path: "/Track/hos/overview" },
+      { label: "Timeline", path: "/Track/hos/timeline" },
+      { label: "Log Viewer", path: "/Track/hos/log-viewer" },
+      { label: "Hos Alerts", path: "/Track/hos/notifications" },
+      { label: "Timeclock", path: "/Track/hos/timeclock" }
     ]
   },
   {
-    title: "TASK MANAGEMENT",
+    title: "Task Controlment",
     items: [
-      { label: "Tasks", path: "/monitor/tasks/tasks" },
-      { label: "Templates", path: "/monitor/tasks/templates" },
-      { label: "Workers", path: "/monitor/tasks/workers" }
+      { label: "Tasks", path: "/Track/tasks/tasks" },
+      { label: "Templates", path: "/Track/tasks/templates" },
+      { label: "Workers", path: "/Track/tasks/workers" }
     ]
   },
   {
     title: "INFO HUB",
-    items: [{ label: "Streams", path: "/monitor/info-hub/streams" }]
+    items: [{ label: "Streams", path: "/Track/info-hub/streams" }]
   },
   {
     title: "TRACKING",
     items: [
-      { label: "Live tracking", path: "/monitor/tracking/live" },
-      { label: "Historical tracking", path: "/monitor/tracking/historical" },
-      { label: "EasyTrack", path: "/monitor/tracking/easytrack" },
-      { label: "Manage locations", path: "/monitor/tracking/manage-locations" },
-      { label: "Manage road hazards", path: "/monitor/tracking/manage-road-hazards" }
+      { label: "Live Tracking", path: "/Track/tracking/live" },
+      { label: "Historical Tracking", path: "/Track/tracking/historical" },
+      { label: "Easytrack", path: "/Track/tracking/easytrack" },
+      { label: "Control Locations", path: "/Track/tracking/Control-locations" },
+      { label: "Control Road Hazards", path: "/Track/tracking/Control-road-hazards" }
+    ]
+  }
+];
+
+export const DeliverNav: NavItem[] = [
+  {
+    title: "Delivery",
+    items: [
+      { label: "Operations", path: "/Deliver/drone-delivery" },
+      { label: "Orders", path: "/Deliver/orders" },
+      { label: "Drone Live Tracking", path: "/Deliver/drone-live-tracking" },
+      { label: "Drone Historical Tracking", path: "/Deliver/drone-historical-tracking" },
+      { label: "Scheduling", path: "/Deliver/scheduling" },
+      { label: "Clients", path: "/Deliver/clients" },
+      { label: "Drone Groups", path: "/Deliver/drone-groups" },
+      { label: "Regions", path: "/Deliver/regions" },
+      { label: "Health", path: "/Deliver/health" }
+    ]
+  },
+  {
+    title: "Platform",
+    items: [
+      { label: "Customer App", path: "/Deliver/platform/customer" },
+      { label: "Ground Ops", path: "/Deliver/platform/ground-ops" },
+      { label: "Drone Ops", path: "/Deliver/platform/drone-ops" },
+      { label: "Driver App", path: "/Deliver/platform/driver" },
+      { label: "Warehouse", path: "/Deliver/platform/warehouse" },
+      { label: "Merchant", path: "/Deliver/platform/merchant" },
+      { label: "Support", path: "/Deliver/platform/support" },
+      { label: "Super Admin", path: "/Deliver/platform/super-admin" }
     ]
   }
 ];

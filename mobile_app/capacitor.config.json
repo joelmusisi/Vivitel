@@ -1,0 +1,6 @@
+{
+  "appId": "com.vivitel.telematics",
+  "appName": "Vivi Mobile",
+  "webDir": "../frontend/dist",
+  "bundledWebRuntime": false
+}

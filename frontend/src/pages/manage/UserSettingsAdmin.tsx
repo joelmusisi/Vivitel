@@ -1,15 +1,26 @@
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import SortableColumnHeader from "../../components/SortableColumnHeader";
+import { useColumnSort } from "../../hooks/useColumnSort";
 import { useLocation } from "react-router-dom";
-import { saveToApi } from "../../utils/api";
+import {
+  loadAccountRecords,
+  loadSharedAdminRows,
+  saveAccountRecords,
+  saveSharedAdminRows,
+  type SharedAdminRow
+} from "../../utils/sharedRecords";
 import "../../index.css";
 
-type SummaryCard = { label: string; value: string | number };
+const PERSONAL_SETTINGS_PATHS = new Set([
+  "/Control/user-settings/personal-access-tokens",
+  "/Control/user-settings/personal-settings"
+]);
+
 type AdminRow = { id: string; cells: string[]; status?: string };
 
 type AdminPageConfig = {
   title: string;
   pathLabel: string;
-  summary: SummaryCard[];
   columns: string[];
   rows: AdminRow[];
   statusOptions?: string[];
@@ -17,69 +28,39 @@ type AdminPageConfig = {
 };
 
 const pageConfigs: Record<string, AdminPageConfig> = {
-  "/manage/user-settings/user-scoring": {
+  "/Control/user-settings/user-scoring": {
     title: "User scoring",
-    pathLabel: "Manage / User settings / User scoring",
-    summary: [
-      { label: "Profiles", value: 4 },
-      { label: "Active", value: 3 },
-      { label: "Draft", value: 1 },
-      { label: "Last update", value: "Jan 16" }
-    ],
+    pathLabel: "Control / User settings / User scoring",
     columns: ["Profile", "Weighting", "Updated", "Status", "Actions"],
-    rows: [
-      { id: "us-1", cells: ["Standard", "Balanced", "Jan 16", "Active"], status: "active" },
-      { id: "us-2", cells: ["Safety", "High", "Jan 02", "Active"], status: "active" },
-      { id: "us-3", cells: ["Fuel focus", "Medium", "Dec 20", "Draft"], status: "draft" }
-    ],
+    rows: [],
     statusOptions: ["active", "draft"],
     formFields: [
-      { label: "Profile name", placeholder: "Standard" },
+      { label: "Profile name", placeholder: "Profile name" },
       { label: "Weighting", placeholder: "Balanced" },
       { label: "Notes", placeholder: "Optional" }
     ]
   },
-  "/manage/user-settings/personal-access-tokens": {
+  "/Control/user-settings/personal-access-tokens": {
     title: "Personal access tokens",
-    pathLabel: "Manage / User settings / Personal access tokens",
-    summary: [
-      { label: "Active tokens", value: 6 },
-      { label: "Revoked", value: 2 },
-      { label: "API scopes", value: 5 },
-      { label: "Last created", value: "Jan 21" }
-    ],
+    pathLabel: "Control / User settings / Personal access tokens",
     columns: ["Token", "Scope", "Created", "Status", "Actions"],
-    rows: [
-      { id: "pat-1", cells: ["Dispatch API", "Read/Write", "Jan 21", "Active"], status: "active" },
-      { id: "pat-2", cells: ["Analytics", "Read", "Jan 14", "Active"], status: "active" },
-      { id: "pat-3", cells: ["Legacy", "Read", "Dec 10", "Revoked"], status: "revoked" }
-    ],
+    rows: [],
     statusOptions: ["active", "revoked"],
     formFields: [
-      { label: "Token label", placeholder: "Dispatch API" },
+      { label: "Token label", placeholder: "Token label" },
       { label: "Scope", placeholder: "Read/Write" },
       { label: "Expiry", placeholder: "30 days" }
     ]
   },
-  "/manage/user-settings/personal-settings": {
+  "/Control/user-settings/personal-settings": {
     title: "Personal settings",
-    pathLabel: "Manage / User settings / Personal settings",
-    summary: [
-      { label: "Profiles", value: 3 },
-      { label: "Preferences", value: 12 },
-      { label: "Notifications", value: 6 },
-      { label: "Last update", value: "Jan 19" }
-    ],
+    pathLabel: "Control / User settings / Personal settings",
     columns: ["Setting", "Value", "Updated", "Status", "Actions"],
-    rows: [
-      { id: "ps-1", cells: ["Timezone", "EAT", "Jan 19", "Active"], status: "active" },
-      { id: "ps-2", cells: ["Theme", "Light", "Jan 05", "Active"], status: "active" },
-      { id: "ps-3", cells: ["Alerts", "Paused", "Dec 29", "Paused"], status: "paused" }
-    ],
+    rows: [],
     statusOptions: ["active", "paused"],
     formFields: [
-      { label: "Setting name", placeholder: "Timezone" },
-      { label: "Value", placeholder: "EAT" },
+      { label: "Setting name", placeholder: "Setting name" },
+      { label: "Value", placeholder: "Value" },
       { label: "Notes", placeholder: "Optional" }
     ]
   }
@@ -98,6 +79,30 @@ export default function UserSettingsAdmin() {
     Object.fromEntries(Object.entries(pageConfigs).map(([pathKey, config]) => [pathKey, [...config.rows]]))
   );
 
+  useEffect(() => {
+    if (!page) return;
+    let cancelled = false;
+    const apply = (rows: SharedAdminRow[] | null) => {
+      if (cancelled || !rows) return;
+      setRowsByPath((current) => ({ ...current, [location.pathname]: rows }));
+    };
+    if (PERSONAL_SETTINGS_PATHS.has(location.pathname)) {
+      apply(loadAccountRecords<SharedAdminRow>(`control:user-settings:${page.title}`));
+      return () => {
+        cancelled = true;
+      };
+    }
+    void loadSharedAdminRows("control:user-scoring").then(apply);
+    const handleOrgChange = () => {
+      void loadSharedAdminRows("control:user-scoring").then(apply);
+    };
+    window.addEventListener("vivi:orgchange", handleOrgChange);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("vivi:orgchange", handleOrgChange);
+    };
+  }, [location.pathname, page]);
+
   const filteredRows = useMemo(() => {
     if (!page) return [];
     const rows = rowsByPath[location.pathname] ?? [];
@@ -107,6 +112,17 @@ export default function UserSettingsAdmin() {
       return matchesSearch && matchesStatus;
     });
   }, [location.pathname, page, rowsByPath, search, statusFilter]);
+
+  const getAdminRowSortValue = useCallback(
+    (row: AdminRow, key: string) => {
+      const columns = page?.columns ?? [];
+      const index = columns.indexOf(key);
+      if (index < 0) return "";
+      return row.cells[index] ?? "";
+    },
+    [page]
+  );
+  const adminRowSort = useColumnSort({ rows: filteredRows, getValue: getAdminRowSortValue });
 
   if (!page) {
     return <div className="page admin-page">Page not found.</div>;
@@ -119,7 +135,7 @@ export default function UserSettingsAdmin() {
       const field = fields[index];
       if (field) return formDraft[field.label] ?? "";
       if (col.toLowerCase() === "status") return "Active";
-      return "—";
+      return "";
     });
     const statusIndex = columns.findIndex((col) => col.toLowerCase() === "status");
     const statusValue = statusIndex >= 0 ? String(cells[statusIndex] ?? "active").toLowerCase() : undefined;
@@ -137,6 +153,8 @@ export default function UserSettingsAdmin() {
       return acc;
     }, {});
   };
+
+  const hasActiveFilters = search.trim().length > 0 || statusFilter !== "all";
 
   return (
     <div className="page admin-page">
@@ -165,15 +183,6 @@ export default function UserSettingsAdmin() {
           </button>
         </div>
       </div>
-
-      <section className="admin-summary">
-        {page.summary.map((card) => (
-          <div key={card.label} className="admin-summary-card">
-            <div className="admin-summary-label">{card.label}</div>
-            <div className="admin-summary-value">{card.value}</div>
-          </div>
-        ))}
-      </section>
 
       <section className="admin-panel">
         <div className="admin-panel-header">
@@ -205,16 +214,22 @@ export default function UserSettingsAdmin() {
           </div>
         </div>
 
-        <div className="admin-table">
+        <div className="admin-table" style={{ "--admin-cols": page.columns.length } as React.CSSProperties}>
           <div className="admin-row admin-row-head">
-            {page.columns.map((col) => (
-              <span key={col}>{col}</span>
-            ))}
+            {page.columns.map((col) =>
+              col === "Actions" ? (
+                <span key={col}>{col}</span>
+              ) : (
+                <SortableColumnHeader key={col} as="span" label={col} {...adminRowSort.getHeaderProps(col)} />
+              )
+            )}
           </div>
-          {filteredRows.length === 0 ? (
-            <div className="admin-empty">No rows match your filters.</div>
+          {adminRowSort.sortedRows.length === 0 ? (
+            <div className="admin-empty">
+              {hasActiveFilters ? "No rows match your filters." : "No records yet."}
+            </div>
           ) : (
-            filteredRows.map((row) => (
+            adminRowSort.sortedRows.map((row) => (
               <div key={row.id} className="admin-row">
                 {page.columns.map((col, index) => {
                   if (col === "Actions") {
@@ -272,7 +287,7 @@ export default function UserSettingsAdmin() {
                 <div className="admin-modal-title">
                   {modalMode === "create" ? "Create" : modalMode === "edit" ? "Edit" : "View"} {page.title}
                 </div>
-                <div className="admin-modal-sub">Adjust user settings and access.</div>
+                <div className="admin-modal-sub">Provide the settings details.</div>
               </div>
               <button
                 type="button"
@@ -310,22 +325,23 @@ export default function UserSettingsAdmin() {
                     setModalOpen(false);
                     return;
                   }
-                  void saveToApi(`manage:user-settings:${page.title}`, {
-                    title: page.title,
-                    values: formDraft,
-                    updatedAt: new Date().toISOString()
-                  });
                   const nextRow = buildRowFromDraft();
                   setRowsByPath((current) => {
                     const rows = current[location.pathname] ?? [];
-                    if (modalMode === "edit" && editingRowId) {
-                      const existing = rows.find((r) => r.id === editingRowId);
-                      const updated = rows.map((r) =>
-                        r.id === editingRowId ? { ...nextRow, id: editingRowId, status: existing?.status } : r
-                      );
-                      return { ...current, [location.pathname]: updated };
+                    const next =
+                      modalMode === "edit" && editingRowId
+                        ? rows.map((row) => {
+                            if (row.id !== editingRowId) return row;
+                            const existing = rows.find((item) => item.id === editingRowId);
+                            return { ...nextRow, id: editingRowId, status: existing?.status };
+                          })
+                        : [...rows, nextRow];
+                    if (PERSONAL_SETTINGS_PATHS.has(location.pathname)) {
+                      saveAccountRecords(`control:user-settings:${page.title}`, next);
+                    } else {
+                      void saveSharedAdminRows("control:user-scoring", next);
                     }
-                    return { ...current, [location.pathname]: [...rows, nextRow] };
+                    return { ...current, [location.pathname]: next };
                   });
                   setModalOpen(false);
                 }}

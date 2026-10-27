@@ -1,0 +1,25 @@
+[Unit]
+Description=Vivi Telematics VPS API
+After=network-online.target redis-server.service postgresql.service
+Wants=network-online.target redis-server.service postgresql.service
+
+[Service]
+Type=simple
+User=node
+Group=node
+WorkingDirectory=/opt/Vivitel/backend
+Environment=NODE_ENV=production
+Environment=PORT=8787
+Environment=DB_PATH=/opt/Vivitel/backend/data/vivi.db
+Environment=REQUIRE_PERSISTENT_DB=true
+Environment=REPORTS_ARCHIVE_LOCAL_DIR=/opt/Vivitel/backend/reports-archive
+Environment=TELEMETRY_ARCHIVE_LOCAL_DIR=/opt/Vivitel/backend/telemetry-archive
+# Multi-bucket B2 + Valkey + Postgres mirror + protocols via .env.vps
+EnvironmentFile=-/opt/Vivitel/backend/.env.vps
+ExecStart=/usr/bin/node /opt/Vivitel/backend/build/vps_server.js
+Restart=always
+RestartSec=5
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

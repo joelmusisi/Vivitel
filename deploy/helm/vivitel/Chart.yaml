@@ -1,0 +1,16 @@
+# Helm chart — the "helmsman" (Kubernetes = Greek for helmsman/pilot).
+# Packages Track / Control / Analyse / Deliver for industry-standard orchestration.
+apiVersion: v2
+name: vivitel
+description: Vivitel telematics modules — Track, Control, Analyse, Deliver
+type: application
+version: 1.0.0
+appVersion: "1.0.0"
+keywords:
+  - vivitel
+  - telematics
+  - kubernetes
+  - helm
+maintainers:
+  - name: Vivitel
+home: https://us.vivitelematics.ca

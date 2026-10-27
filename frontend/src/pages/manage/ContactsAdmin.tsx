@@ -1,6 +1,10 @@
-import { useMemo, useState } from "react";
-import { saveToApi } from "../../utils/api";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import SortableColumnHeader from "../../components/SortableColumnHeader";
+import { useColumnSort } from "../../hooks/useColumnSort";
+import { loadSharedRecords, saveSharedRecords } from "../../utils/sharedRecords";
 import "../../index.css";
+
+const CONTACTS_STORAGE_BASE = "control:contacts";
 
 type ContactRow = {
   id: string;
@@ -11,32 +15,31 @@ type ContactRow = {
   status: "active" | "inactive";
 };
 
-const contacts: ContactRow[] = [
-  {
-    id: "ct-1",
-    name: "Rose Namusoke",
-    role: "Fleet Manager",
-    org: "EA Transfleet",
-    phone: "+256 701 882 449",
+type StoredContact = {
+  id?: string;
+  firstName?: string;
+  lastName?: string;
+  employer?: string;
+  position?: string;
+  mobile?: string;
+  email?: string;
+};
+
+const mapStoredContact = (row: StoredContact): ContactRow | null => {
+  const id = String(row.id ?? "").trim();
+  if (!id) return null;
+  const firstName = String(row.firstName ?? "").trim();
+  const lastName = String(row.lastName ?? "").trim();
+  const name = [firstName, lastName].filter(Boolean).join(" ").trim();
+  return {
+    id,
+    name: name || String(row.email ?? "").trim() || "Contact",
+    role: String(row.position ?? "").trim() || "—",
+    org: String(row.employer ?? "").trim() || "—",
+    phone: String(row.mobile ?? "").trim() || "—",
     status: "active"
-  },
-  {
-    id: "ct-2",
-    name: "Peter Otim",
-    role: "Dispatch Lead",
-    org: "CPP Fuels",
-    phone: "+256 780 223 144",
-    status: "active"
-  },
-  {
-    id: "ct-3",
-    name: "Yvonne Ating",
-    role: "Safety",
-    org: "Kampala Hauliers",
-    phone: "+256 754 991 200",
-    status: "inactive"
-  }
-];
+  };
+};
 
 export default function ContactsAdmin() {
   const [search, setSearch] = useState("");
@@ -44,7 +47,7 @@ export default function ContactsAdmin() {
   const [modalOpen, setModalOpen] = useState(false);
   const [modalMode, setModalMode] = useState<"create" | "edit" | "view">("create");
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [contactRows, setContactRows] = useState<ContactRow[]>(contacts);
+  const [contactRows, setContactRows] = useState<ContactRow[]>([]);
   const [contactDraft, setContactDraft] = useState({
     name: "",
     role: "",
@@ -52,15 +55,24 @@ export default function ContactsAdmin() {
     phone: ""
   });
 
-  const summary = useMemo(
-    () => [
-      { label: "Active", value: contactRows.filter((row) => row.status === "active").length },
-      { label: "Inactive", value: contactRows.filter((row) => row.status === "inactive").length },
-      { label: "Teams", value: 7 },
-      { label: "Contacts", value: contactRows.length }
-    ],
-    [contactRows]
-  );
+  useEffect(() => {
+    let cancelled = false;
+    const loadContacts = () => {
+      void loadSharedRecords<StoredContact>(CONTACTS_STORAGE_BASE).then((stored) => {
+        if (cancelled) return;
+        const rows = (Array.isArray(stored) ? stored : [])
+          .map((row) => mapStoredContact(row))
+          .filter((row): row is ContactRow => Boolean(row));
+        setContactRows(rows);
+      });
+    };
+    loadContacts();
+    window.addEventListener("vivi:orgchange", loadContacts);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("vivi:orgchange", loadContacts);
+    };
+  }, []);
 
   const filtered = useMemo(() => {
     return contactRows.filter((row) => {
@@ -72,12 +84,42 @@ export default function ContactsAdmin() {
     });
   }, [contactRows, search, statusFilter]);
 
+  const getContactSortValue = useCallback((row: ContactRow, key: string) => {
+    if (key === "name") return row.name;
+    if (key === "role") return row.role;
+    if (key === "org") return row.org;
+    if (key === "phone") return row.phone;
+    if (key === "status") return row.status;
+    return "";
+  }, []);
+  const contactSort = useColumnSort({ rows: filtered, getValue: getContactSortValue });
+
+  const hasActiveFilters = search.trim().length > 0 || statusFilter !== "all";
+
+  const persistContactRows = (rows: ContactRow[]) => {
+    const stored: StoredContact[] = rows.map((row) => {
+      const parts = row.name.trim().split(/\s+/);
+      const firstName = parts[0] ?? "";
+      const lastName = parts.slice(1).join(" ");
+      return {
+        id: row.id,
+        firstName,
+        lastName,
+        employer: row.org === "—" ? "" : row.org,
+        position: row.role === "—" ? "" : row.role,
+        mobile: row.phone === "—" ? "" : row.phone,
+        email: ""
+      };
+    });
+    void saveSharedRecords(CONTACTS_STORAGE_BASE, stored);
+  };
+
   return (
     <div className="page admin-page">
       <div className="admin-topbar">
         <div>
-          <div className="admin-title">Manage contacts</div>
-          <div className="admin-path">Manage / Contacts / Manage contacts</div>
+          <div className="admin-title">Control contacts</div>
+          <div className="admin-path">Control / Contacts / Control contacts</div>
         </div>
         <div className="admin-actions">
           <button type="button" className="admin-btn ghost">Import</button>
@@ -95,15 +137,6 @@ export default function ContactsAdmin() {
           </button>
         </div>
       </div>
-
-      <section className="admin-summary">
-        {summary.map((card) => (
-          <div key={card.label} className="admin-summary-card">
-            <div className="admin-summary-label">{card.label}</div>
-            <div className="admin-summary-value">{card.value}</div>
-          </div>
-        ))}
-      </section>
 
       <section className="admin-panel">
         <div className="admin-panel-header">
@@ -132,17 +165,19 @@ export default function ContactsAdmin() {
 
         <div className="admin-table">
           <div className="admin-row admin-row-head admin-row-wide">
-            <span>Contact</span>
-            <span>Role</span>
-            <span>Organisation</span>
-            <span>Phone</span>
-            <span>Status</span>
+            <SortableColumnHeader as="span" label="Contact" {...contactSort.getHeaderProps("name")} />
+            <SortableColumnHeader as="span" label="Role" {...contactSort.getHeaderProps("role")} />
+            <SortableColumnHeader as="span" label="Organisation" {...contactSort.getHeaderProps("org")} />
+            <SortableColumnHeader as="span" label="Phone" {...contactSort.getHeaderProps("phone")} />
+            <SortableColumnHeader as="span" label="Status" {...contactSort.getHeaderProps("status")} />
             <span>Actions</span>
           </div>
-          {filtered.length === 0 ? (
-            <div className="admin-empty">No contacts match your filters.</div>
+          {contactSort.sortedRows.length === 0 ? (
+            <div className="admin-empty">
+              {hasActiveFilters ? "No contacts match your filters." : "No records yet."}
+            </div>
           ) : (
-            filtered.map((row) => (
+            contactSort.sortedRows.map((row) => (
               <div key={row.id} className="admin-row admin-row-wide">
                 <span className="admin-name">{row.name}</span>
                 <span>{row.role}</span>
@@ -189,11 +224,7 @@ export default function ContactsAdmin() {
                 <div className="admin-modal-title">Add contact</div>
                 <div className="admin-modal-sub">Create a new operational contact.</div>
               </div>
-              <button
-                type="button"
-                className="admin-modal-close"
-                onClick={() => setModalOpen(false)}
-              >
+              <button type="button" className="admin-modal-close" onClick={() => setModalOpen(false)}>
                 ✕
               </button>
             </div>
@@ -202,7 +233,7 @@ export default function ContactsAdmin() {
                 Full name
                 <input
                   type="text"
-                  placeholder="Rose Namusoke"
+                  placeholder="Contact name"
                   value={contactDraft.name}
                   onChange={(event) => setContactDraft((current) => ({ ...current, name: event.target.value }))}
                   disabled={modalMode === "view"}
@@ -212,7 +243,7 @@ export default function ContactsAdmin() {
                 Role
                 <input
                   type="text"
-                  placeholder="Fleet Manager"
+                  placeholder="Role"
                   value={contactDraft.role}
                   onChange={(event) => setContactDraft((current) => ({ ...current, role: event.target.value }))}
                   disabled={modalMode === "view"}
@@ -222,7 +253,7 @@ export default function ContactsAdmin() {
                 Organisation
                 <input
                   type="text"
-                  placeholder="EA Transfleet"
+                  placeholder="Organisation"
                   value={contactDraft.org}
                   onChange={(event) => setContactDraft((current) => ({ ...current, org: event.target.value }))}
                   disabled={modalMode === "view"}
@@ -232,7 +263,7 @@ export default function ContactsAdmin() {
                 Phone
                 <input
                   type="text"
-                  placeholder="+256 701 882 449"
+                  placeholder="Phone number"
                   value={contactDraft.phone}
                   onChange={(event) => setContactDraft((current) => ({ ...current, phone: event.target.value }))}
                   disabled={modalMode === "view"}
@@ -240,13 +271,7 @@ export default function ContactsAdmin() {
               </label>
             </div>
             <div className="admin-modal-actions">
-              <button
-                type="button"
-                className="admin-btn ghost"
-                onClick={() => {
-                  setModalOpen(false);
-                }}
-              >
+              <button type="button" className="admin-btn ghost" onClick={() => setModalOpen(false)}>
                 {modalMode === "view" ? "Close" : "Cancel"}
               </button>
               <button
@@ -260,20 +285,18 @@ export default function ContactsAdmin() {
                   const nextRow: ContactRow = {
                     id: editingId ?? `ct-${Date.now()}`,
                     name: contactDraft.name,
-                    role: contactDraft.role,
-                    org: contactDraft.org,
-                    phone: contactDraft.phone,
+                    role: contactDraft.role || "—",
+                    org: contactDraft.org || "—",
+                    phone: contactDraft.phone || "—",
                     status: "active"
                   };
                   setContactRows((current) => {
-                    if (modalMode === "edit" && editingId) {
-                      return current.map((row) => (row.id === editingId ? { ...row, ...nextRow } : row));
-                    }
-                    return [...current, nextRow];
-                  });
-                  void saveToApi("manage:contacts", {
-                    ...contactDraft,
-                    updatedAt: new Date().toISOString()
+                    const next =
+                      modalMode === "edit" && editingId
+                        ? current.map((row) => (row.id === editingId ? { ...row, ...nextRow } : row))
+                        : [...current, nextRow];
+                    persistContactRows(next);
+                    return next;
                   });
                   setModalOpen(false);
                 }}

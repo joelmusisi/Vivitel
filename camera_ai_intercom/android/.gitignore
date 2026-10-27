@@ -1,0 +1,10 @@
+# Android build + secrets (never commit signing material)
+.gradle/
+build/
+local.properties
+keystore.properties
+*.jks
+*.keystore
+!debug.keystore
+captures/
+.cxx/

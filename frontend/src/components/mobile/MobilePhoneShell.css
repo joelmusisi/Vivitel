@@ -1,0 +1,337 @@
+.mobile-phone-header {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 40;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 8px;
+  min-height: var(--phone-header-height, 56px);
+  padding: calc(8px + env(safe-area-inset-top, 0px)) 8px 8px 14px;
+  background: var(--vivi-phone-header);
+  border-bottom: 1px solid var(--vivi-border);
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.08);
+}
+
+.mobile-phone-header__brand {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  cursor: pointer;
+}
+
+/* Stacked wordmark (800x437): fixed height, natural width, pinned left like a native app bar. */
+.mobile-phone-header__logo {
+  flex: 0 0 auto;
+  height: 38px;
+  width: auto;
+  aspect-ratio: 800 / 437;
+  object-fit: contain;
+}
+
+.mobile-phone-header__scope {
+  min-width: 0;
+  padding-left: 10px;
+  border-left: 1px solid var(--vivi-border);
+  font-size: 0.78rem;
+  font-weight: 600;
+  line-height: 1.2;
+  color: var(--vivi-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mobile-phone-header__scope:empty {
+  display: none;
+}
+
+.mobile-phone-header__actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.mobile-phone-header__icon {
+  position: relative;
+  width: 40px;
+  height: 40px;
+  border: 0;
+  border-radius: 12px;
+  background: transparent;
+  color: var(--vivi-text);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.mobile-phone-header__icon svg {
+  width: 20px;
+  height: 20px;
+}
+
+.mobile-phone-header__badge {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--vivi-danger);
+  color: #fff;
+  font-size: 0.62rem;
+  font-weight: 700;
+  line-height: 16px;
+  text-align: center;
+}
+
+.mobile-phone-nav {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 40;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(56px, 1fr));
+  gap: 2px;
+  min-height: var(--phone-nav-height, 64px);
+  padding: 6px 8px calc(8px + env(safe-area-inset-bottom, 0px));
+  background: var(--vivi-phone-nav);
+  border-top: 1px solid var(--vivi-border);
+}
+
+.mobile-phone-nav__item {
+  border: 0;
+  background: transparent;
+  color: var(--vivi-text-muted);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  font-size: 0.68rem;
+  font-weight: 600;
+  border-radius: 12px;
+}
+
+.mobile-phone-nav__item svg {
+  width: 20px;
+  height: 20px;
+}
+
+.mobile-phone-nav__item.is-active {
+  color: var(--vivi-phone-nav-active);
+  background: var(--vivi-accent-soft);
+}
+
+.mobile-phone-drawer__backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  border: 0;
+  background: rgba(2, 6, 23, 0.45);
+}
+
+.mobile-phone-drawer__panel {
+  position: fixed;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  z-index: 51;
+  width: min(88vw, 360px);
+  background: var(--vivi-surface);
+  color: var(--vivi-text);
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.28);
+}
+
+.mobile-phone-drawer__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px;
+  border-bottom: 1px solid var(--vivi-border);
+}
+
+.mobile-phone-drawer__logo {
+  width: 160px;
+  height: 40px;
+}
+
+.mobile-phone-drawer__body {
+  overflow: auto;
+  padding: 12px 16px 24px;
+}
+
+.mobile-phone-drawer__section + .mobile-phone-drawer__section {
+  margin-top: 16px;
+}
+
+.mobile-phone-drawer__section h3 {
+  margin: 0 0 8px;
+  font-size: 0.78rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--vivi-text-muted);
+}
+
+.mobile-phone-drawer__section ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.mobile-phone-drawer__section li + li {
+  margin-top: 4px;
+}
+
+.mobile-phone-drawer__section button {
+  width: 100%;
+  text-align: left;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--vivi-text);
+  padding: 10px 12px;
+  font-size: 0.95rem;
+}
+
+.mobile-phone-drawer__section button:active {
+  background: var(--vivi-accent-soft);
+}
+
+.mobile-phone-drawer__empty {
+  color: var(--vivi-text-muted);
+  margin: 0;
+}
+
+.theme-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--vivi-border);
+  border-radius: 999px;
+  background: var(--vivi-surface-elevated);
+  color: var(--vivi-text);
+  padding: 8px 12px;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.theme-toggle--compact {
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border-radius: 12px;
+  justify-content: center;
+}
+
+.theme-toggle svg {
+  width: 18px;
+  height: 18px;
+}
+
+.mobile-profile-page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.mobile-profile-card {
+  background: var(--vivi-surface);
+  border: 1px solid var(--vivi-border);
+  border-radius: 16px;
+  padding: 16px;
+}
+
+.mobile-profile-card h2 {
+  margin: 0 0 8px;
+  font-size: 1rem;
+}
+
+.mobile-profile-links {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.mobile-profile-links button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  border: 0;
+  border-radius: 12px;
+  background: var(--vivi-surface-elevated);
+  color: var(--vivi-text);
+  padding: 12px 14px;
+  text-align: left;
+  font-size: 0.92rem;
+}
+
+.mobile-profile-links small {
+  color: var(--vivi-text-muted);
+  display: block;
+  margin-top: 2px;
+  font-size: 0.75rem;
+}
+
+.mobile-profile-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.mobile-profile-actions .theme-toggle {
+  flex: 1;
+  justify-content: center;
+}
+
+.mobile-profile-actions button.ghost {
+  flex: 1;
+  border: 1px solid var(--vivi-border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--vivi-text);
+  padding: 10px 14px;
+}
+
+[data-theme="dark"] .viv-dash {
+  margin: -12px -14px 0;
+  min-height: calc(100dvh - var(--phone-header-height) - var(--phone-nav-height) - 24px);
+}
+
+.app-shell--map-tracking.app-shell--phone {
+  padding-top: calc(var(--phone-header-height) + env(safe-area-inset-top, 0px));
+  height: 100dvh;
+  overflow: hidden;
+}
+
+/* The live map fills exactly the space between the header and the tab bar, so it never
+   scrolls behind them (zoom buttons under the header, trip replay under the tabs). */
+.app-shell--phone .live-page--mobile-shell {
+  height: calc(100dvh - var(--phone-header-height) - var(--phone-nav-height) - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
+  min-height: 0;
+}
+
+.topnav-theme-toggle.theme-toggle--compact {
+  border: 0;
+  background: transparent;
+}
+
+/* Hide the bottom-right Leaflet attribution on phone maps. */
+.app-shell--phone .leaflet-control-attribution {
+  display: none !important;
+}
+
+/* Site selection on Profile: opens the app-level hierarchy picker. */
+.mobile-profile-links .mobile-scope-button {
+  min-height: 56px;
+  font-weight: 600;
+}

@@ -1,4 +1,6 @@
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
+import SortableColumnHeader from "../../components/SortableColumnHeader";
+import { useColumnSort } from "../../hooks/useColumnSort";
 import { useNavigate } from "react-router-dom";
 import "../../index.css";
 
@@ -12,70 +14,19 @@ type TaskRow = {
   status: "open" | "in-progress" | "blocked" | "done";
 };
 
-type QueueRow = {
-  id: string;
-  label: string;
-  count: number;
-};
-
-const queues: QueueRow[] = [
-  { id: "q-1", label: "Open tasks", count: 24 },
-  { id: "q-2", label: "In progress", count: 11 },
-  { id: "q-3", label: "Blocked", count: 4 },
-  { id: "q-4", label: "Completed", count: 32 }
-];
-
-const tasks: TaskRow[] = [
-  {
-    id: "task-1",
-    title: "Investigate harsh brake alert",
-    asset: "KBX 204T",
-    assignee: "M. Apio",
-    due: "Today 17:00",
-    priority: "high",
-    status: "open"
-  },
-  {
-    id: "task-2",
-    title: "Schedule tyre replacement",
-    asset: "KDA 923M",
-    assignee: "Workshop",
-    due: "Tomorrow 10:00",
-    priority: "medium",
-    status: "in-progress"
-  },
-  {
-    id: "task-3",
-    title: "Driver hours review",
-    asset: "Fleet Ops",
-    assignee: "S. Kato",
-    due: "Jan 24",
-    priority: "low",
-    status: "done"
-  },
-  {
-    id: "task-4",
-    title: "Roadside assistance follow-up",
-    asset: "KBX 771P",
-    assignee: "Dispatch",
-    due: "Today 14:30",
-    priority: "critical",
-    status: "blocked"
-  }
-];
-
 export default function Tasks() {
   const navigate = useNavigate();
   const [activeQueue, setActiveQueue] = useState("Open tasks");
   const [search, setSearch] = useState("");
   const [priorityFilter, setPriorityFilter] = useState("all");
+  const tasks: TaskRow[] = [];
 
-  const summary = useMemo(
+  const queues = useMemo(
     () => [
-      { label: "Open", value: tasks.filter((task) => task.status === "open").length },
-      { label: "In progress", value: tasks.filter((task) => task.status === "in-progress").length },
-      { label: "Blocked", value: tasks.filter((task) => task.status === "blocked").length },
-      { label: "Due today", value: 7 }
+      { id: "q-1", label: "Open tasks", count: 0 },
+      { id: "q-2", label: "In progress", count: 0 },
+      { id: "q-3", label: "Blocked", count: 0 },
+      { id: "q-4", label: "Completed", count: 0 }
     ],
     []
   );
@@ -89,14 +40,27 @@ export default function Tasks() {
       const matchesPriority = priorityFilter === "all" || task.priority === priorityFilter;
       return matchesSearch && matchesPriority;
     });
-  }, [search, priorityFilter]);
+  }, [tasks, search, priorityFilter]);
+
+  const hasActiveFilters = search.trim().length > 0 || priorityFilter !== "all";
+
+  const getTaskSortValue = useCallback((row: TaskRow, key: string) => {
+    if (key === "task") return row.title;
+    if (key === "asset") return row.asset;
+    if (key === "assignee") return row.assignee;
+    if (key === "due") return row.due;
+    if (key === "priority") return row.priority;
+    if (key === "status") return row.status;
+    return "";
+  }, []);
+  const taskSort = useColumnSort({ rows: filteredTasks, getValue: getTaskSortValue });
 
   return (
     <div className="page tasks-page">
       <div className="tasks-topbar">
         <div>
           <div className="tasks-title">Tasks</div>
-          <div className="tasks-path">Monitor / Task management / Tasks</div>
+          <div className="tasks-path">Track / Task Controlment / Tasks</div>
         </div>
         <div className="tasks-actions">
           <button
@@ -104,7 +68,7 @@ export default function Tasks() {
             className="tasks-btn ghost"
             onClick={() =>
               navigate(
-                "/measure/insights/reports?category=List%20Reports&report=Summary%20and%20Detailed%20Task%20Report%20by%20Template%20and%20Date"
+                "/Analyze/insights/reports?category=List%20Reports&report=Summary%20and%20Detailed%20Task%20Report%20by%20Template%20and%20Date"
               )
             }
           >
@@ -124,15 +88,6 @@ export default function Tasks() {
           </button>
         </div>
       </div>
-
-      <section className="tasks-summary">
-        {summary.map((card) => (
-          <div key={card.label} className="tasks-summary-card">
-            <div className="tasks-summary-label">{card.label}</div>
-            <div className="tasks-summary-value">{card.value}</div>
-          </div>
-        ))}
-      </section>
 
       <section className="tasks-layout">
         <aside className="tasks-panel">
@@ -156,7 +111,7 @@ export default function Tasks() {
             ))}
           </div>
           <div className="tasks-panel-footer">
-            <button type="button" className="tasks-link">Manage queues</button>
+            <button type="button" className="tasks-link">Control queues</button>
           </div>
         </aside>
 
@@ -188,18 +143,20 @@ export default function Tasks() {
           </div>
           <div className="tasks-table">
             <div className="tasks-row tasks-row-head">
-              <span>Task</span>
-              <span>Asset / Group</span>
-              <span>Assignee</span>
-              <span>Due</span>
-              <span>Priority</span>
-              <span>Status</span>
+              <SortableColumnHeader as="span" label="Task" {...taskSort.getHeaderProps("task")} />
+              <SortableColumnHeader as="span" label="Asset / Group" {...taskSort.getHeaderProps("asset")} />
+              <SortableColumnHeader as="span" label="Assignee" {...taskSort.getHeaderProps("assignee")} />
+              <SortableColumnHeader as="span" label="Due" {...taskSort.getHeaderProps("due")} />
+              <SortableColumnHeader as="span" label="Priority" {...taskSort.getHeaderProps("priority")} />
+              <SortableColumnHeader as="span" label="Status" {...taskSort.getHeaderProps("status")} />
               <span>Actions</span>
             </div>
-            {filteredTasks.length === 0 ? (
-              <div className="tasks-empty">No tasks match your filters.</div>
+            {taskSort.sortedRows.length === 0 ? (
+              <div className="tasks-empty">
+                {hasActiveFilters ? "No tasks match your filters." : "No records yet."}
+              </div>
             ) : (
-              filteredTasks.map((task) => (
+              taskSort.sortedRows.map((task) => (
                 <div key={task.id} className="tasks-row">
                   <span className="tasks-title-cell">{task.title}</span>
                   <span>{task.asset}</span>

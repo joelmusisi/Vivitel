@@ -1,17 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-  <defs>
-    <linearGradient id="g" x1="0" x2="1" y1="0" y2="1">
-      <stop offset="0%" stop-color="#2563eb" />
-      <stop offset="100%" stop-color="#1d4ed8" />
-    </linearGradient>
-  </defs>
-  <rect width="64" height="64" rx="14" fill="url(#g)" />
-  <path
-    d="M18 40c3 4 9 7 14 7 8 0 14-6 14-13 0-7-6-13-14-13-5 0-9 3-12 7"
-    fill="none"
-    stroke="white"
-    stroke-width="5"
-    stroke-linecap="round"
-  />
-  <circle cx="32" cy="34" r="6" fill="white" />
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="VIVI Telematics">
+  <rect width="64" height="64" rx="14" fill="#111111"/>
+  <g transform="translate(32 22) scale(0.72) translate(0 -38.4)">
+    <path fill="#89c84a" fill-rule="evenodd" d="M0 -24c13.2 0 24 10.8 24 24 0 9.6-10.8 22.8-24 38.4C-13.2 22.8-24 9.6-24 0c0-13.2 10.8-24 24-24zm0 14.4a9.6 9.6 0 1 0 0 19.2 9.6 9.6 0 0 0 0-19.2z"/>
+  </g>
 </svg>

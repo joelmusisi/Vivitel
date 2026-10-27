@@ -1,0 +1,52 @@
+# Vivitel VPS service split — Kubernetes
+# Same container image; VIVI_SERVICE_ROLE selects Track | Control | Analyse | Deliver.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: vivitel
+  labels:
+    app.kubernetes.io/part-of: vivitel
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vivitel-shared
+  namespace: vivitel
+data:
+  NODE_ENV: "production"
+  PORT: "8787"
+  REQUIRE_PERSISTENT_DB: "true"
+  # Point all pods at shared Valkey / PG mirror (adjust for your cluster).
+  VALKEY_URL: "redis://valkey.vivitel.svc.cluster.local:6379"
+  # Cloudflare Worker remains the browser edge gateway; VPS services are upstreams.
+  WORKER_TELEMETRY_FORWARD_URL: "https://api.vivitelematics.ca/ingest/telemetry"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: vivitel-secrets
+  namespace: vivitel
+type: Opaque
+stringData:
+  # Replace before apply — do not commit real production secrets.
+  ADMIN_EMAIL: "admin@example.com"
+  ADMIN_PASSWORD_HASH: "replace-me"
+  API_KEY: "replace-me"
+  PG_MIRROR_DATABASE_URL: ""
+  RESEND_API_KEY: ""
+  MAIL_FROM: ""
+  # Backblaze B2 — legacy/default
+  B2_KEY_ID: ""
+  B2_APP_KEY: ""
+  B2_BUCKET: ""
+  B2_REGION: "ca-east-006"
+  B2_ENDPOINT: "https://s3.ca-east-006.backblazeb2.com"
+  # Track module bucket (VIVI-TRACK)
+  B2_TRACK_KEY_ID: ""
+  B2_TRACK_APP_KEY: ""
+  B2_BUCKET_TRACK: "VIVI-TRACK"
+  # Reports cold archive (Vivi-Reports)
+  B2_REPORTS_KEY_ID: ""
+  B2_REPORTS_APP_KEY: ""
+  B2_BUCKET_REPORTS: "Vivi-Reports"
+  REPORT_ARCHIVE_HOT_DAYS: "90"

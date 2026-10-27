@@ -1,0 +1,51 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-shared
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "vivitel.moduleLabels" (dict "Release" .Release "role" "shared") | nindent 4 }}
+data:
+{{- range $k, $v := .Values.env }}
+  {{ $k }}: {{ $v | quote }}
+{{- end }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Release.Name }}-secrets
+  namespace: {{ .Values.global.namespace }}
+type: Opaque
+stringData:
+{{- range $k, $v := .Values.secrets }}
+  {{ $k }}: {{ $v | quote }}
+{{- end }}
+{{- if .Values.persistence.enabled }}
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: {{ .Release.Name }}-sqlite-pv
+  namespace: {{ .Values.global.namespace }}
+spec:
+  capacity:
+    storage: {{ .Values.persistence.size }}
+  accessModes: ["ReadWriteMany"]
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: {{ .Release.Name }}-hostpath
+  hostPath:
+    path: {{ .Values.persistence.hostPath }}
+    type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-sqlite-data
+  namespace: {{ .Values.global.namespace }}
+spec:
+  accessModes: ["ReadWriteMany"]
+  storageClassName: {{ .Release.Name }}-hostpath
+  resources:
+    requests:
+      storage: {{ .Values.persistence.size }}
+{{- end }}
