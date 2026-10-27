@@ -35,8 +35,14 @@ import {
   upsertAssetDetailedForTenant,
   getDriversFromApi,
   ensureNamedDriverOnServer,
-  getGpsIotAssetInputStatus
+  getGpsIotAssetInputStatus,
+  getTraccarLive,
+  type TraccarLiveRow
 } from "../utils/api";
+import { configUploadDateFromGroups, deriveDeviceFaults } from "../utils/assetDeviceStatus";
+
+/** Faults cell for a device that is reporting and has nothing wrong. */
+const NO_DEVICE_FAULTS = "None";
 import { resolveRoleScopeRulesFromPrincipal } from "../utils/roleScopeRules";
 import { isGpsIotServer } from "../utils/regionServers";
 import AssetIoListModal from "../components/AssetIoListModal";
@@ -1911,6 +1917,10 @@ export default function Assets() {
   const loadedSiteRef = useRef(readActiveSiteName());
   const [assetsListLoading, setAssetsListLoading] = useState(() => readAssetsCache().length === 0);
   const [configGroupOptions, setConfigGroupOptions] = useState<ConfigGroupOption[]>([]);
+  /** Raw scoped groups: their compile records give each device's config upload date. */
+  const [configGroupRecords, setConfigGroupRecords] = useState<ConfigGroupLike[]>([]);
+  /** Latest Traccar report per IMEI: what the device itself says about its faults. */
+  const [liveDeviceByImei, setLiveDeviceByImei] = useState<Map<string, TraccarLiveRow>>(() => new Map());
   const [siteOptions, setSiteOptions] = useState<string[]>([]);
 
   const resolveConfigGroupLabel = (raw: unknown) => {
@@ -2485,6 +2495,7 @@ export default function Assets() {
 
       const options = buildConfigGroupOptions(source);
       setConfigGroupOptions(options);
+      setConfigGroupRecords(source as ConfigGroupLike[]);
     };
     void loadConfigGroups();
     return () => {
@@ -2524,6 +2535,7 @@ export default function Assets() {
 
         const options = buildConfigGroupOptions(source);
         setConfigGroupOptions(options);
+        setConfigGroupRecords(source as ConfigGroupLike[]);
       })();
     };
     window.addEventListener("vivi:orgchange", handleOrgChange);
@@ -2566,6 +2578,7 @@ export default function Assets() {
 
       const options = buildConfigGroupOptions(source);
       setConfigGroupOptions(options);
+      setConfigGroupRecords(source as ConfigGroupLike[]);
       if (options.length) {
         setFormValues((current) => {
           if (current.configurationGroup) return current;
@@ -2730,6 +2743,52 @@ export default function Assets() {
     });
   }, [pathScopedAssets, activeFilter, searchQuery, bulkFilterTokens]);
 
+  // Device-reported faults: refresh from the shared (cached) Traccar live snapshot.
+  useEffect(() => {
+    let mounted = true;
+    const load = async () => {
+      const live = await getTraccarLive();
+      if (!mounted) return;
+      const next = new Map<string, TraccarLiveRow>();
+      for (const row of live) {
+        const imei = String(row.imei ?? "").trim();
+        if (imei) next.set(imei, row);
+      }
+      setLiveDeviceByImei(next);
+    };
+    void load();
+    const timer = window.setInterval(() => void load(), 60_000);
+    window.addEventListener("vivi:orgchange", load);
+    return () => {
+      mounted = false;
+      window.clearInterval(timer);
+      window.removeEventListener("vivi:orgchange", load);
+    };
+  }, []);
+
+  /** Stored faults win; otherwise what the tracker reports through Traccar. */
+  const resolveAssetFaults = useCallback(
+    (asset: Asset): string => {
+      const stored = String(asset.faults ?? "").trim();
+      if (stored) return stored;
+      const imei = String(asset.imei ?? "").trim();
+      const live = imei ? liveDeviceByImei.get(imei) : undefined;
+      if (!live) return "";
+      return deriveDeviceFaults(live).join(", ") || NO_DEVICE_FAULTS;
+    },
+    [liveDeviceByImei]
+  );
+
+  /** Stored upload date wins; otherwise the device's accepted upload in its configuration group. */
+  const resolveConfigUploadDate = useCallback(
+    (asset: Asset): string => {
+      const raw = String(asset.configUploadDate ?? "").trim()
+        || configUploadDateFromGroups(asset, configGroupRecords as any);
+      return raw ? formatTimestampForSite(raw, asset.site, siteTimeZones) || raw : "";
+    },
+    [configGroupRecords, siteTimeZones]
+  );
+
   const getAssetColumnSortValue = useCallback(
     (asset: Asset, key: ColumnKey): unknown => {
       if (key === "assetDescription") {
@@ -2751,9 +2810,15 @@ export default function Assets() {
       if (key === "model") return resolveAssetDisplayModel(asset);
       if (key === "mobileDevice") return resolveMobileDeviceLabel(asset);
       if (key === "configGroup") return resolveConfigGroupLabel(asset.configGroup);
+      if (key === "faults") return resolveAssetFaults(asset);
+      if (key === "configUploadDate") {
+        const raw = String(asset.configUploadDate ?? "").trim()
+          || configUploadDateFromGroups(asset, configGroupRecords as any);
+        return raw ? Date.parse(raw) || raw : "";
+      }
       return asset[key as keyof Asset] ?? "";
     },
-    [siteTimeZones, configGroupOptions]
+    [siteTimeZones, configGroupOptions, resolveAssetFaults, configGroupRecords]
   );
 
   const { sortedRows: sortedFilteredAssets, getHeaderProps: getAssetHeaderProps } = useColumnSort({
@@ -3193,6 +3258,8 @@ export default function Assets() {
     const rows = filteredAssets.map((a) =>
       activeCols.map((c) => {
         if (c.key === "infoIssued") return getInfoIssued(a) ? "Yes" : "No";
+        if (c.key === "faults") return resolveAssetFaults(a);
+        if (c.key === "configUploadDate") return resolveConfigUploadDate(a);
         return String((a as any)[c.key] ?? "");
       })
     );
@@ -4772,6 +4839,14 @@ export default function Assets() {
                           }
                           return formatTimestampForSite(raw, a.site, siteTimeZones) || "";
                         })()
+                      ) : col.key === "faults" ? (
+                        (() => {
+                          const faults = resolveAssetFaults(a);
+                          if (!faults || faults === NO_DEVICE_FAULTS) return faults;
+                          return <span className="assets-cell-faults" title={faults}>{faults}</span>;
+                        })()
+                      ) : col.key === "configUploadDate" ? (
+                        resolveConfigUploadDate(a)
                       ) : col.key === "model" ? (
                         displayValue(resolveAssetDisplayModel(a))
                       ) : col.key === "mobileDevice" ? (

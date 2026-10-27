@@ -28,6 +28,13 @@ body,
   height: 100%;
 }
 
+/* iPad Safari "text autosizing" inflates fonts when the page is wider than the screen (our
+   1440px desktop canvas), pushing menu and dropdown items out of reach. Keep authored sizes. */
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
 body {
   margin: 0;
   min-height: 100vh;
@@ -1144,6 +1151,10 @@ h1 {
   grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
   gap: 14px;
   min-width: 840px;
+  /* Never taller than the screen below the top bar; scroll instead of hiding the last links. */
+  max-height: calc(100vh - var(--topnav-height) - 24px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
   box-shadow: 0 18px 40px rgba(0, 0, 0, 0.45);
   border: 1px solid rgba(137, 200, 74, 0.2);
   z-index: 4500;
@@ -31618,4 +31629,10 @@ html.vivi-desktop-scaled .vivi-left-panel-toggle {
   width: 30px;
   height: 90px;
   font-size: 28px;
+}
+
+/* Assets: device-reported faults stand out from ordinary cell text. */
+.assets-cell-faults {
+  color: #b91c1c;
+  font-weight: 600;
 }
