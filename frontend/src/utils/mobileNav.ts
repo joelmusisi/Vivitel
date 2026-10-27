@@ -11,7 +11,7 @@ export type MobileNavTab = {
 const TAB_DEFS: MobileNavTab[] = [
   { id: "home", label: "Home", path: "/", icon: "home" },
   { id: "map", label: "Map", path: "/Track/tracking/live", icon: "map" },
-  { id: "preview", label: "Preview", path: "/mobile/preview", icon: "preview" },
+  { id: "preview", label: "Trips", path: "/mobile/preview", icon: "preview" },
   { id: "profile", label: "Profile", path: "/mobile/profile", icon: "profile" }
 ];
 

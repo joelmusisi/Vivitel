@@ -73,13 +73,23 @@ export async function resolveDeviceIdForAsset(asset: Record<string, unknown>): P
   return null;
 }
 
+const NAME_FIELDS = ["registration", "assetDescription", "name", "plate", "vin", "deviceName", "label"] as const;
+
+/** True when the asset has a human name (not just tracker telemetry). */
+export function assetHasName(asset: Record<string, unknown>): boolean {
+  return NAME_FIELDS.some((field) => String(asset[field] ?? "").trim());
+}
+
 export function assetDisplayName(asset: Record<string, unknown>): string {
-  return (
-    String(asset.registration ?? "").trim() ||
-    String(asset.assetDescription ?? "").trim() ||
-    String(asset.name ?? "").trim() ||
-    "Asset"
-  );
+  for (const field of NAME_FIELDS) {
+    const value = String(asset[field] ?? "").trim();
+    if (value) return value;
+  }
+  // Telemetry-only trackers have no name; label them by IMEI so rows are distinguishable.
+  const imei = String(asset.imei ?? asset.uniqueId ?? asset.id ?? "").trim();
+  if (imei) return `Device ···${imei.slice(-4)}`;
+  const deviceId = String(asset.deviceId ?? "").trim();
+  return deviceId ? `Device #${deviceId}` : "Unnamed device";
 }
 
 export async function fetchAssetTripHistory(

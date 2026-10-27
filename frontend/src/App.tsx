@@ -530,7 +530,7 @@ export function App() {
         <Route path="/mobile" element={<Navigate to="/" replace />} />
         <Route path="/mobile/profile" element={renderLazyRoute(MobileProfile, "Profile", "Loading page")} />
         <Route path="/mobile/alerts" element={renderLazyRoute(MobileAlerts, "Alerts", "Loading page")} />
-        <Route path="/mobile/preview" element={renderLazyRoute(MobilePreview, "Preview", "Loading page")} />
+        <Route path="/mobile/preview" element={renderLazyRoute(MobilePreview, "Trips", "Loading page")} />
         <Route path="/mobile/personal-settings" element={renderLazyRoute(MobilePersonalSettings, "Personal Settings", "Loading page")} />
         <Route path="/share/live/:token" element={renderLazyRoute(LiveSharePublic, "Live share", "Loading page")} />
         <Route path="/login" element={renderLazyRoute(Login, "Login", "Loading page")} />

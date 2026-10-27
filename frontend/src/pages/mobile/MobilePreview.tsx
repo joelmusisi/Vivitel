@@ -4,6 +4,7 @@ import { CircleMarker, MapContainer, Polyline, TileLayer, useMap } from "react-l
 import { loadScopedAssets } from "../../utils/homeScopedDevices";
 import {
   assetDisplayName,
+  assetHasName,
   fetchAssetTripHistory,
   fetchTripRoute,
   resolveDeviceIdForAsset,
@@ -124,6 +125,7 @@ function TripReplayOverlay({
 type AssetRow = {
   id: string;
   name: string;
+  named: boolean;
   asset: Record<string, unknown>;
 };
 
@@ -140,12 +142,23 @@ export default function MobilePreview() {
     setLoadingAssets(true);
     try {
       const rows = await loadScopedAssets();
+      // One row per device, named vehicles first (alphabetical), unnamed trackers after.
+      const seen = new Set<string>();
+      const unique = rows.filter((asset, index) => {
+        const key = String(asset.imei ?? asset.deviceId ?? asset.id ?? `row-${index}`);
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
       setAssets(
-        rows.map((asset, index) => ({
-          id: String(asset.id ?? asset.registration ?? index),
-          name: assetDisplayName(asset),
-          asset
-        }))
+        unique
+          .map((asset, index) => ({
+            id: String(asset.id ?? asset.registration ?? index),
+            name: assetDisplayName(asset),
+            named: assetHasName(asset),
+            asset
+          }))
+          .sort((a, b) => Number(b.named) - Number(a.named) || a.name.localeCompare(b.name))
       );
     } finally {
       setLoadingAssets(false);
@@ -196,7 +209,7 @@ export default function MobilePreview() {
       <div className="mpreview">
         <header className="mpreview-head">
           <button type="button" className="mpreview-back" onClick={() => setSelected(null)}>
-            ← Assets
+            ← Vehicles
           </button>
           <h1>{selected.name}</h1>
           <p>Last 7 days · tap a trip stage to play it on the map</p>
@@ -246,7 +259,8 @@ export default function MobilePreview() {
   return (
     <div className="mpreview">
       <header className="mpreview-head">
-        <h1>Preview</h1>
+        <h1>Trips</h1>
+        <p>Pick a vehicle to see and replay its trips from the last 7 days. Live positions are on Map.</p>
       </header>
 
       {loadingAssets && <p className="mpreview-empty">Loading assets…</p>}

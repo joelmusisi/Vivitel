@@ -122,7 +122,7 @@ export const TrackNav: NavItem[] = [
     title: "ROUTES",
     items: [
       { label: "Workflow", path: "/Track/routes/workflow" },
-      { label: "Libraries", path: "/Track/routes/libraries" },
+      { label: "Route Libraries", path: "/Track/routes/libraries" },
       { label: "Tracking", path: "/Track/routes/Tracking" },
       { label: "Resource allocation", path: "/Track/routes/resource-allocation" }
     ]
