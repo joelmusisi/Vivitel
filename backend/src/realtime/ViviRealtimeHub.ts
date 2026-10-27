@@ -207,7 +207,7 @@ export class ViviRealtimeHub implements DurableObject {
       });
     }
 
-    // Durable site route archives (fallback when object storage upload is unavailable).
+    // Legacy site route archives: read-only, so old data can be copied to the VPS.
     if (path.endsWith("/routes-library") || path === "/routes-library") {
       const tenantId = String(url.searchParams.get("tenant") ?? request.headers.get("x-tenant-id") ?? "").trim();
       const site = String(url.searchParams.get("site") ?? "").trim();
@@ -246,50 +246,13 @@ export class ViviRealtimeHub implements DurableObject {
         });
       }
 
-      if (request.method === "PUT" || request.method === "POST") {
-        const text = await request.text();
-        if (!String(text ?? "").trim()) {
-          return new Response(JSON.stringify({ ok: false, error: "Empty body" }), {
-            status: 400,
-            headers: { "content-type": "application/json" }
-          });
-        }
-        const updatedAt = new Date().toISOString();
-        let stored = false;
-        try {
-          this.state.storage.sql.exec(
-            `INSERT OR REPLACE INTO route_libraries (site, payload, updated_at) VALUES (?, ?, ?)`,
-            siteKey,
-            text,
-            updatedAt
-          );
-          stored = true;
-        } catch {
-          try {
-            await this.state.storage.put(storageKey, text);
-            stored = true;
-          } catch {
-            stored = false;
-          }
-        }
-        if (!stored) {
-          return new Response(JSON.stringify({ ok: false, error: "Unable to persist route archive" }), {
-            status: 503,
-            headers: { "content-type": "application/json" }
-          });
-        }
-        return new Response(JSON.stringify({ ok: true, stored: true, site, tenantId }), {
-          headers: { "content-type": "application/json" }
-        });
-      }
-
-      return new Response(JSON.stringify({ ok: false, error: "Use GET or PUT" }), {
+      return new Response(JSON.stringify({ ok: false, error: "Read-only legacy store; route libraries are saved on the VPS" }), {
         status: 405,
         headers: { "content-type": "application/json" }
       });
     }
 
-    // Durable fallback for site-scoped libraries when Cloudflare KV is unavailable/quota-limited.
+    // Legacy site-scoped libraries: read-only, so old data can be copied to the VPS.
     if (path.endsWith("/scoped-kv") || path === "/scoped-kv") {
       const tenantId = String(url.searchParams.get("tenant") ?? request.headers.get("x-tenant-id") ?? "").trim();
       const key = String(url.searchParams.get("key") ?? "").trim();
@@ -325,44 +288,7 @@ export class ViviRealtimeHub implements DurableObject {
         });
       }
 
-      if (request.method === "PUT" || request.method === "POST") {
-        const text = await request.text();
-        if (!String(text ?? "").trim()) {
-          return new Response(JSON.stringify({ ok: false, error: "Empty body" }), {
-            status: 400,
-            headers: { "content-type": "application/json" }
-          });
-        }
-        const updatedAt = new Date().toISOString();
-        let stored = false;
-        try {
-          this.state.storage.sql.exec(
-            `INSERT OR REPLACE INTO scoped_kv (k, payload, updated_at) VALUES (?, ?, ?)`,
-            key,
-            text,
-            updatedAt
-          );
-          stored = true;
-        } catch {
-          try {
-            await this.state.storage.put(storageKey, text);
-            stored = true;
-          } catch {
-            stored = false;
-          }
-        }
-        if (!stored) {
-          return new Response(JSON.stringify({ ok: false, error: "Unable to persist scoped library" }), {
-            status: 503,
-            headers: { "content-type": "application/json" }
-          });
-        }
-        return new Response(JSON.stringify({ ok: true, stored: true, key, tenantId }), {
-          headers: { "content-type": "application/json" }
-        });
-      }
-
-      return new Response(JSON.stringify({ ok: false, error: "Use GET or PUT" }), {
+      return new Response(JSON.stringify({ ok: false, error: "Read-only legacy store; scoped libraries are saved on the VPS" }), {
         status: 405,
         headers: { "content-type": "application/json" }
       });
@@ -828,32 +754,6 @@ export async function readRouteLibraryFromDurableStore(
   }
 }
 
-export async function writeRouteLibraryToDurableStore(
-  env: { REALTIME_HUB?: DurableObjectNamespace },
-  tenantId: string,
-  site: string,
-  payloadText: string
-): Promise<boolean> {
-  const tid = String(tenantId ?? "").trim();
-  const siteName = String(site ?? "").trim();
-  const ns = env.REALTIME_HUB;
-  if (!tid || !siteName || !ns) return false;
-  try {
-    const id = ns.idFromName(tid);
-    const stub = ns.get(id);
-    const res = await stub.fetch(
-      `https://realtime/routes-library?tenant=${encodeURIComponent(tid)}&site=${encodeURIComponent(siteName)}`,
-      {
-        method: "PUT",
-        headers: { "x-tenant-id": tid, "content-type": "application/json" },
-        body: payloadText
-      }
-    );
-    return res.ok;
-  } catch {
-    return false;
-  }
-}
 
 export async function readScopedKvFromDurableStore(
   env: { REALTIME_HUB?: DurableObjectNamespace },
@@ -880,29 +780,3 @@ export async function readScopedKvFromDurableStore(
   }
 }
 
-export async function writeScopedKvToDurableStore(
-  env: { REALTIME_HUB?: DurableObjectNamespace },
-  tenantId: string,
-  key: string,
-  payloadText: string
-): Promise<boolean> {
-  const tid = String(tenantId ?? "").trim();
-  const scopedKey = String(key ?? "").trim();
-  const ns = env.REALTIME_HUB;
-  if (!tid || !scopedKey || !ns) return false;
-  try {
-    const id = ns.idFromName(tid);
-    const stub = ns.get(id);
-    const res = await stub.fetch(
-      `https://realtime/scoped-kv?tenant=${encodeURIComponent(tid)}&key=${encodeURIComponent(scopedKey)}`,
-      {
-        method: "PUT",
-        headers: { "x-tenant-id": tid, "content-type": "application/json" },
-        body: payloadText
-      }
-    );
-    return res.ok;
-  } catch {
-    return false;
-  }
-}
