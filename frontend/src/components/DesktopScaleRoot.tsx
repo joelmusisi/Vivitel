@@ -23,10 +23,13 @@ export function DesktopScaleRoot({ enabled, children }: DesktopScaleRootProps) {
     const apply = () => {
       // Round so Windows DPI/resize jitter cannot thrash scale → remount → React #185.
       const next = Number(computeDesktopScale(window.innerWidth, false).toFixed(4));
+      // Always write the CSS var: the cleanup below resets it to 1, and when the effect re-runs
+      // with an unchanged scale the state bail-out would otherwise leave the var stale. A stale
+      // var made full-height pages (Live Tracking) only ~half the tablet screen tall.
+      document.documentElement.style.setProperty("--vivi-desktop-scale", String(next));
+      document.documentElement.classList.toggle("vivi-desktop-scaled", next < 1);
       setScale((prev) => {
         if (prev === next) return prev;
-        document.documentElement.style.setProperty("--vivi-desktop-scale", String(next));
-        document.documentElement.classList.toggle("vivi-desktop-scaled", next < 1);
         window.dispatchEvent(new CustomEvent("vivi:desktop-scale", { detail: { scale: next } }));
         return next;
       });

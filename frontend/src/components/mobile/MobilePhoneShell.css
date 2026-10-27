@@ -9,7 +9,7 @@
   align-items: center;
   gap: 8px;
   min-height: var(--phone-header-height, 56px);
-  padding: 8px 10px calc(8px + env(safe-area-inset-top, 0px));
+  padding: calc(8px + env(safe-area-inset-top, 0px)) 8px 8px 14px;
   background: var(--vivi-phone-header);
   border-bottom: 1px solid var(--vivi-border);
   box-shadow: 0 4px 18px rgba(0, 0, 0, 0.08);
@@ -17,25 +17,37 @@
 
 .mobile-phone-header__brand {
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   align-items: center;
-  justify-content: center;
+  gap: 10px;
   min-width: 0;
   cursor: pointer;
 }
 
+/* Stacked wordmark (800x437): fixed height, natural width, pinned left like a native app bar. */
 .mobile-phone-header__logo {
-  width: min(148px, 42vw);
-  height: 34px;
+  flex: 0 0 auto;
+  height: 38px;
+  width: auto;
+  aspect-ratio: 800 / 437;
+  object-fit: contain;
 }
 
 .mobile-phone-header__scope {
-  font-size: 0.68rem;
-  color: var(--vivi-text-muted);
+  min-width: 0;
+  padding-left: 10px;
+  border-left: 1px solid var(--vivi-border);
+  font-size: 0.78rem;
+  font-weight: 600;
+  line-height: 1.2;
+  color: var(--vivi-text);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 100%;
+}
+
+.mobile-phone-header__scope:empty {
+  display: none;
 }
 
 .mobile-phone-header__actions {
@@ -297,6 +309,15 @@
 
 .app-shell--map-tracking.app-shell--phone {
   padding-top: calc(var(--phone-header-height) + env(safe-area-inset-top, 0px));
+  height: 100dvh;
+  overflow: hidden;
+}
+
+/* The live map fills exactly the space between the header and the tab bar, so it never
+   scrolls behind them (zoom buttons under the header, trip replay under the tabs). */
+.app-shell--phone .live-page--mobile-shell {
+  height: calc(100dvh - var(--phone-header-height) - var(--phone-nav-height) - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
+  min-height: 0;
 }
 
 .topnav-theme-toggle.theme-toggle--compact {
@@ -307,4 +328,10 @@
 /* Hide the bottom-right Leaflet attribution on phone maps. */
 .app-shell--phone .leaflet-control-attribution {
   display: none !important;
+}
+
+/* Site selection on Profile: opens the app-level hierarchy picker. */
+.mobile-profile-links .mobile-scope-button {
+  min-height: 56px;
+  font-weight: 600;
 }

@@ -6,6 +6,7 @@ import { activeMobileTabId, mobileTabsForUser, type MobileNavLink } from "../../
 import { downloadAuthenticatedFile } from "../../utils/api";
 import { showToast } from "../../utils/toast";
 import { readScopeNaming } from "../../utils/selectionScope";
+import { getThemePreference, THEME_CHANGE_EVENT, type ThemePreference } from "../../utils/themeMode";
 import "./MobilePhoneShell.css";
 
 type MobilePhoneHeaderProps = {
@@ -15,6 +16,21 @@ type MobilePhoneHeaderProps = {
 
 function scopeSummary(): string {
   return readScopeNaming().label;
+}
+
+/** Logo artwork matching the current theme: white wordmark on dark, dark wordmark on light. */
+function useThemedLogoVariant(): "light" | "dark" {
+  const [theme, setTheme] = useState<ThemePreference>(() => getThemePreference());
+  useEffect(() => {
+    const sync = () => setTheme(getThemePreference());
+    window.addEventListener("storage", sync);
+    window.addEventListener(THEME_CHANGE_EVENT, sync);
+    return () => {
+      window.removeEventListener("storage", sync);
+      window.removeEventListener(THEME_CHANGE_EVENT, sync);
+    };
+  }, []);
+  return theme === "dark" ? "dark" : "light";
 }
 
 function BellIcon() {
@@ -29,6 +45,7 @@ function BellIcon() {
 export function MobilePhoneHeader({ alertCount = 0 }: MobilePhoneHeaderProps) {
   const navigate = useNavigate();
   const [scopeLabel, setScopeLabel] = useState(scopeSummary);
+  const logoVariant = useThemedLogoVariant();
 
   useEffect(() => {
     const refresh = () => setScopeLabel(scopeSummary());
@@ -44,7 +61,7 @@ export function MobilePhoneHeader({ alertCount = 0 }: MobilePhoneHeaderProps) {
   return (
     <header className="mobile-phone-header">
       <div className="mobile-phone-header__brand" onClick={() => navigate("/")} role="button" tabIndex={0}>
-        <ViviLogo className="mobile-phone-header__logo" />
+        <ViviLogo variant={logoVariant} className="mobile-phone-header__logo" />
         <span className="mobile-phone-header__scope">{scopeLabel}</span>
       </div>
       <div className="mobile-phone-header__actions">
@@ -144,6 +161,7 @@ type MobilePhoneDrawerProps = {
 
 export function MobilePhoneDrawer({ open, onClose, links }: MobilePhoneDrawerProps) {
   const navigate = useNavigate();
+  const logoVariant = useThemedLogoVariant();
   const grouped = links.reduce<Record<string, typeof links>>((acc, link) => {
     acc[link.group] = acc[link.group] ?? [];
     acc[link.group].push(link);
@@ -157,7 +175,7 @@ export function MobilePhoneDrawer({ open, onClose, links }: MobilePhoneDrawerPro
       <button type="button" className="mobile-phone-drawer__backdrop" aria-label="Close menu" onClick={onClose} />
       <aside className="mobile-phone-drawer__panel">
         <div className="mobile-phone-drawer__head">
-          <ViviLogo className="mobile-phone-drawer__logo" />
+          <ViviLogo variant={logoVariant} className="mobile-phone-drawer__logo" />
           <button type="button" className="mobile-phone-header__icon" aria-label="Close menu" onClick={onClose}>
             ✕
           </button>

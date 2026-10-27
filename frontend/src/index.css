@@ -64,17 +64,26 @@ body {
   min-height: 0;
 }
 
-html.vivi-tablet .live-table-wrapper {
+html.vivi-tablet .live-table-wrapper,
+html.vivi-desktop-scaled .live-table-wrapper,
+.live-layout--mobile-shell .live-table-wrapper {
   overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-x: contain;
+  touch-action: pan-x pan-y;
 }
 
 @media (max-width: 768px) {
-  html.vivi-tablet .live-layout {
+  /* Tablets/narrow windows render the 1440px desktop canvas scaled down, but media queries still
+     see the real width; keep the side-by-side sidebar + map instead of the stacked phone layout. */
+  html.vivi-tablet .live-layout,
+  html.vivi-desktop-scaled .live-layout:not(.live-layout--mobile-shell) {
     grid-template-columns: auto 6px minmax(0, 1fr);
     height: 100%;
   }
 
-  html.vivi-tablet .live-sidebar {
+  html.vivi-tablet .live-sidebar,
+  html.vivi-desktop-scaled .live-sidebar {
     max-height: none;
   }
 }
@@ -15675,8 +15684,9 @@ label.vivi-required-missing select,
 .live-page {
   display: flex;
   flex-direction: column;
-  height: calc(100vh - var(--topnav-height) - var(--org-ribbon-height) - var(--org-ribbon-gap));
-  max-height: calc(100vh - var(--topnav-height) - var(--org-ribbon-height) - var(--org-ribbon-gap));
+  /* Divide by the desktop scale like .admin-page, so the map fills scaled (tablet) screens. */
+  height: calc(100vh / var(--vivi-desktop-scale, 1) - var(--topnav-height) - var(--org-ribbon-height) - var(--org-ribbon-gap));
+  max-height: calc(100vh / var(--vivi-desktop-scale, 1) - var(--topnav-height) - var(--org-ribbon-height) - var(--org-ribbon-gap));
   min-height: 0;
   width: 100%;
   margin: 0;
@@ -15802,6 +15812,9 @@ label.vivi-required-missing select,
 
 .live-sidebar {
   background: #f8fafc;
+  /* The asset panel is always a light surface, so keep its text dark in both themes
+     (inherited dark-theme text was white-on-white and hid every column). */
+  color: #0f172a;
   display: flex;
   flex-direction: column;
   padding: 12px;
@@ -28076,19 +28089,9 @@ label.vivi-required-missing select,
   border-radius: 8px;
 }
 
-/* On phones, keep each hierarchy column readable and let the body scroll
-   horizontally with a visible bottom scrollbar instead of squeezing columns. */
-@media (max-width: 768px) {
-  .org-modal-body {
-    -webkit-overflow-scrolling: touch;
-  }
-
-  .org-modal-body .org-column {
-    flex: 0 0 auto;
-    width: max-content;
-    min-width: 220px;
-    max-width: none;
-  }
+/* Phone-only navigation bar for the drill-down picker (hidden on desktop). */
+.org-phone-nav {
+  display: none;
 }
 
 .org-add-form {
@@ -29654,6 +29657,10 @@ label.vivi-required-missing select,
   }
   .live-sidebar {
     max-height: 380px;
+  }
+  /* The slide-in asset drawer spans the full map height; the 380px cap is for the stacked layout only. */
+  .live-sidebar.live-sidebar--drawer {
+    max-height: none;
   }
 }
 @media (max-width: 768px) {
@@ -31326,4 +31333,219 @@ table td,
   white-space: nowrap;
   overflow: visible;
   text-overflow: clip;
+}
+
+/* Phones: full-screen sheet that shows one hierarchy level at a time.
+   Columns snap to full width; picking a row slides to the next level
+   (OrgRibbon), and "Back" or a swipe returns to the previous one. */
+@media (max-width: 768px) {
+  .org-modal {
+    padding: 0;
+    align-items: stretch;
+  }
+
+  .org-modal-card,
+  .org-modal-card--expanded {
+    width: 100vw;
+    height: 100dvh;
+    min-height: 0;
+    max-height: none;
+    border-radius: 0;
+    box-shadow: none;
+  }
+
+  .org-modal-header {
+    flex-wrap: wrap;
+    padding: calc(env(safe-area-inset-top, 0px) + 12px) 16px 10px;
+    gap: 10px;
+  }
+
+  .org-modal-title {
+    font-size: 1.05rem;
+    margin-right: 40px;
+  }
+
+  .org-modal-toolbar {
+    order: 2;
+    flex: 1 1 100%;
+    margin: 0;
+    justify-content: flex-start;
+    flex-wrap: nowrap;
+    gap: 8px;
+  }
+
+  .org-search-by {
+    display: none;
+  }
+
+  .org-search-wrap {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .org-search {
+    width: 100%;
+    min-width: 0;
+    max-width: none;
+    height: 40px;
+    font-size: 16px; /* 16px stops iOS zooming into the field */
+    border-radius: 10px;
+  }
+
+  .org-browse-toggle-btn {
+    width: 40px;
+    height: 36px;
+  }
+
+  .org-expand {
+    display: none;
+  }
+
+  .org-close {
+    top: calc(env(safe-area-inset-top, 0px) + 8px);
+    right: 8px;
+    width: 40px;
+    height: 40px;
+    font-size: 1.4rem;
+  }
+
+  .org-phone-nav {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 12px;
+    background: #f8fafc;
+    border-bottom: 1px solid rgba(15, 23, 42, 0.08);
+    flex-shrink: 0;
+    min-height: 44px;
+  }
+
+  .org-phone-back {
+    border: 1px solid rgba(15, 23, 42, 0.12);
+    background: #fff;
+    border-radius: 8px;
+    padding: 6px 12px;
+    font: inherit;
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: #0f766e;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+
+  .org-phone-path {
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: #334155;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
+  }
+
+  .org-modal-body {
+    overflow-x: auto;
+    scroll-snap-type: x mandatory;
+    overscroll-behavior-x: contain;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+
+  .org-modal-body::-webkit-scrollbar {
+    display: none;
+  }
+
+  .org-modal-body .org-column {
+    flex: 0 0 100%;
+    width: 100%;
+    min-width: 100%;
+    max-width: 100%;
+    scroll-snap-align: start;
+    scroll-snap-stop: always;
+    border-right: none;
+  }
+
+  .org-column-title {
+    padding: 12px 16px;
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+
+  .org-column-add {
+    padding: 6px 12px;
+    font-size: 0.8rem;
+  }
+
+  .org-row {
+    padding: 0 8px 0 0;
+    min-height: 52px;
+    font-size: 0.95rem;
+    border-bottom: 1px solid #eef2f6;
+  }
+
+  .org-row.active {
+    border-left-width: 4px;
+  }
+
+  .org-row-main {
+    flex: 1 1 auto;
+    min-width: 0;
+    align-self: stretch;
+    padding: 12px 8px 12px 14px;
+    gap: 12px;
+    font-size: 0.95rem;
+  }
+
+  .org-name {
+    font-size: 0.95rem;
+  }
+
+  .org-icon-svg {
+    width: 20px;
+    height: 20px;
+  }
+
+  .org-caret {
+    font-size: 1.3rem;
+    padding-left: 4px;
+  }
+
+  .org-action-trigger {
+    width: 40px;
+    height: 40px;
+    font-size: 1.1rem;
+    border-radius: 10px;
+  }
+
+  .org-empty {
+    padding: 24px 16px;
+    font-size: 0.9rem;
+    text-align: center;
+  }
+
+  .org-modal-footer {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+    padding: 10px 16px calc(env(safe-area-inset-bottom, 0px) + 12px);
+    box-shadow: 0 -6px 16px rgba(15, 23, 42, 0.06);
+  }
+
+  .org-footer-path {
+    font-size: 0.78rem;
+  }
+
+  .org-modal-footer .org-actions {
+    display: grid;
+    grid-template-columns: 1fr 2fr;
+    gap: 10px;
+  }
+
+  .org-modal-footer .org-actions .btn {
+    width: 100%;
+    height: 48px;
+    font-size: 1rem;
+    border-radius: 12px;
+  }
 }

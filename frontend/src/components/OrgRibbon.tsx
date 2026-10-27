@@ -813,6 +813,8 @@ export function OrgRibbon({ hideRibbon = false }: { hideRibbon?: boolean }) {
     }
   }, [orgModalOpen]);
 
+  const orgModalBodyRef = useRef<HTMLDivElement | null>(null);
+
   const [selectedPath, setSelectedPath] = useState(() => localStorage.getItem("vivi.selectedPath") ?? "");
   const [openActionRow, setOpenActionRow] = useState<string | null>(null);
   const [lastAction, setLastAction] = useState<string | null>(null);
@@ -1533,6 +1535,50 @@ export function OrgRibbon({ hideRibbon = false }: { hideRibbon?: boolean }) {
     return parts.filter(Boolean).join(" / ");
   }, [activeDealer, activeOrg, activeDb, activeSite, activeAsset, activeScope, hierarchyVisibility.showDealer, hierarchyVisibility.showOrganisation, hierarchyVisibility.showDatabase]);
   const ribbonPath = (orgModalOpen ? draftPath || selectedPath : selectedPath || draftPath) || "Select organisation";
+
+  // Phone layout shows one hierarchy column at a time: after a pick, slide to the
+  // next level (and on open, to the level below the current selection).
+  useEffect(() => {
+    if (!orgModalOpen || typeof window === "undefined") return;
+    if (!window.matchMedia?.("(max-width: 768px)").matches) return;
+    const body = orgModalBodyRef.current;
+    if (!body) return;
+    const order = [
+      hierarchyVisibility.showDealer && "dealer",
+      hierarchyVisibility.showOrganisation && "org",
+      hierarchyVisibility.showDatabase && "db",
+      hierarchyVisibility.showSite && "site",
+      hierarchyVisibility.showAsset && "asset"
+    ].filter(Boolean) as string[];
+    const picked = {
+      dealer: Boolean(activeDealerId),
+      org: Boolean(activeOrgId),
+      db: Boolean(activeDbId),
+      site: Boolean(activeSiteId),
+      asset: Boolean(activeAsset)
+    } as Record<string, boolean>;
+    const scopeIndex = order.indexOf(activeScope);
+    const target = scopeIndex >= 0 && picked[activeScope]
+      ? Math.min(scopeIndex + 1, order.length - 1)
+      : Math.max(scopeIndex, 0);
+    const frame = window.requestAnimationFrame(() => {
+      body.scrollTo({ left: target * body.clientWidth, behavior: "smooth" });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [
+    orgModalOpen,
+    activeScope,
+    activeDealerId,
+    activeOrgId,
+    activeDbId,
+    activeSiteId,
+    activeAsset,
+    hierarchyVisibility.showDealer,
+    hierarchyVisibility.showOrganisation,
+    hierarchyVisibility.showDatabase,
+    hierarchyVisibility.showSite,
+    hierarchyVisibility.showAsset
+  ]);
 
   useEffect(() => {
     if (hierarchyVisibility.showOrganisation) return;
@@ -2631,7 +2677,21 @@ export function OrgRibbon({ hideRibbon = false }: { hideRibbon?: boolean }) {
               </button>
             </header>
 
-            <div className="org-modal-body">
+            <div className="org-phone-nav">
+              <button
+                type="button"
+                className="org-phone-back"
+                aria-label="Previous level"
+                onClick={() => {
+                  const body = orgModalBodyRef.current;
+                  if (body) body.scrollBy({ left: -body.clientWidth, behavior: "smooth" });
+                }}
+              >
+                ‹ Back
+              </button>
+              <span className="org-phone-path">{draftPath || "Select a level"}</span>
+            </div>
+            <div className="org-modal-body" ref={orgModalBodyRef}>
               {hierarchyVisibility.showDealer && (
               <div className="org-column">
                 <div className="org-column-title">

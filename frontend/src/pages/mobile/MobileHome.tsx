@@ -4,6 +4,7 @@ import { fetchHomeLiveFromTracking } from "../../utils/homeLiveSnapshot";
 import { fetchHomeAlertMetrics, type HomeRecentAlert } from "../../utils/homeAlertMetrics";
 import type { HomeStatusCounts } from "../../utils/homeDashboardApi";
 import { readScopeNaming } from "../../utils/selectionScope";
+import { readHomeSiteScope } from "../../utils/homeSiteScope";
 import "./MobileHome.css";
 
 const EMPTY_COUNTS: HomeStatusCounts = { moving: 0, stopped: 0, idle: 0, offline: 0 };
@@ -39,7 +40,7 @@ const SLICES: Slice[] = [
 function FleetDonut({ counts }: { counts: HomeStatusCounts }) {
   const total = counts.moving + counts.stopped + counts.idle + counts.offline;
   const gradient = useMemo(() => {
-    if (total === 0) return "conic-gradient(#1f2c3d 0 100%)";
+    if (total === 0) return "conic-gradient(var(--mh-border) 0 100%)";
     let acc = 0;
     const stops = SLICES.map((slice) => {
       const start = (acc / total) * 100;
@@ -85,9 +86,12 @@ export default function MobileHome() {
   const [recent, setRecent] = useState<HomeRecentAlert[]>([]);
   const [loading, setLoading] = useState(true);
   const [scopeLabel, setScopeLabel] = useState(() => readScopeNaming().label);
+  // Home totals cover a database or site; at dealer/organisation level ask for a pick instead of showing zeros.
+  const [scopeReady, setScopeReady] = useState(() => readHomeSiteScope().ready);
 
   const load = useCallback(async () => {
     setScopeLabel(readScopeNaming().label);
+    setScopeReady(readHomeSiteScope().ready);
     setLoading(true);
     const { from, to } = lastSevenDays();
     try {
@@ -141,6 +145,20 @@ export default function MobileHome() {
         </div>
         <span className="mhome-date">{todayLabel()}</span>
       </header>
+
+      {!scopeReady && !loading && (
+        <section className="mhome-card mhome-scope-prompt">
+          <h2>Choose a database or site</h2>
+          <p className="mhome-empty">Fleet totals are shown for one database or site at a time.</p>
+          <button
+            type="button"
+            className="mhome-scope-button"
+            onClick={() => window.dispatchEvent(new Event("vivi.orgRibbon.open"))}
+          >
+            Choose site
+          </button>
+        </section>
+      )}
 
       <section className="mhome-tiles">
         {tiles.map((tile) => (

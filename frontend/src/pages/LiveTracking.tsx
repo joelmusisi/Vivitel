@@ -179,7 +179,7 @@ import {
   notificationEventAtMs
 } from "../utils/trailNotificationMarker";
 import { loadLocationGeofences, parseTraccarAreaToShape, saveLocationGeofence, type LocationShape } from "../utils/locationGeofences";
-import { isLikelyNativeShell, isTabletDevice, shouldUsePhoneMode } from "../utils/phoneMode";
+import { isLikelyNativeShell, shouldUsePhoneMode } from "../utils/phoneMode";
 import "../index.css";
 
 // TODO: Add your Google Maps API key to the .env file.
@@ -2261,7 +2261,9 @@ const renderSelectedGeofenceShape = (loc: LocationRow) => {
 
 const isCompactLiveViewport = () => {
   if (typeof window === "undefined") return false;
-  return isLikelyNativeShell() || shouldUsePhoneMode() || isTabletDevice() || window.innerWidth <= 1000;
+  // Tablets and narrow desktop windows render inside the 1440px desktop-scale canvas, where the
+  // full sidebar fits; the compact drawer there was half-height and hid the asset columns.
+  return isLikelyNativeShell() || shouldUsePhoneMode();
 };
 
 const fuelAnalysisLocalInput = (ms: number) => {
@@ -8450,12 +8452,15 @@ export default function LiveTracking() {
               );
             })()}
           </div>
-          <StreetViewMini
-            apiKey={googleMapsKey}
-            lat={selectedStreetView?.lat}
-            lng={selectedStreetView?.lng}
-            heading={selectedStreetView ? headingToDegrees(selectedStreetView.heading) : 0}
-          />
+          {/* On phones the empty Street View box only covered the map; show it once an asset is picked. */}
+          {(!shouldUsePhoneMode() || selectedStreetView) && (
+            <StreetViewMini
+              apiKey={googleMapsKey}
+              lat={selectedStreetView?.lat}
+              lng={selectedStreetView?.lng}
+              heading={selectedStreetView ? headingToDegrees(selectedStreetView.heading) : 0}
+            />
+          )}
           <div className={`live-trip-replay${tripReplayOpen ? " is-open" : ""}`} aria-label="Trip replay">
             {!tripReplayOpen ? (
               <button

@@ -508,7 +508,9 @@ export function App() {
       {phoneMode && <MobilePhoneHeader />}
       {!hideTopNav && <TopNav />}
       <TrialBanner />
-      {!phoneMode && <OrgRibbon hideRibbon={isHistoricalTracking} />}
+      {/* Phones keep the ribbon mounted (bar hidden) so the dealer/org/database/site
+          selection is restored and synced on every page; Profile opens its picker. */}
+      <OrgRibbon hideRibbon={phoneMode || isHistoricalTracking} />
       <Routes>
         <Route
           path="/"
