@@ -713,6 +713,8 @@ export default function Assets() {
   const assetRoleKey = resolveRoleScopeRulesFromPrincipal(assetPrincipal).key;
   const isPlatformAdminPrincipal = String(assetPrincipal?.kind ?? "").trim().toLowerCase() === "admin";
   const isFullAccessRole = isPlatformAdminPrincipal || assetRoleKey === "admin" || assetRoleKey === "own-support";
+  /** Diagnostic columns (Info Issued, device Faults) are for Own Support and admins only. */
+  const canSeeColumn = (key: ColumnKey) => (key !== "infoIssued" && key !== "faults") || isFullAccessRole;
   const isBasicAssetUser = !isFullAccessRole && assetRoleKey === "basic-user";
   const isSupportLimitedRole = !isFullAccessRole && (assetRoleKey === "dealer-support" || assetRoleKey === "database-support");
   const canEditAssets = !isBasicAssetUser && canForPath("/Track/fleet/assets", "edit");
@@ -1709,7 +1711,7 @@ export default function Assets() {
 
   const activeCols = columnOrder
     .filter((key) => key === "lastPosition" || visibleCols.has(key))
-    .filter((key) => key !== "infoIssued" || isFullAccessRole)
+    .filter(canSeeColumn)
     .map((key) => columns.find((c) => c.key === key)!)
     .filter(Boolean);
 
@@ -4786,7 +4788,7 @@ export default function Assets() {
               </button>
               {colMenuOpen && colMenuPos && (
                 <div className="assets-col-dropdown" style={{ top: colMenuPos.top, left: colMenuPos.left }}>
-                  {columns.filter((opt) => opt.key !== "infoIssued" || isFullAccessRole).map((opt) => (
+                  {columns.filter((opt) => canSeeColumn(opt.key)).map((opt) => (
                     <label key={opt.key} className="columns-option">
                       <input
                         type="checkbox"
