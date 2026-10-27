@@ -73,6 +73,22 @@ html.vivi-desktop-scaled .live-table-wrapper,
   touch-action: pan-x pan-y;
 }
 
+/* Swipe/trackpad still scrolls the table sideways, but the visible bar is the synced
+   .live-table-scrollbar under it; hide the native one so there are not two bars. */
+html.vivi-tablet .live-table-wrapper::-webkit-scrollbar,
+html.vivi-desktop-scaled .live-table-wrapper::-webkit-scrollbar,
+.live-layout--mobile-shell .live-table-wrapper::-webkit-scrollbar {
+  width: 8px;
+  height: 0;
+}
+
+html.vivi-tablet .live-table-wrapper::-webkit-scrollbar-thumb,
+html.vivi-desktop-scaled .live-table-wrapper::-webkit-scrollbar-thumb,
+.live-layout--mobile-shell .live-table-wrapper::-webkit-scrollbar-thumb {
+  background: #94a3b8;
+  border-radius: 999px;
+}
+
 @media (max-width: 768px) {
   /* Tablets/narrow windows render the 1440px desktop canvas scaled down, but media queries still
      see the real width; keep the side-by-side sidebar + map instead of the stacked phone layout. */
@@ -25797,6 +25813,8 @@ label.vivi-required-missing select,
   border-radius: 10px;
   border: 1px solid rgba(15, 23, 42, 0.12);
   background: #ffffff;
+  /* White button in both themes: keep glyph icons (e.g. ↻) dark so they stay visible. */
+  color: #0f172a;
   cursor: pointer;
   display: inline-flex;
   align-items: center;
@@ -28415,6 +28433,8 @@ label.vivi-required-missing select,
 
 .assets-filter {
   background: white;
+  /* Always-light panel: keep text dark in dark mode too (inherited white was invisible). */
+  color: #0f172a;
   border: 1px solid rgba(15, 23, 42, 0.08);
   border-radius: 12px;
   padding: 10px 12px;
@@ -28578,6 +28598,8 @@ label.vivi-required-missing select,
 
 .assets-table-wrap {
   background: white;
+  /* Always-light panel: keep text dark in dark mode too (inherited white was invisible). */
+  color: #0f172a;
   border: 1px solid rgba(15, 23, 42, 0.08);
   border-radius: 12px;
   padding: 10px;
@@ -31548,4 +31570,52 @@ table td,
     font-size: 1rem;
     border-radius: 12px;
   }
+}
+
+/* Left panel collapse/expand tab (components/LeftPanelToggle.tsx), shared by every page. */
+[data-vivi-left-host] {
+  position: relative;
+}
+
+[data-vivi-left-host][data-vivi-left-collapsed] {
+  grid-template-columns: minmax(0, 1fr) !important;
+}
+
+[data-vivi-left-host][data-vivi-left-collapsed] > [data-vivi-left-panel],
+[data-vivi-left-host][data-vivi-left-collapsed] > .live-resizer {
+  display: none !important;
+}
+
+.vivi-left-panel-toggle {
+  position: absolute;
+  top: 50%;
+  z-index: 40;
+  width: 18px;
+  height: 56px;
+  padding: 0;
+  transform: translateY(-50%);
+  border: 1px solid rgba(15, 23, 42, 0.14);
+  border-left: 0;
+  border-radius: 0 10px 10px 0;
+  background: #ffffff;
+  color: #0f172a;
+  box-shadow: 2px 0 8px rgba(15, 23, 42, 0.12);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.vivi-left-panel-toggle:hover {
+  background: #f1f5f9;
+  color: #39b54a;
+}
+
+/* Scaled (tablet) canvas shrinks everything; keep the tab a comfortable touch target. */
+html.vivi-desktop-scaled .vivi-left-panel-toggle {
+  width: 30px;
+  height: 90px;
+  font-size: 28px;
 }

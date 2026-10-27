@@ -3,6 +3,7 @@ import react from "@vitejs/plugin-react";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { cmsv6DevMiddleware } from "./scripts/cmsv6-dev-middleware.mjs";
+import desktopScaleCss from "./scripts/desktop-scale-postcss.mjs";
 import { isRegionId, REGION_SERVERS } from "./src/utils/regionServers";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -90,6 +91,11 @@ const manualChunks = (id: string): string | undefined => {
 
 export default defineConfig({
   plugins: [cmsv6DevMiddleware(), react()],
+  css: {
+    postcss: {
+      plugins: [desktopScaleCss()]
+    }
+  },
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "src"),

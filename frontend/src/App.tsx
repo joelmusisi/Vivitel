@@ -5,6 +5,7 @@ import { ControlNav, TrackNav, AnalyzeNav, DeliverNav } from "./navData";
 import PageShell from "./components/PageShell";
 import VTLoader from "./components/VTLoader";
 import OrgRibbon from "./components/OrgRibbon";
+import LeftPanelToggle from "./components/LeftPanelToggle";
 import { saveToApi, refreshAuthMe, canForPath, getApiKey, setStoredApiKey, hasCachedRbacPermissions, fetchUserProfile, updateUserProfile } from "./utils/api";
 import { startBackgroundSiteSync, stopBackgroundSiteSync } from "./utils/backgroundSiteSync";
 import { startAlertCenter, stopAlertCenter } from "./utils/alertCenter";
@@ -511,6 +512,8 @@ export function App() {
       {/* Phones keep the ribbon mounted (bar hidden) so the dealer/org/database/site
           selection is restored and synced on every page; Profile opens its picker. */}
       <OrgRibbon hideRibbon={phoneMode || isHistoricalTracking} />
+      {/* Phones use their own drawer buttons; desktop and tablet get the mid-edge collapse tab. */}
+      {!phoneMode && <LeftPanelToggle />}
       <Routes>
         <Route
           path="/"
