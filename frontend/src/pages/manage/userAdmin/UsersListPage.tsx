@@ -87,11 +87,8 @@ export default function UsersListPage() {
       if (key === "user") return `${user.name} ${user.assignedRoleName ?? ""}`;
       if (key === "email") return user.email;
       if (key === "groups") return (groupNameByUserId.get(user.id) ?? []).join(", ");
-      if (key === "account") {
-        if (user.demo && !user.demo.activated) return user.demo.expired ? "Suspended" : "Demo";
-        if (user.demo?.activated) return "Active";
-        return "—";
-      }
+      // ISO timestamps sort chronologically as text.
+      if (key === "rightsUpdated") return String(user.rightsUpdatedAt ?? "");
       if (key === "lastLogin") return formatLastLogin(user.lastLoginAt ?? user.lastLogin);
       return "";
     },
@@ -240,7 +237,7 @@ export default function UsersListPage() {
             <SortableColumnHeader as="span" label="User" {...userSort.getHeaderProps("user")} />
             <SortableColumnHeader as="span" label="Email" {...userSort.getHeaderProps("email")} />
             <SortableColumnHeader as="span" label="Security groups" {...userSort.getHeaderProps("groups")} />
-            <SortableColumnHeader as="span" label="Account" {...userSort.getHeaderProps("account")} />
+            <SortableColumnHeader as="span" label="Last Updated Date" {...userSort.getHeaderProps("rightsUpdated")} />
             <SortableColumnHeader as="span" label="Last login" {...userSort.getHeaderProps("lastLogin")} />
             <span>Actions</span>
           </div>
@@ -249,10 +246,6 @@ export default function UsersListPage() {
               <span>
                 {u.name}
                 {u.assignedRoleName ? <span className="admin-pill">{u.assignedRoleName}</span> : null}
-              </span>
-              <span>{u.email}</span>
-              <span>{(groupNameByUserId.get(u.id) ?? []).join(", ") || "—"}</span>
-              <span>
                 {u.demo && !u.demo.activated ? (
                   <label className="trial-switch" title={u.demo.expired ? "Trial ended" : `${u.demo.daysRemaining ?? 0} days left`}>
                     <input
@@ -265,9 +258,12 @@ export default function UsersListPage() {
                   </label>
                 ) : u.demo?.activated ? (
                   <span className="admin-pill">Active</span>
-                ) : (
-                  "—"
-                )}
+                ) : null}
+              </span>
+              <span>{u.email}</span>
+              <span>{(groupNameByUserId.get(u.id) ?? []).join(", ") || "—"}</span>
+              <span title="When this user's roles, security groups, databases or sites last changed">
+                {formatLastLogin(u.rightsUpdatedAt ?? undefined)}
               </span>
               <span>{formatLastLogin(u.lastLoginAt ?? u.lastLogin)}</span>
               <span className="admin-actions-col">

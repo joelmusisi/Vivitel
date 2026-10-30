@@ -7,6 +7,8 @@ export type RbacUser = {
   updatedAt?: string;
   lastLogin?: string;
   lastLoginAt?: string;
+  /** When roles, security groups, databases or sites last changed. */
+  rightsUpdatedAt?: string | null;
   assignedTenantId?: string;
   assignedTenantIds?: string[] | string;
   assignedSiteId?: string;

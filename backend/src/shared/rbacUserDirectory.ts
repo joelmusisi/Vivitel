@@ -19,11 +19,14 @@ export type RbacUserRecord = {
   createdAt: string;
   updatedAt: string;
   lastLoginAt: string | null;
+  /** When roles, groups, databases or sites last changed. */
+  rightsUpdatedAt: string | null;
   createdByUserId: string | null;
 };
 
 const BASIC_COLUMNS = "id, name, email, status, created_at AS createdAt, updated_at AS updatedAt";
-const FULL_COLUMNS = `${BASIC_COLUMNS}, last_login_at AS lastLoginAt, created_by_user_id AS createdByUserId`;
+const LEGACY_FULL_COLUMNS = `${BASIC_COLUMNS}, last_login_at AS lastLoginAt, created_by_user_id AS createdByUserId`;
+const FULL_COLUMNS = `${LEGACY_FULL_COLUMNS}, rights_updated_at AS rightsUpdatedAt`;
 const IDS_PER_QUERY = 50;
 
 function toRecord(row: Record<string, unknown>): RbacUserRecord {
@@ -36,11 +39,26 @@ function toRecord(row: Record<string, unknown>): RbacUserRecord {
     createdAt: text(row.createdAt),
     updatedAt: text(row.updatedAt),
     lastLoginAt: row.lastLoginAt == null ? null : String(row.lastLoginAt),
+    rightsUpdatedAt: row.rightsUpdatedAt == null ? null : String(row.rightsUpdatedAt),
     createdByUserId: row.createdByUserId == null ? null : String(row.createdByUserId)
   };
 }
 
-/** Users with the given ids. `full` adds last_login_at and created_by_user_id. */
+/** Runs a `full` read, retrying without rights_updated_at on databases that do not have that column yet. */
+async function allWithFullColumns(
+  db: DirectoryDb,
+  sqlFor: (columns: string) => string,
+  values: unknown[]
+): Promise<{ results?: Record<string, unknown>[] }> {
+  try {
+    return await db.prepare(sqlFor(FULL_COLUMNS)).bind(...values).all<Record<string, unknown>>();
+  } catch (error) {
+    if (!/rights_updated_at/i.test(String((error as Error)?.message ?? error))) throw error;
+    return db.prepare(sqlFor(LEGACY_FULL_COLUMNS)).bind(...values).all<Record<string, unknown>>();
+  }
+}
+
+/** Users with the given ids. `full` adds last_login_at, rights_updated_at and created_by_user_id. */
 export async function readRbacUsersByIds(
   db: DirectoryDb,
   ids: Iterable<unknown>,
@@ -48,13 +66,13 @@ export async function readRbacUsersByIds(
 ): Promise<Map<string, RbacUserRecord>> {
   const unique = [...new Set([...ids].map((id) => String(id ?? "").trim()).filter(Boolean))];
   const byId = new Map<string, RbacUserRecord>();
-  const columns = options.full ? FULL_COLUMNS : BASIC_COLUMNS;
   for (let offset = 0; offset < unique.length; offset += IDS_PER_QUERY) {
     const chunk = unique.slice(offset, offset + IDS_PER_QUERY);
-    const result = await db
-      .prepare(`SELECT ${columns} FROM rbac_users WHERE id IN (${chunk.map(() => "?").join(", ")})`)
-      .bind(...chunk)
-      .all<Record<string, unknown>>();
+    const sqlFor = (columns: string) =>
+      `SELECT ${columns} FROM rbac_users WHERE id IN (${chunk.map(() => "?").join(", ")})`;
+    const result = options.full
+      ? await allWithFullColumns(db, sqlFor, chunk)
+      : await db.prepare(sqlFor(BASIC_COLUMNS)).bind(...chunk).all<Record<string, unknown>>();
     for (const row of result.results ?? []) {
       const record = toRecord(row);
       if (record.id) byId.set(record.id, record);
@@ -65,9 +83,10 @@ export async function readRbacUsersByIds(
 
 /** Every user (the table is small: one row per login). */
 export async function listAllRbacUsers(db: DirectoryDb, options: { full?: boolean } = {}): Promise<RbacUserRecord[]> {
-  const result = await db
-    .prepare(`SELECT ${options.full ? FULL_COLUMNS : BASIC_COLUMNS} FROM rbac_users`)
-    .all<Record<string, unknown>>();
+  const sqlFor = (columns: string) => `SELECT ${columns} FROM rbac_users`;
+  const result = options.full
+    ? await allWithFullColumns(db, sqlFor, [])
+    : await db.prepare(sqlFor(BASIC_COLUMNS)).all<Record<string, unknown>>();
   return (result.results ?? []).map(toRecord).filter((user) => user.id);
 }
 

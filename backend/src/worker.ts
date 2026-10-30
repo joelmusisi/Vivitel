@@ -4168,6 +4168,11 @@ async function ensureRbacSchema(env: Env) {
     // ignore when column already exists
   }
   try {
+    await db.prepare("ALTER TABLE rbac_users ADD COLUMN rights_updated_at TEXT").run();
+  } catch {
+    // ignore when column already exists
+  }
+  try {
     await db.prepare("ALTER TABLE rbac_roles ADD COLUMN role_level INTEGER NOT NULL DEFAULT 100").run();
   } catch {
     // ignore when column already exists
@@ -5203,6 +5208,84 @@ async function backfillLegacyUserTenantMembership(env: Env, tenantId: string): P
   }
 }
 
+/** Everything that decides a user's rights: databases, sites, roles and security groups (with their roles). */
+async function readUserRightsFingerprint(env: Env, userId: string): Promise<string> {
+  const uid = normalizeId(userId);
+  if (!uid) return "";
+  const rows = await env.VIVI_D1
+    .prepare(
+      `SELECT 't:' || tenant_id AS k FROM rbac_user_tenants WHERE user_id = ?1
+       UNION SELECT 's:' || tenant_id || ':' || site_id FROM rbac_user_sites WHERE user_id = ?1
+       UNION SELECT 'r:' || tenant_id || ':' || role_id FROM rbac_user_roles WHERE user_id = ?1
+       UNION SELECT 'g:' || ug.tenant_id || ':' || ug.group_id || ':' || COALESCE(gr.role_id, '')
+         FROM rbac_user_groups ug
+         LEFT JOIN rbac_group_roles gr ON gr.tenant_id = ug.tenant_id AND gr.group_id = ug.group_id
+         WHERE ug.user_id = ?1`
+    )
+    .bind(uid)
+    .all<{ k?: string }>();
+  return (rows.results ?? []).map((row) => String(row.k ?? "")).sort().join("|");
+}
+
+async function readUserRightsFingerprints(env: Env, userIds: Iterable<string>): Promise<Map<string, string>> {
+  const result = new Map<string, string>();
+  for (const id of new Set([...userIds].map((value) => normalizeId(value)).filter(Boolean))) {
+    try {
+      result.set(id, await readUserRightsFingerprint(env, id));
+    } catch {
+      // Without a baseline the user is not stamped.
+    }
+  }
+  return result;
+}
+
+/** Record "rights last updated" (shown on the Users list). Best effort: the rights change itself already stands. */
+async function markRbacUsersRightsUpdated(env: Env, userIds: Iterable<string>, at = new Date().toISOString()) {
+  const ids = [...new Set([...userIds].map((value) => normalizeId(value)).filter(Boolean))];
+  for (let offset = 0; offset < ids.length; offset += 50) {
+    const chunk = ids.slice(offset, offset + 50);
+    try {
+      await env.VIVI_D1
+        .prepare(`UPDATE rbac_users SET rights_updated_at = ? WHERE id IN (${chunk.map(() => "?").join(", ")})`)
+        .bind(at, ...chunk)
+        .run();
+    } catch {
+      // ignore: column may be missing until ensureRbacSchema runs
+    }
+  }
+}
+
+/** Stamp only the users whose rights fingerprint actually changed since `before`. */
+async function stampChangedUserRights(env: Env, before: Map<string, string>) {
+  const after = await readUserRightsFingerprints(env, before.keys());
+  const changed = [...before.keys()].filter((id) => after.has(id) && after.get(id) !== before.get(id));
+  if (changed.length) await markRbacUsersRightsUpdated(env, changed);
+}
+
+/** Users holding a role directly or through a security group in this tenant. */
+async function readRoleHolderUserIds(env: Env, tenantId: string, roleId: string): Promise<string[]> {
+  const rows = await env.VIVI_D1
+    .prepare(
+      `SELECT user_id AS userId FROM rbac_user_roles WHERE tenant_id = ?1 AND role_id = ?2
+       UNION SELECT ug.user_id FROM rbac_user_groups ug
+         JOIN rbac_group_roles gr ON gr.tenant_id = ug.tenant_id AND gr.group_id = ug.group_id
+         WHERE ug.tenant_id = ?1 AND gr.role_id = ?2`
+    )
+    .bind(tenantId, roleId)
+    .all<{ userId?: string }>();
+  return (rows.results ?? []).map((row) => normalizeId(row.userId)).filter(Boolean);
+}
+
+async function readRolePermissionFingerprint(env: Env, tenantId: string, roleId: string): Promise<string> {
+  const rows = await env.VIVI_D1
+    .prepare(
+      `SELECT page_path || ':' || can_view || can_edit || can_delete AS k FROM rbac_role_permissions WHERE tenant_id = ?1 AND role_id = ?2`
+    )
+    .bind(tenantId, roleId)
+    .all<{ k?: string }>();
+  return (rows.results ?? []).map((row) => String(row.k ?? "")).sort().join("|");
+}
+
 async function listRbacUserRowsForTenant(env: Env, tenantId: string): Promise<Record<string, unknown>[]> {
   const scopedTenant = normalizeId(tenantId);
   if (!scopedTenant) return [];
@@ -5279,6 +5362,7 @@ async function listRbacUserRowsForTenant(env: Env, tenantId: string): Promise<Re
           createdAt: user.createdAt,
           updatedAt: user.updatedAt,
           lastLoginAt: user.lastLoginAt,
+          rightsUpdatedAt: user.rightsUpdatedAt,
           createdByUserId: user.createdByUserId,
           createdByName: nameOf(user.createdByUserId)
         }
@@ -9645,6 +9729,7 @@ async function handleWorkerFetch(request: Request, rawEnv: Env, ctx: ExecutionCo
             }
           }
 
+          const rightsBefore = await readUserRightsFingerprints(env, [savedUserId]);
           await applyRbacUserTenantAssignments(
             env,
             savedUserId,
@@ -9653,6 +9738,7 @@ async function handleWorkerFetch(request: Request, rawEnv: Env, ctx: ExecutionCo
             resolvedRoleAssignments,
             now
           );
+          await stampChangedUserRights(env, rightsBefore);
           await grantUserRegion(env, savedUserId, resolveRequestRegion(request), now);
 
           const shouldSendInvite = reusedExisting
@@ -9879,6 +9965,7 @@ async function handleWorkerFetch(request: Request, rawEnv: Env, ctx: ExecutionCo
             const roleAssignmentsToApply = canManageMultiTenantAssignments
               ? resolvedRoleAssignments
               : resolvedRoleAssignments.filter((row) => row.tenantId === tenantId);
+            const rightsBefore = await readUserRightsFingerprints(env, [id]);
             await replaceRbacUserTenantAssignments(
               env,
               id,
@@ -9887,6 +9974,7 @@ async function handleWorkerFetch(request: Request, rawEnv: Env, ctx: ExecutionCo
               roleAssignmentsToApply,
               now
             );
+            await stampChangedUserRights(env, rightsBefore);
             try {
               await syncDemoHierarchyAccess(env, id, region);
             } catch {
@@ -10068,6 +10156,7 @@ async function handleWorkerFetch(request: Request, rawEnv: Env, ctx: ExecutionCo
             .bind(id, tenantId, resolvedName, description || null, status, roleLevel, now)
             .run();
 
+          const permissionsBefore = await readRolePermissionFingerprint(env, tenantId, id).catch(() => null);
           await env.VIVI_D1.prepare(`DELETE FROM rbac_role_permissions WHERE tenant_id = ?1 AND role_id = ?2`).bind(tenantId, id).run();
           const permissions = Array.isArray(parsed.value?.permissions) ? parsed.value.permissions : [];
           const roleKey = String((existingRole as any)?.standardRoleKey ?? "").trim();
@@ -10082,6 +10171,14 @@ async function handleWorkerFetch(request: Request, rawEnv: Env, ctx: ExecutionCo
               )
               .bind(tenantId, id, pagePath, row.view ? 1 : 0, row.edit ? 1 : 0, row.delete ? 1 : 0)
               .run();
+          }
+          // Changed page rights count as a rights update for everyone holding this role.
+          try {
+            if (permissionsBefore !== null && permissionsBefore !== (await readRolePermissionFingerprint(env, tenantId, id))) {
+              await markRbacUsersRightsUpdated(env, await readRoleHolderUserIds(env, tenantId, id), now);
+            }
+          } catch {
+            // The role save stands.
           }
           return json({ stored: true, id, tenantId, roleLevel });
         }
@@ -10145,6 +10242,10 @@ async function handleWorkerFetch(request: Request, rawEnv: Env, ctx: ExecutionCo
           const status = String(parsed.value?.status ?? "active").trim().toLowerCase() || "active";
           const id = uuid();
           const now = new Date().toISOString();
+          const rightsBefore = await readUserRightsFingerprints(
+            env,
+            (Array.isArray(parsed.value?.userIds) ? parsed.value.userIds : []).map((value) => String(value ?? ""))
+          );
           await env.VIVI_D1
             .prepare(`INSERT INTO rbac_security_groups (id, tenant_id, name, description, status, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)`)
             .bind(id, tenantId, name, description || null, status, now)
@@ -10162,6 +10263,7 @@ async function handleWorkerFetch(request: Request, rawEnv: Env, ctx: ExecutionCo
             if (!uid) continue;
             await env.VIVI_D1.prepare(`INSERT OR REPLACE INTO rbac_user_groups (tenant_id, user_id, group_id) VALUES (?1, ?2, ?3)`).bind(tenantId, uid, id).run();
           }
+          await stampChangedUserRights(env, rightsBefore);
           return json({ stored: true, id, tenantId });
         }
 
@@ -10181,6 +10283,16 @@ async function handleWorkerFetch(request: Request, rawEnv: Env, ctx: ExecutionCo
             .bind(id, tenantId, name, description || null, status, now)
             .run();
 
+          // Current and incoming members: anyone added, removed, or whose group roles change.
+          const currentMembers = await env.VIVI_D1
+            .prepare(`SELECT user_id AS userId FROM rbac_user_groups WHERE tenant_id = ?1 AND group_id = ?2`)
+            .bind(tenantId, id)
+            .all<{ userId?: string }>();
+          const rightsBefore = await readUserRightsFingerprints(env, [
+            ...(currentMembers.results ?? []).map((row) => String(row.userId ?? "")),
+            ...(Array.isArray(parsed.value?.userIds) ? parsed.value.userIds : []).map((value) => String(value ?? ""))
+          ]);
+
           await env.VIVI_D1.prepare(`DELETE FROM rbac_group_roles WHERE tenant_id = ?1 AND group_id = ?2`).bind(tenantId, id).run();
           await env.VIVI_D1.prepare(`DELETE FROM rbac_user_groups WHERE tenant_id = ?1 AND group_id = ?2`).bind(tenantId, id).run();
           const roleIds = Array.isArray(parsed.value?.roleIds) ? parsed.value.roleIds : [];
@@ -10195,6 +10307,7 @@ async function handleWorkerFetch(request: Request, rawEnv: Env, ctx: ExecutionCo
             if (!uid) continue;
             await env.VIVI_D1.prepare(`INSERT OR REPLACE INTO rbac_user_groups (tenant_id, user_id, group_id) VALUES (?1, ?2, ?3)`).bind(tenantId, uid, id).run();
           }
+          await stampChangedUserRights(env, rightsBefore);
           return json({ stored: true, id, tenantId });
         }
 
@@ -10238,12 +10351,14 @@ async function handleWorkerFetch(request: Request, rawEnv: Env, ctx: ExecutionCo
           if (!(await canActorSeeUserInTenant(env, tenantId, actor, userId))) return unauthorized();
           const visibleRoleIds = await readVisibleRoleIdsForActor(env, tenantId, actor);
           const canManageMultiTenantAssignments = isActorAdminScope(actor) || actor.isOwnSupport || actor.isDealerSupport;
+          const rightsBefore = await readUserRightsFingerprints(env, [userId]);
 
           const tenantAccess = parsed.value?.tenantAccess;
           if (tenantAccess === false) {
             await env.VIVI_D1.prepare(`DELETE FROM rbac_user_roles WHERE tenant_id = ?1 AND user_id = ?2`).bind(tenantId, userId).run();
             await env.VIVI_D1.prepare(`DELETE FROM rbac_user_groups WHERE tenant_id = ?1 AND user_id = ?2`).bind(tenantId, userId).run();
             await env.VIVI_D1.prepare(`DELETE FROM rbac_user_tenants WHERE tenant_id = ?1 AND user_id = ?2`).bind(tenantId, userId).run();
+            await stampChangedUserRights(env, rightsBefore);
             return json({ stored: true, tenantId, userId, tenantAccess: false });
           }
 
@@ -10299,6 +10414,7 @@ async function handleWorkerFetch(request: Request, rawEnv: Env, ctx: ExecutionCo
             if (!gid) continue;
             await env.VIVI_D1.prepare(`INSERT OR REPLACE INTO rbac_user_groups (tenant_id, user_id, group_id) VALUES (?1, ?2, ?3)`).bind(tenantId, userId, gid).run();
           }
+          await stampChangedUserRights(env, rightsBefore);
           return json({ stored: true, tenantId, userId, tenantAccess: true });
         }
 
