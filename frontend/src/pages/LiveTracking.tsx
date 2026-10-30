@@ -10,13 +10,11 @@ import MapDistanceMeasure from "../components/MapDistanceMeasure";
 import {
   buildApiUrl,
   getApiKey,
-  tenantSkipsAutomaticFleetImport,
   getTenantId,
   getAssetsFromApi,
   getAssetsFromApiForTenant,
   peekCachedAssets,
   clearCachedAssets,
-  importAssetsFromTraccarApi,
   createLiveShareLink,
   getLiveShareActive,
   getBindings,
@@ -3257,7 +3255,6 @@ export default function LiveTracking() {
     const [activeSiteFilter, setActiveSiteFilter] = useState<string>(() => readActiveSiteFilter());
     const [orgLoadKey, setOrgLoadKey] = useState(0);
     const orgContextPendingRefreshRef = useRef(false);
-    const traccarImportAttemptedRef = useRef("");
     const pendingRefreshScopeRef = useRef("");
     const lastSuccessfulScopeRef = useRef("");
     const scopeRetryRef = useRef(0);
@@ -3398,7 +3395,6 @@ export default function LiveTracking() {
 
       const refreshContext = () => {
         orgContextPendingRefreshRef.current = true;
-        traccarImportAttemptedRef.current = "";
         scopeRetryRef.current = 0;
         pendingRefreshScopeRef.current = readScopeSignature();
         setLockedAssetId(null);
@@ -3803,51 +3799,7 @@ export default function LiveTracking() {
         apiAssets = await getAssetsFromApiForTenant<Record<string, unknown>>(scopedTenantId);
       }
 
-      // Empty fleet for this database: one-time Traccar device import (same path as Assets page).
-      // Skip on Karongo — 808 cameras are not Traccar devices and the import blocks the list.
-      if ((!Array.isArray(apiAssets) || apiAssets.length === 0) && getApiKey() && !cms808HierarchyActive(cmsScope)) {
-        const tenantId = String(scopedTenantId || getTenantId() || "").trim();
-        const importKey = tenantId ? `vivi.assets.importedFromTraccar.v5:${tenantId}` : "";
-        const alreadyImported = importKey
-          ? String(window.localStorage.getItem(importKey) ?? "").trim().toLowerCase() === "true"
-          : false;
-        const alreadyAttemptedThisMount = traccarImportAttemptedRef.current === tenantId;
-        if (tenantId && !alreadyImported && !alreadyAttemptedThisMount && !tenantSkipsAutomaticFleetImport(tenantId)) {
-          traccarImportAttemptedRef.current = tenantId;
-          const targetSite =
-            String(window.localStorage.getItem("vivi.activeSite") ?? "").trim() || "Default";
-          setShowToast({ id: "vivi-import", text: toBrandDisplay("Syncing devices from VIVI…") });
-          const imported = await importAssetsFromTraccarApi({ site: targetSite, tenantId });
-          if (imported.imported > 0 || imported.updated > 0 || imported.assets.length > 0) {
-            try {
-              window.localStorage.setItem(importKey, "true");
-            } catch {
-              // ignore
-            }
-            apiAssets = imported.assets.length
-              ? (imported.assets as Record<string, unknown>[])
-              : await getAssetsFromApi<Record<string, unknown>>();
-            setShowToast({
-              id: "vivi-import-ok",
-              text: toBrandDisplay(
-                `VIVI sync: ${imported.imported || 0} imported, ${imported.updated || 0} updated.`
-              )
-            });
-            window.setTimeout(() => setShowToast(null), 4000);
-          } else if (imported.error) {
-            const hint = /403|530|ENOTFOUND|fetch failed|not configured|reachable/i.test(imported.error)
-              ? " (Worker cannot reach VIVI by IP — add DNS A record traccar.vivitelematics.ca → 162.35.186.103, DNS only)"
-              : "";
-            setShowToast({
-              id: "vivi-import-err",
-              text: toBrandDisplay(`VIVI import: ${imported.error}${hint}`)
-            });
-            window.setTimeout(() => setShowToast(null), 8000);
-          } else {
-            setShowToast(null);
-          }
-        }
-      }
+      // Live Tracking only reads assets; it never imports devices into the database.
 
       if (!mounted) return;
       let cmsRows: AssetRow[] = [];

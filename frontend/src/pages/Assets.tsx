@@ -2084,57 +2084,8 @@ export default function Assets() {
       setSiteTimeZones(tz);
 
       const tenantId = String(readActiveTenantId() || getTenantId() || "").trim();
-      const syncFromTraccarIfNeeded = async (afterRows: Asset[]) => {
-        // Only auto-import when the fleet is empty — never re-import over user-created
-        // assets (that race made rows disappear, then reappear as duplicates).
-        if (afterRows.length > 0) return afterRows;
-        if (isCms808Server()) return afterRows;
-        if (tenantSkipsAutomaticFleetImport(tenantId)) return afterRows;
-        const importKey = tenantId ? `vivi.assets.importedFromTraccar.v5:${tenantId}` : "";
-        const attemptKey = tenantId ? `vivi.assets.importTraccarAttempted.v1:${tenantId}` : "";
-        const alreadyImported = importKey
-          ? String(window.localStorage.getItem(importKey) ?? "").trim().toLowerCase() === "true"
-          : false;
-        const lastAttemptMs = attemptKey ? Number(window.localStorage.getItem(attemptKey) ?? 0) || 0 : 0;
-        const attemptedRecently = lastAttemptMs > 0 && Date.now() - lastAttemptMs < 15 * 60 * 1000;
-        if (!tenantId || alreadyImported || attemptedRecently || !getApiKey()) return afterRows;
-        const targetSite = String(window.localStorage.getItem("vivi.activeSite") ?? "").trim() || "Default";
-        try {
-          if (attemptKey) window.localStorage.setItem(attemptKey, String(Date.now()));
-        } catch {
-          // ignore
-        }
-        showToast("Syncing devices from VIVI…", "info");
-        const imported = await importAssetsFromTraccarApi({ site: targetSite, tenantId });
-        if (!mounted || my !== loadGen) return afterRows;
-        if (imported.imported > 0 || imported.updated > 0 || imported.assets.length > 0) {
-          try {
-            if (importKey) window.localStorage.setItem(importKey, "true");
-          } catch {
-            // ignore
-          }
-          const rows = imported.assets.length
-            ? (imported.assets as Asset[])
-            : await getAssetsFromApi<Asset>({ force: true });
-          if (!mounted || my !== loadGen) return afterRows;
-          const parts = [
-            imported.imported > 0 ? `${imported.imported} imported` : "",
-            imported.updated > 0 ? `${imported.updated} updated` : ""
-          ].filter(Boolean);
-          showToast(
-            parts.length
-              ? `VIVI sync: ${parts.join(", ")}.`
-              : `Synced ${rows.length} devices from VIVI.`,
-            "success"
-          );
-          return rows;
-        }
-        if (imported.error) {
-          showToast(`VIVI import: ${imported.error}`, "error");
-        }
-        return afterRows;
-      };
-
+      // Loading this page only reads assets. It never imports, copies or re-sites
+      // them; that happens only through explicit toolbar actions.
       const attachMissingSiteDevices = async (rows: Asset[]) => {
         if (isPersonalDemoTenant(tenantId)) return rows;
         const siteName = readActiveSiteName();
@@ -2169,54 +2120,8 @@ export default function Assets() {
             importedFrom: "traccar",
             ...(device.traccarDeviceId ? { traccarDeviceId: device.traccarDeviceId } : {})
           })) as Asset[];
-          const selection = readStoredSelectionScope();
-          const misplaced = rows.filter((row) => {
-            const imei = String(row.imei ?? "").trim();
-            if (!imei || !groupImeis.includes(imei)) return false;
-            return !matchesStoredSiteSelection(resolveAssetSiteName(row), selection);
-          });
-          if (canForPath("/Track/fleet/assets", "edit") && (extras.length || misplaced.length)) {
-            const syncKey = `vivi.assets.missingSiteSync:${tenantId}:${siteName}`;
-            const last = Number(window.sessionStorage.getItem(syncKey) ?? 0) || 0;
-            if (Date.now() - last > 10 * 60 * 1000) {
-              try {
-                window.sessionStorage.setItem(syncKey, String(Date.now()));
-              } catch {
-                // ignore
-              }
-              void (async () => {
-                let stored = 0;
-                for (const extra of extras) {
-                  const saved = await upsertAssetDetailed({
-                    id: extra.id,
-                    imei: extra.imei,
-                    assetDescription: extra.assetDescription,
-                    registration: extra.registration,
-                    site: extra.site,
-                    status: "available",
-                    importedFrom: "traccar",
-                    ...(extra as { traccarDeviceId?: number }).traccarDeviceId
-                      ? { traccarDeviceId: (extra as { traccarDeviceId?: number }).traccarDeviceId }
-                      : {}
-                  });
-                  if (saved.stored) stored += 1;
-                }
-                for (const row of misplaced) {
-                  const saved = await upsertAssetDetailed({
-                    id: row.id,
-                    imei: row.imei,
-                    site: siteName,
-                    ...(String(row.configGroup ?? "").trim() ? { configGroup: row.configGroup } : {})
-                  });
-                  if (saved.stored) stored += 1;
-                }
-                if (!stored || !mounted || my !== loadGen) return;
-                const refreshed = await getAssetsFromApi<Asset>({ force: true });
-                if (!mounted || my !== loadGen || !refreshed.length) return;
-                await syncAssetsForDisplay(refreshed, { enrich: false });
-              })();
-            }
-          }
+          // Display only: devices in the site's VIVI group are listed but never saved,
+          // and existing assets are never moved to another site from page load.
           return extras.length ? [...rows, ...extras] : rows;
         } catch {
           return rows;
@@ -2227,7 +2132,7 @@ export default function Assets() {
       if (apiAssets.length) {
         const rows = sharedDemoDatabase
           ? apiAssets
-          : await attachMissingSiteDevices(await syncFromTraccarIfNeeded(apiAssets));
+          : await attachMissingSiteDevices(apiAssets);
         if (!mounted || my !== loadGen) return;
         // Show rows now; enrich telemetry without blocking the page.
         await syncAssetsForDisplay(rows, { enrich: false });
@@ -2238,72 +2143,8 @@ export default function Assets() {
         setAssetsData([]);
         clearCachedAssets(tenantId || null);
       } else {
-        // If this tenant has no assets yet, try a one-time migration from the legacy (no-tenant) store.
-        // This happens when the org selector generates a new tenant id, but earlier assets were created before tenancy.
-        const migratedKey = tenantId ? `vivi.assets.migratedFromLegacy:${tenantId}` : "";
-        const alreadyMigrated = migratedKey
-          ? String(window.localStorage.getItem(migratedKey) ?? "").trim().toLowerCase() === "true"
-          : false;
-
-        if (tenantId && !alreadyMigrated && !tenantSkipsAutomaticFleetImport(tenantId)) {
-          const legacyAssets = await getAssetsFromApiForTenant<Asset>(null);
-          if (!mounted || my !== loadGen) return;
-          const emptyTenantAssets = await getAssetsFromApiForTenant<Asset>("");
-          if (!mounted || my !== loadGen) return;
-          const sourceLegacy = legacyAssets.length ? legacyAssets : emptyTenantAssets;
-          if (sourceLegacy.length > 0) {
-            // Requires login token.
-            if (!getApiKey()) {
-              showToast("Log in to migrate assets into this database.", "error");
-              navigate("/login");
-              return;
-            }
-
-            const targetSite = String(window.localStorage.getItem("vivi.activeSite") ?? "").trim() || "Default";
-            showToast(`Migrating ${sourceLegacy.length} assets into this database...`, "info");
-
-            let okCount = 0;
-            for (const asset of sourceLegacy) {
-              const id = String((asset as any)?.id ?? "").trim();
-              const imei = String((asset as any)?.imei ?? "").trim();
-              const configGroup = String((asset as any)?.configGroup ?? (asset as any)?.configurationGroup ?? "").trim() || "default-group";
-              if (!id || !imei) continue;
-              const payload: any = {
-                ...asset,
-                id,
-                imei,
-                configGroup,
-                site: targetSite
-              };
-              const res = await upsertAssetDetailedForTenant(payload, tenantId);
-              if (res.stored) okCount += 1;
-            }
-
-            try {
-              window.localStorage.setItem(migratedKey, "true");
-            } catch {
-              // ignore
-            }
-
-            if (okCount > 0) {
-              const refreshed = await getAssetsFromApi<Asset>({ force: true });
-              if (!mounted || my !== loadGen) return;
-              const rows = await syncFromTraccarIfNeeded(refreshed);
-              if (!mounted || my !== loadGen) return;
-              await syncAssetsForDisplay(rows);
-              showToast(`Migrated ${okCount} assets.`, "success");
-              return;
-            }
-          }
-        }
-
-        const rows = await syncFromTraccarIfNeeded([]);
-        if (!mounted || my !== loadGen) return;
-        if (rows.length) {
-          await syncAssetsForDisplay(rows);
-          return;
-        }
-
+        // Empty database stays empty. Use "Import devices from VIVI" or
+        // "Move all assets to site" to fill it.
         if (!assetsDataRef.current.length) {
           setAssetsData([]);
         }
@@ -2564,14 +2405,8 @@ export default function Assets() {
         }
       }
 
-      const options = buildConfigGroupOptions(source);
-      setConfigGroupOptions(options);
-      if (options.length) {
-        setFormValues((current) => {
-          if (current.configurationGroup) return current;
-          return { ...current, configurationGroup: options[0].value };
-        });
-      }
+      // No default pick: the user chooses the group, which then unlocks Mobile device settings.
+      setConfigGroupOptions(buildConfigGroupOptions(source));
     };
     void refreshGroups();
     return () => {
@@ -2804,6 +2639,14 @@ export default function Assets() {
     setDirtyTabs((current) => ({ ...current, [tab]: true }));
   const clearTabDirty = (tab: string) =>
     setDirtyTabs((current) => ({ ...current, [tab]: false }));
+
+  // Mobile device settings only appear once the asset has a configuration group.
+  const hasConfigurationGroup = Boolean(String(formValues.configurationGroup ?? "").trim());
+  useEffect(() => {
+    if (!hasConfigurationGroup && activeAddTab === "Mobile device settings") {
+      setActiveAddTab("Asset details");
+    }
+  }, [hasConfigurationGroup, activeAddTab]);
 
   const attemptSwitchAddTab = (nextTab: string) => {
     if (dirtyTabs[activeAddTab]) {
@@ -3211,6 +3054,39 @@ export default function Assets() {
     } catch (error: any) {
       if (!silent) showToast(`Failed to refresh assets: ${String(error?.message ?? error)}`, "error");
     }
+  };
+
+  const importDevicesFromVivi = async () => {
+    const tenantId = String(readActiveTenantId() || getTenantId() || "").trim();
+    if (!tenantId) {
+      showToast("Select an organisation/database first.", "error");
+      return;
+    }
+    if (isCms808Server() || tenantSkipsAutomaticFleetImport(tenantId)) {
+      showToast("VIVI device import is not available for this database.", "info");
+      return;
+    }
+    if (!getApiKey()) {
+      showToast("Log in to import devices.", "error");
+      return;
+    }
+    const targetSite = String(window.localStorage.getItem("vivi.activeSite") ?? "").trim() || "Default";
+    const ok = window.confirm(
+      `Import VIVI devices into this database? New devices are added to site "${targetSite}". Existing assets keep their site.`
+    );
+    if (!ok) return;
+    showToast("Importing devices from VIVI…", "info");
+    const imported = await importAssetsFromTraccarApi({ site: targetSite, tenantId });
+    if (imported.error) {
+      showToast(`VIVI import: ${imported.error}`, "error");
+      return;
+    }
+    const parts = [
+      imported.imported > 0 ? `${imported.imported} imported` : "",
+      imported.updated > 0 ? `${imported.updated} updated` : ""
+    ].filter(Boolean);
+    showToast(parts.length ? `VIVI import: ${parts.join(", ")}.` : "No new devices to import.", "success");
+    await handleRefreshAssets(true);
   };
 
   const moveAllAssetsToActiveSite = async () => {
@@ -3760,6 +3636,9 @@ export default function Assets() {
       if (key === "move-site") {
         void moveAllAssetsToActiveSite();
       }
+      if (key === "import-vivi") {
+        void importDevicesFromVivi();
+      }
     },
     onSearch: (value: string) => {
       setSearchQuery(value);
@@ -4159,8 +4038,10 @@ export default function Assets() {
       }
       setDeviceIdentityErrors({});
 
-      const hasCamera = String(normalizedDraft.hasCamera ?? "no").trim().toLowerCase() === "yes";
       const standaloneMode = String(normalizedDraft.standaloneMode ?? "").trim().toLowerCase() === "yes" ? "yes" : "no";
+      // Standalone is a camera-only setup, so its camera fields are always kept.
+      const hasCamera =
+        standaloneMode === "yes" || String(normalizedDraft.hasCamera ?? "no").trim().toLowerCase() === "yes";
       normalizedDraft.standaloneMode = standaloneMode;
       if (standaloneMode === "yes") {
         normalizedDraft.device = "";
@@ -4285,6 +4166,48 @@ export default function Assets() {
   const isStandaloneModeInModal =
     dataModalSection === "Mobile device settings"
     && String(dataDraft.standaloneMode ?? "").trim().toLowerCase() === "yes";
+
+  type MobileSetupMode = "tracker" | "tracker-camera" | "standalone";
+  const mobileSetupMode: MobileSetupMode = isStandaloneModeInModal
+    ? "standalone"
+    : showCameraSettingsInModal
+      ? "tracker-camera"
+      : "tracker";
+  const showCameraCardInModal = isStandaloneModeInModal || showCameraSettingsInModal;
+
+  // One choice drives which cards show; fields that do not apply to the new mode are cleared.
+  const selectMobileSetupMode = (mode: MobileSetupMode) => {
+    setDataDraft((current) => {
+      if (mode === "standalone") {
+        return {
+          ...current,
+          standaloneMode: "yes",
+          hasCamera: "yes",
+          device: "",
+          model: "",
+          odometer: "",
+          status: "",
+          firmware: ""
+        };
+      }
+      if (mode === "tracker-camera") {
+        return { ...current, standaloneMode: "no", hasCamera: "yes" };
+      }
+      return {
+        ...current,
+        standaloneMode: "no",
+        hasCamera: "no",
+        camera: "",
+        cameraModel: "",
+        cameraPositioningProtocol: "",
+        cameraVideoProtocol: "",
+        cameraComponents: "",
+        cameraSerial: "",
+        cameraStatus: "",
+        cameraFirmware: ""
+      };
+    });
+  };
 
   const handleSaveAssetModal = async () => {
     if (isSaving) return;
@@ -4601,6 +4524,31 @@ export default function Assets() {
     setSelectedRowBySection((current) => ({ ...current, [section]: null }));
     void persistSharedAssetSection(section, nextRows as Array<Record<string, string>>);
   };
+
+  const imeiFieldInModal = (
+    <label className={fieldMissingClass("imei")}>
+      IMEI
+      <input
+        type="text"
+        value={dataDraft.imei ?? ""}
+        onChange={(event) => {
+          const nextValue = event.target.value;
+          setDataDraft((current) => ({ ...current, imei: nextValue }));
+          if (deviceIdentityErrors.imei) {
+            setDeviceIdentityErrors((current) => ({ ...current, imei: undefined }));
+          }
+          setMissingRequiredFields((current) => {
+            if (!current.has("imei") && !current.has("cameraSerial")) return current;
+            const next = new Set(current);
+            next.delete("imei");
+            next.delete("cameraSerial");
+            return next;
+          });
+        }}
+      />
+      {deviceIdentityErrors.imei && <small className="assets-field-error">{deviceIdentityErrors.imei}</small>}
+    </label>
+  );
 
   return (
     <div className="page assets-page">
@@ -5219,13 +5167,15 @@ export default function Assets() {
                   >
                     Other cost data
                   </button>
-                  <button
-                    type="button"
-                    className={`assets-add-tab ${activeAddTab === "Mobile device settings" ? "active" : ""}`}
-                    onClick={() => attemptSwitchAddTab("Mobile device settings")}
-                  >
-                    Mobile device settings
-                  </button>
+                  {hasConfigurationGroup ? (
+                    <button
+                      type="button"
+                      className={`assets-add-tab ${activeAddTab === "Mobile device settings" ? "active" : ""}`}
+                      onClick={() => attemptSwitchAddTab("Mobile device settings")}
+                    >
+                      Mobile device settings
+                    </button>
+                  ) : null}
                   <button
                     type="button"
                     className={`assets-add-tab ${activeAddTab === "Required driver certificates" ? "active" : ""}`}
@@ -6546,9 +6496,36 @@ export default function Assets() {
             <div className="assets-add-body data-modal-body">
               <section className="assets-add-form" style={{ maxHeight: "unset" }}>
                 {dataModalSection === "Mobile device settings" ? (
-                  <div className="assets-data-columns">
-                    <div className="assets-data-column">
-                      {!isStandaloneModeInModal && (
+                  <div className="assets-mobile-setup">
+                    <div className="assets-mobile-setup-mode" role="radiogroup" aria-label="Device setup">
+                      {(
+                        [
+                          { mode: "tracker", title: "Tracker only", hint: "GPS tracking device" },
+                          { mode: "tracker-camera", title: "Tracker + camera", hint: "Tracking device with a camera" },
+                          { mode: "standalone", title: "Standalone camera", hint: "Camera is the only device" }
+                        ] as Array<{ mode: MobileSetupMode; title: string; hint: string }>
+                      ).map((option) => (
+                        <button
+                          key={option.mode}
+                          type="button"
+                          role="radio"
+                          aria-checked={mobileSetupMode === option.mode}
+                          className={`assets-mobile-setup-option${mobileSetupMode === option.mode ? " active" : ""}`}
+                          onClick={() => selectMobileSetupMode(option.mode)}
+                        >
+                          <span className="assets-mobile-setup-option-title">{option.title}</span>
+                          <span className="assets-mobile-setup-option-hint">{option.hint}</span>
+                        </button>
+                      ))}
+                    </div>
+                  <div
+                    className={`assets-data-columns${
+                      isStandaloneModeInModal || !showCameraCardInModal ? " assets-data-columns--single" : ""
+                    }`}
+                  >
+                    {!isStandaloneModeInModal && (
+                    <div className="assets-data-column assets-device-card">
+                      <div className="assets-device-card-title">Tracking device</div>
                       <label>
                         Device
                         <input
@@ -6603,8 +6580,6 @@ export default function Assets() {
                           </button>
                         </div>
                       </label>
-                      )}
-                      {!isStandaloneModeInModal && (
                       <label>
                         Model
                         <input
@@ -6661,29 +6636,7 @@ export default function Assets() {
                           </button>
                         </div>
                       </label>
-                      )}
-                      <label className={fieldMissingClass("imei")}>
-                        IMEI
-                        <input
-                          type="text"
-                          value={dataDraft.imei ?? ""}
-                          onChange={(event) => {
-                            const nextValue = event.target.value;
-                            setDataDraft((current) => ({ ...current, imei: nextValue }));
-                            if (deviceIdentityErrors.imei) {
-                              setDeviceIdentityErrors((current) => ({ ...current, imei: undefined }));
-                            }
-                            setMissingRequiredFields((current) => {
-                              if (!current.has("imei") && !current.has("cameraSerial")) return current;
-                              const next = new Set(current);
-                              next.delete("imei");
-                              next.delete("cameraSerial");
-                              return next;
-                            });
-                          }}
-                        />
-                        {deviceIdentityErrors.imei && <small className="assets-field-error">{deviceIdentityErrors.imei}</small>}
-                      </label>
+                      {imeiFieldInModal}
                       <label>
                         Odometer (KMs)
                         <input
@@ -6773,77 +6726,18 @@ export default function Assets() {
                         </div>
                       </label>
                     </div>
-                    <div className="assets-data-column">
-                      <label>
-                        Add camera details
-                        <div className="assets-data-actions">
-                          <button
-                            type="button"
-                            onClick={() => setDataDraft((current) => ({ ...current, hasCamera: "yes" }))}
-                            aria-pressed={showCameraSettingsInModal}
-                            disabled={showCameraSettingsInModal}
-                          >
-                            Yes
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setDataDraft((current) => ({
-                                ...current,
-                                hasCamera: "no",
-                                camera: "",
-                                cameraModel: "",
-                                cameraPositioningProtocol: "",
-                                cameraVideoProtocol: "",
-                                cameraComponents: "",
-                                cameraSerial: "",
-                                cameraStatus: "",
-                                cameraFirmware: ""
-                              }))
-                            }
-                            aria-pressed={!showCameraSettingsInModal}
-                            disabled={!showCameraSettingsInModal}
-                          >
-                            No
-                          </button>
-                        </div>
-                      </label>
-                      <label>
-                        Use standalone mode
-                        <div className="assets-data-actions">
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setDataDraft((current) => ({
-                                ...current,
-                                standaloneMode: "yes",
-                                device: "",
-                                model: "",
-                                odometer: "",
-                                status: "",
-                                firmware: ""
-                              }))
-                            }
-                            aria-pressed={String(dataDraft.standaloneMode ?? "").trim().toLowerCase() === "yes"}
-                            disabled={String(dataDraft.standaloneMode ?? "").trim().toLowerCase() === "yes"}
-                          >
-                            Yes
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setDataDraft((current) => ({ ...current, standaloneMode: "no" }))}
-                            aria-pressed={String(dataDraft.standaloneMode ?? "").trim().toLowerCase() !== "yes"}
-                            disabled={String(dataDraft.standaloneMode ?? "").trim().toLowerCase() !== "yes"}
-                          >
-                            No
-                          </button>
-                        </div>
-                        <small>
-                          Standalone mode marks this setup for single-camera standalone usage.
+                    )}
+                    {showCameraCardInModal && (
+                    <div className="assets-data-column assets-device-card">
+                      <div className="assets-device-card-title">
+                        {isStandaloneModeInModal ? "Standalone camera" : "Camera"}
+                      </div>
+                      {isStandaloneModeInModal ? (
+                        <small className="assets-device-card-note">
+                          Only the camera is used. Tracker device fields are hidden and cleared.
                         </small>
-                      </label>
-                      {showCameraSettingsInModal && (
-                        <>
+                      ) : null}
+                      {isStandaloneModeInModal ? imeiFieldInModal : null}
                       <label>
                         Camera
                         <input
@@ -7138,9 +7032,9 @@ export default function Assets() {
                           </button>
                         </div>
                       </label>
-                        </>
-                      )}
                     </div>
+                    )}
+                  </div>
                   </div>
                 ) : (
                   <div className="assets-add-grid data-modal-grid">

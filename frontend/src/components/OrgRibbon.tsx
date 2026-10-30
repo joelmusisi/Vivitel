@@ -3,14 +3,12 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { ribbonPageLabel } from "../utils/ribbonPageLabel";
 import {
   getApiKey,
-  tenantSkipsAutomaticFleetImport,
   getCachedPrincipal,
   getTenantId,
   buildApiUrl,
   getAssetsFromApi,
   getAssetsFromApiForTenant,
   peekCachedAssets,
-  upsertAssetDetailedForTenant,
   getHierarchy,
   addHierarchyDealer,
   addHierarchyOrganisation,
@@ -734,6 +732,7 @@ export function OrgRibbon({ hideRibbon = false }: { hideRibbon?: boolean }) {
           { key: "export", label: "Export", tooltip: "Export", icon: RIBBON_EXPORT_ICON },
           { key: "import", label: "Import", tooltip: "Import", icon: RIBBON_IMPORT_ICON },
           { key: "template", label: "Download template", tooltip: "Download template", icon: RIBBON_TEMPLATE_ICON },
+          { key: "import-vivi", label: "Import devices from VIVI", tooltip: "Add VIVI devices to this database", icon: "⇣" },
           { key: "move-site", label: "Move all assets to site", tooltip: "Move all assets to selected site", icon: "⚙" },
           { key: "add", label: "Add", icon: "+", tooltip: "Add", variant: "add" }
         ]
@@ -1299,46 +1298,8 @@ export function OrgRibbon({ hideRibbon = false }: { hideRibbon?: boolean }) {
         }
       }
 
-      // If this DB/tenant has no assets yet, but legacy (no-tenant) does, migrate them in.
-      // Demo databases stay empty so another fleet's vehicles are not copied onto the new site.
-      if (workingAssets.length === 0 && !tenantSkipsAutomaticFleetImport(tenantId)) {
-        const migratedKey = tenantId ? `vivi.assets.migratedFromLegacy:${tenantId}` : "";
-        const alreadyMigrated = migratedKey
-          ? String(window.localStorage.getItem(migratedKey) ?? "").trim().toLowerCase() === "true"
-          : false;
-
-        const legacy = alreadyMigrated ? [] : await getAssetsFromApiForTenant<any>(null);
-        if (!alreadyMigrated && legacy.length > 0) {
-          const apiKey = getApiKey();
-          if (!apiKey) {
-            setLastAction(`Login required to migrate ${legacy.length} assets into this database.`);
-          } else {
-            const targetSite = String(activeSite?.name ?? "").trim() || "Gamini";
-            setLastAction(`Migrating ${legacy.length} assets into ${targetSite}...`);
-            let okCount = 0;
-            for (const asset of legacy) {
-              const id = String(asset?.id ?? "").trim();
-              const imei = String(asset?.imei ?? "").trim();
-              const configGroup = String(asset?.configGroup ?? asset?.configurationGroup ?? "").trim();
-              if (!id || !imei) continue;
-              const payload = { ...asset, id, imei, configGroup: configGroup || "", site: targetSite };
-              const res = await upsertAssetDetailedForTenant(payload, tenantId);
-              if (res.stored) okCount += 1;
-            }
-            try {
-              if (migratedKey) window.localStorage.setItem(migratedKey, "true");
-            } catch {
-              // ignore
-            }
-            if (okCount > 0) {
-              workingAssets = await getAssetsFromApiForTenant<any>(tenantId);
-              setLastAction(`Migrated ${okCount} assets.`);
-            } else {
-              setLastAction("Migration attempted but no assets were saved.");
-            }
-          }
-        }
-      }
+      // An empty database stays empty. Assets are never copied in from another
+      // store when the selector changes; use the Assets page actions instead.
 
       // Always rewrite hierarchy asset labels from D1 for this database.
       // Keeping stale local labels when D1 is empty made the picker look full
